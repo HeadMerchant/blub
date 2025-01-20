@@ -2,8 +2,8 @@
 #include <fstream>
 #include <string>
 
-std::string readFile() {
-    std::ifstream inputFile("testinput");
+std::string readFile(std::string filePath) {
+    std::ifstream inputFile(filePath);
 
     if (!inputFile.is_open()) {
         std::cerr << "Error: could not open the file." << std::endl;
