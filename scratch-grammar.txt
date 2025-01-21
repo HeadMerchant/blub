@@ -1,0 +1,6 @@
+main::fun() {
+    print("hello world")
+}
+
+Identifier := [A-Za-z]+
+Function := "fun"

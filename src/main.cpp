@@ -3,6 +3,7 @@
 #include <iostream>
 #include <string>
 #include <stdexcept>
+#include "tokenizer.cpp"
 
 int main(int argc, char *argv[]) {
     printGreeting();
@@ -14,5 +15,12 @@ int main(int argc, char *argv[]) {
 
     std::string sourceFile(argv[1]);
 
-    std::cout << readFile(sourceFile) << std::endl;
+    std::string fileContents = readFile(sourceFile);
+
+    std::vector<Token> tokens = tokenize(fileContents);
+
+    for (auto token : tokens) {
+        std::printf("Token(type:%d, lexeme:\"%s\", line:%d)", token.type, token.lexeme.c_str(), token.line);
+        std::cout << "\n";
+    }
 }

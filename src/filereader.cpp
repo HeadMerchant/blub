@@ -10,12 +10,10 @@ std::string readFile(std::string filePath) {
         return "<couldn't read file>";
     }
 
-    std::string line;
-    std::string fileContents;
-    std::getline(inputFile, fileContents);
-    while (std::getline(inputFile, line)) {
-        fileContents += "\n" + line;
-    }
+    std::string fileContents = std::string(
+        std::istreambuf_iterator<char>(inputFile),
+        std::istreambuf_iterator<char>()
+    );
 
     return fileContents;
 }
