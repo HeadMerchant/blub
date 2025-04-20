@@ -1,4 +1,6 @@
+#pragma once
 #include <string>
+#include <vector>
 
 enum TokenType {
     // Symbols
@@ -8,6 +10,9 @@ enum TokenType {
     RIGHT_CURLY_BRACE,
     COLON,
     CONSTANT_DECLARATION,
+    DOUBLE_EQUAL,
+    NOT_EQUAL,
+    NOT,
 
     // Keywords
     FUNCTION,

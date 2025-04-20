@@ -3,7 +3,7 @@
 #include <iostream>
 #include <string>
 #include <stdexcept>
-#include "tokenizer.cpp"
+#include "tokenizer.h"
 
 int main(int argc, char *argv[]) {
     printGreeting();

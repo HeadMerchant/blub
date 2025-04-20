@@ -1,6 +1,9 @@
 #include <string>
 #include <stdexcept>
+#include <iostream>
+#include <vector>
 #include "tokenizer.h"
+#include <unordered_map>
 
 
 bool isAlphaUnder(char c) {
@@ -26,7 +29,6 @@ class Tokenizer {
     void scanToken() {
         start = current;
         char c = advance();
-        // std::cout << c << std::endl;
         switch (c)
         {
         case '(':{
@@ -66,6 +68,15 @@ class Tokenizer {
         }
         case '"': {
             string();
+            break;
+        }
+        case '!': {
+            if (peek() == '=') {
+                advance();
+                addToken(NOT_EQUAL);
+            } else {
+                addToken(NOT);
+            }
             break;
         }
         
