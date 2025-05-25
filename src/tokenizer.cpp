@@ -4,14 +4,14 @@
 #include <vector>
 #include "tokenizer.h"
 #include <unordered_map>
-
+#include <string_view>
 
 bool isAlphaUnder(char c) {
     return isalpha(c) || c == '_';
 }
 
-std::unordered_map<std::string, TokenType> keywords = {
-    {"fun", FUNCTION}
+std::unordered_map<std::string_view, TokenType> keywords = {
+    {"fn", FUNCTION}
 };
 
 class Tokenizer {
@@ -20,7 +20,7 @@ class Tokenizer {
         int start = 0;
         int current = 0;
         int line = 1;
-        const std::string& sourceCode;
+        const std::string_view sourceCode;
     
     bool isAtEnd() {
         return current >= sourceCode.length();
@@ -64,6 +64,15 @@ class Tokenizer {
         }
         case '\n':{
             line++;
+            // addToken(STATEMENT_BREAK);
+            // while (peek() == '\n') {
+            //     advance();
+            //     line++;
+            // }
+            break;
+        }
+        case ';': {
+            addToken(STATEMENT_BREAK);
             break;
         }
         case '"': {
@@ -98,6 +107,8 @@ class Tokenizer {
     }
 
     void string() {
+        // Remove starting " from the token
+        start++;
         while (peek() != '"' && !isAtEnd())
         {
             advance();
@@ -107,9 +118,10 @@ class Tokenizer {
             throw std::invalid_argument("Unterminated string");
         }
 
-        // Grab closing double quote
-        advance();
         addToken(STRING);
+
+        // Grab closing double quote
+        advance();        
     }
 
     void identifier() {
@@ -119,28 +131,38 @@ class Tokenizer {
             if (!(isalnum(c) || c == '_')) break;
             advance();
         }
+        if (keywords.count(lexeme()) > 0) {
+            addToken(keywords[lexeme()]);
+            return;
+        }
         addToken(IDENTIFIER);
+    }
+
+    std::string_view lexeme() {
+        return sourceCode.substr(start, current-start);
     }
 
     void addToken(TokenType type) {
         tokens.push_back({
             .type = type,
-            .lexeme = sourceCode.substr(start, current-start),
+            .lexeme = lexeme(),
             .line = line
         });
+        std::cout << tokens.size() << "\n";
     }
 
-    public: Tokenizer(const std::string& sourceCode): sourceCode(sourceCode) {
+    public: Tokenizer(const std::string_view& sourceCode, std::vector<Token>& tokens): sourceCode(sourceCode), tokens(tokens) {
+        std::cout << &tokens << "\n";
         while (!isAtEnd())
         {
             scanToken();
         }
     }
 
-    std::vector<Token> tokens;
+    std::vector<Token>& tokens;
 };
 
-std::vector<Token> tokenize(const std::string& srcFile) {
+void tokenize(const std::string_view& srcFile, std::vector<Token>& tokensArray) {
     std::cout << "Source:\n" << srcFile << std::endl;
-    return Tokenizer(srcFile).tokens;
+    Tokenizer(srcFile, tokensArray);
 }

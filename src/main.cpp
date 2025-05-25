@@ -4,6 +4,8 @@
 #include <string>
 #include <stdexcept>
 #include "tokenizer.h"
+#include "parser.h"
+#include "interpreter.h"
 
 int main(int argc, char *argv[]) {
     printGreeting();
@@ -17,10 +19,20 @@ int main(int argc, char *argv[]) {
 
     std::string fileContents = readFile(sourceFile);
 
-    std::vector<Token> tokens = tokenize(fileContents);
+    std::vector<Token> tokens;
+    tokenize(fileContents, tokens);
+    std::cout << tokens.size() << "\n";
+    std::cout << "Address: " << &tokens << "\n";
 
     for (auto token : tokens) {
-        std::printf("Token(type:%d, lexeme:\"%s\", line:%d)", token.type, token.lexeme.c_str(), token.line);
-        std::cout << "\n";
+        token.print();
     }
+
+    std::vector<ASTNode*> program = parseTokens(tokens);
+    for (auto ast : program) {
+        ast->print();
+    }
+
+    Interpreter interpreter(program);
+    interpreter.run();
 }

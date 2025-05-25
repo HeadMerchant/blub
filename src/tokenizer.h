@@ -1,6 +1,8 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <string_view>
+#include <iostream>
 
 enum TokenType {
     // Symbols
@@ -13,20 +15,27 @@ enum TokenType {
     DOUBLE_EQUAL,
     NOT_EQUAL,
     NOT,
-
     // Keywords
     FUNCTION,
 
     // Literal
     IDENTIFIER,
     STRING,
-    NUMBER
+    NUMBER,
+    
+    // TODO: figure out meaningful whitespace
+    STATEMENT_BREAK
 };
 
 struct Token {
     const TokenType type;
-    const std::string lexeme;
+    const std::string_view lexeme;
     const int line;
+
+    void print() const {
+        std::printf("Token(type:%d, lexeme:\"%.*s\", line:%d)", type, lexeme.length(), lexeme.data(), line);
+        std::cout << "\n";
+    }
 };
 
-std::vector<Token> tokenize(const std::string& srcFile);
+void tokenize(const std::string_view& srcFile, std::vector<Token>& tokensArray);
