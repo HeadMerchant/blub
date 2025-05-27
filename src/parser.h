@@ -17,7 +17,7 @@ enum class NodeType {
     CALL,
     ARGS_LIST,
     ARRAY_LITERAL,
-    BINARY
+    BINARY_OP
 };
 
 class ASTNode {
@@ -77,7 +77,7 @@ class Parser {
     }
     
     bool isAtEnd(int ahead = 0) {
-        return peek(ahead).type == EOF || current >= tokens.size();
+        return peek(ahead).type == TokenType::END_OF_FILE || current >= tokens.size();
     }
     
     const Token& previous() {
@@ -122,7 +122,7 @@ class Parser {
    
     ASTNode* statement() {
         ASTNode* node;
-        if (check(STATEMENT_BREAK)) {
+        if (check(TokenType::STATEMENT_BREAK)) {
             advance();
         }
         if (check(TokenType::IDENTIFIER) && check(TokenType::CONSTANT_DECLARATION, 1)) {
@@ -142,7 +142,7 @@ class Parser {
         }
 
         auto name = new ASTNode(NodeType::LITERAL, advance(), {});
-        auto token = consume(CONSTANT_DECLARATION, "Expected a :: for constant declaration");
+        auto token = consume(TokenType::CONSTANT_DECLARATION, "Expected a :: for constant declaration");
         auto value = expression();
         NodeList children = {name, value};
         return new ASTNode(
@@ -157,7 +157,7 @@ class Parser {
     }
     
     ASTNode* equality() {
-        static std::vector<TokenType> types = {DOUBLE_EQUAL, NOT_EQUAL};
+        static std::vector<TokenType> types = {TokenType::DOUBLE_EQUAL, TokenType::NOT_EQUAL};
         
         ASTNode* expr = comparison();
         while (match(types)) {
@@ -165,7 +165,7 @@ class Parser {
             ASTNode* right = comparison();
             ASTNode* left = expr;
             expr = new ASTNode(
-                NodeType::BINARY,
+                NodeType::BINARY_OP,
                 op,
                 {left, right}
             );
@@ -179,14 +179,14 @@ class Parser {
     }
     
     ASTNode* term() {
-        static std::vector<TokenType> types = {PLUS, MINUS};
+        static std::vector<TokenType> types = {TokenType::PLUS, TokenType::MINUS};
         auto expr = factor();
         while (match(types)) {
             Token op = previous();
             ASTNode* right = factor();
             ASTNode* left = expr;
             expr = new ASTNode(
-                NodeType::BINARY,
+                NodeType::BINARY_OP,
                 op,
                 {left, right}
             );
@@ -195,14 +195,14 @@ class Parser {
     }
     
     ASTNode* factor() {
-        static std::vector<TokenType> types = {MULT, DIV};
+        static std::vector<TokenType> types = {TokenType::MULT, TokenType::DIV};
         auto expr = unary();
         while (match(types)) {
             Token op = previous();
             ASTNode* right = unary();
             ASTNode* left = expr;
             expr = new ASTNode(
-                NodeType::BINARY,
+                NodeType::BINARY_OP,
                 op,
                 {left, right}
             );
@@ -211,7 +211,7 @@ class Parser {
     }
     
     ASTNode* unary() {
-        static std::vector<TokenType> types = {NOT};
+        static std::vector<TokenType> types = {TokenType::NOT};
         if (match(types)) {
             Token op = previous();
             return new ASTNode(
@@ -226,18 +226,18 @@ class Parser {
    
     ASTNode* call() {
         ASTNode* expr = primary();
-        static std::vector<TokenType> open = {LEFT_PAREN};
+        static std::vector<TokenType> open = {TokenType::LEFT_PAREN};
         if (match(open)) {
             std::cout << "Looking in here\n";
             auto token = previous();
             std::vector<ASTNode*> args = {expr};
             // TODO: add call args
-            while (!check(RIGHT_PAREN)) {
+            while (!check(TokenType::RIGHT_PAREN)) {
                 std::cout << "finding arg\n";
                 args.push_back(expression());
             }
 
-            consume(RIGHT_PAREN, "Expected a closing ')' after arguments for function call");
+            consume(TokenType::RIGHT_PAREN, "Expected a closing ')' after arguments for function call");
 
             return new ASTNode(
                 NodeType::FUNCTION_CALL,
@@ -250,7 +250,7 @@ class Parser {
     }
 
     ASTNode* primary() {
-        static std::vector<TokenType> types = {STRING, DECIMAL, INT}; 
+        static std::vector<TokenType> types = {TokenType::STRING, TokenType::DECIMAL, TokenType::INT}; 
         if (match(types)) {
             return new ASTNode(
                 NodeType::LITERAL,
@@ -259,11 +259,11 @@ class Parser {
             );
         }
 
-        if (check(FUNCTION)) {
+        if (check(TokenType::FUNCTION)) {
             return function();
         }
 
-        if (check(IDENTIFIER)) {
+        if (check(TokenType::IDENTIFIER)) {
             return new ASTNode(
                 NodeType::IDENTIFIER,
                 advance(),
@@ -271,32 +271,32 @@ class Parser {
             );
         }
         
-        static std::vector<TokenType> leftParen = {LEFT_PAREN};
+        static std::vector<TokenType> leftParen = {TokenType::LEFT_PAREN};
         if (match(leftParen)) {
             ASTNode* grouping = expression();
             consume(TokenType::RIGHT_PAREN, "Expected a closing parenthesis");
             return grouping;
         }
 
-        if (check(LEFT_BRACKET)) {
+        if (check(TokenType::LEFT_BRACKET)) {
             Token startToken = advance();
             std::vector<ASTNode*> items;
 
             // Array literal
-            while (!check(RIGHT_BRACKET)) {
+            while (!check(TokenType::RIGHT_BRACKET)) {
                 if (items.size() > 0) {
-                    consume(COMMA, "Expected separating comma between elements of array literal");
+                    consume(TokenType::COMMA, "Expected separating comma between elements of array literal");
                 }
 
                 // Allow trailing comma
-                if (check(RIGHT_BRACKET)){                    
+                if (check(TokenType::RIGHT_BRACKET)){                    
                     break;
                 }
 
                 items.push_back(expression());
             }
 
-            consume(RIGHT_BRACKET, "Unclosed array literal; Expected ']'");
+            consume(TokenType::RIGHT_BRACKET, "Unclosed array literal; Expected ']'");
             
             return new ASTNode(
                 NodeType::ARRAY_LITERAL,
@@ -313,17 +313,17 @@ class Parser {
 
     ASTNode* function() {
         // Keyword
-        consume(FUNCTION, "Expected 'fn' keyword");
+        consume(TokenType::FUNCTION, "Expected 'fn' keyword");
         auto keyword = previous();
         // Params
-        consume(LEFT_PAREN, "Expected '(' for parameter declaration");
+        consume(TokenType::LEFT_PAREN, "Expected '(' for parameter declaration");
         // TODO: add node for parameters
         auto params = new ASTNode(
             NodeType::PARAMETER_LIST,
             previous(),
             {}
         );
-        consume(RIGHT_PAREN, "Expected ')' for declaration");
+        consume(TokenType::RIGHT_PAREN, "Expected ')' for declaration");
         
         // Block
         auto body = block();

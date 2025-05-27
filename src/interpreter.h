@@ -80,7 +80,7 @@ class Interpreter {
                 }
                 return new InterpreterValue(values);
             }
-            case NodeType::BINARY: {
+            case NodeType::BINARY_OP: {
                 auto opType = node->token.type;
                 auto leftVal = interpret(node->children[0]);
                 auto rightVal = interpret(node->children[1]);

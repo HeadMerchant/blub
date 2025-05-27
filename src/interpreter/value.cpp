@@ -61,7 +61,7 @@ InterpreterValue* InterpreterValue::toString() {
            return &InterpreterValue::functionString;
         }
         case ValueType::INT: {
-            float rawValue = intVal();
+            auto rawValue = intVal();
             return new InterpreterValue(new std::string(std::to_string(rawValue)));
         }
     }

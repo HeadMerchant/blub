@@ -3,7 +3,7 @@
 #include <string_view>
 #include <iostream>
 
-enum TokenType {
+enum class TokenType {
     // Symbols
     LEFT_PAREN,
     RIGHT_PAREN,
@@ -34,13 +34,14 @@ enum TokenType {
     INT,
     
     // TODO: figure out meaningful whitespace
-    STATEMENT_BREAK
+    STATEMENT_BREAK,
+    END_OF_FILE
 };
 
 struct Token {
-    const TokenType type;
     const std::string_view lexeme;
     const int line;
+    const TokenType type;
 
     void print() const {
         std::printf("Token(type:%d, lexeme:\"%.*s\", line:%d)", type, lexeme.length(), lexeme.data(), line);

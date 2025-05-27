@@ -11,7 +11,7 @@ bool isAlphaUnder(char c) {
 }
 
 std::unordered_map<std::string_view, TokenType> keywords = {
-    {"fn", FUNCTION}
+    {"fn", TokenType::FUNCTION}
 };
 
 class Tokenizer {
@@ -32,27 +32,27 @@ class Tokenizer {
         switch (c)
         {
         case '(':{
-            addToken(LEFT_PAREN);
+            addToken(TokenType::LEFT_PAREN);
             break;
         }
         case ')':{
-            addToken(RIGHT_PAREN);
+            addToken(TokenType::RIGHT_PAREN);
             break;
         }
         case '{':{
-            addToken(LEFT_CURLY_BRACE);
+            addToken(TokenType::LEFT_CURLY_BRACE);
             break;
         }
         case '}':{
-            addToken(RIGHT_CURLY_BRACE);
+            addToken(TokenType::RIGHT_CURLY_BRACE);
             break;
         }
         case ':':{
             if (peek() == ':') {
                 advance();
-                addToken(CONSTANT_DECLARATION);
+                addToken(TokenType::CONSTANT_DECLARATION);
             } else {
-                addToken(COLON);
+                addToken(TokenType::COLON);
             }
             break;
         }
@@ -64,7 +64,7 @@ class Tokenizer {
         }
         case '\n':{
             line++;
-            addToken(STATEMENT_BREAK);
+            addToken(TokenType::STATEMENT_BREAK);
             while (peek() == '\n') {
                 advance();
                 line++;
@@ -82,38 +82,38 @@ class Tokenizer {
         case '!': {
             if (peek() == '=') {
                 advance();
-                addToken(NOT_EQUAL);
+                addToken(TokenType::NOT_EQUAL);
             } else {
-                addToken(NOT);
+                addToken(TokenType::NOT);
             }
             break;
         }
         case ',': {
-            addToken(COMMA);
+            addToken(TokenType::COMMA);
             break;
         }
         case '[': {
-            addToken(LEFT_BRACKET);
+            addToken(TokenType::LEFT_BRACKET);
             break;
         }
         case ']': {
-            addToken(RIGHT_BRACKET);
+            addToken(TokenType::RIGHT_BRACKET);
             break;
         }
         case '*': {
-            addToken(MULT);
+            addToken(TokenType::MULT);
             break;
         }
         case '/': {
-            addToken(DIV);
+            addToken(TokenType::DIV);
             break;
         }
         case '+': {
-            addToken(PLUS);
+            addToken(TokenType::PLUS);
             break;
         }
         case '-': {
-            addToken(MINUS);
+            addToken(TokenType::MINUS);
             break;
         }
         default:
@@ -149,7 +149,7 @@ class Tokenizer {
             throw std::invalid_argument("Unterminated string");
         }
 
-        addToken(STRING);
+        addToken(TokenType::STRING);
 
         // Grab closing double quote
         advance();        
@@ -166,7 +166,7 @@ class Tokenizer {
             addToken(keywords[lexeme()]);
             return;
         }
-        addToken(IDENTIFIER);
+        addToken(TokenType::IDENTIFIER);
     }
 
     void number() {
@@ -183,7 +183,7 @@ class Tokenizer {
             }
             advance();
         }
-        TokenType tokenType = hasDecimal ? DECIMAL : INT;
+        TokenType tokenType = hasDecimal ? TokenType::DECIMAL : TokenType::INT;
         addToken(tokenType);
     }
 
@@ -193,9 +193,9 @@ class Tokenizer {
 
     void addToken(TokenType type) {
         tokens.push_back({
-            .type = type,
             .lexeme = lexeme(),
-            .line = line
+            .line = line,
+            .type = type
         });
         std::cout << tokens.size() << "\n";
     }
