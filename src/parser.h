@@ -4,11 +4,9 @@
 #include <vector>
 #include <stdexcept>
 #include <iostream>
-#include <algorithm>
 
 enum class NodeType {
     DECLARATION,
-    EQUALITY,
     UNARY,
     LITERAL,
     IDENTIFIER,
@@ -17,7 +15,9 @@ enum class NodeType {
     BLOCK,
     PARAMETER_LIST,
     CALL,
-    ARGS_LIST
+    ARGS_LIST,
+    ARRAY_LITERAL,
+    BINARY
 };
 
 class ASTNode {
@@ -122,6 +122,9 @@ class Parser {
    
     ASTNode* statement() {
         ASTNode* node;
+        if (check(STATEMENT_BREAK)) {
+            advance();
+        }
         if (check(TokenType::IDENTIFIER) && check(TokenType::CONSTANT_DECLARATION, 1)) {
             node = declaration();
         } else {
@@ -162,7 +165,7 @@ class Parser {
             ASTNode* right = comparison();
             ASTNode* left = expr;
             expr = new ASTNode(
-                NodeType::EQUALITY,
+                NodeType::BINARY,
                 op,
                 {left, right}
             );
@@ -176,11 +179,35 @@ class Parser {
     }
     
     ASTNode* term() {
-        return factor();
+        static std::vector<TokenType> types = {PLUS, MINUS};
+        auto expr = factor();
+        while (match(types)) {
+            Token op = previous();
+            ASTNode* right = factor();
+            ASTNode* left = expr;
+            expr = new ASTNode(
+                NodeType::BINARY,
+                op,
+                {left, right}
+            );
+        }
+        return expr;
     }
     
     ASTNode* factor() {
-        return unary();
+        static std::vector<TokenType> types = {MULT, DIV};
+        auto expr = unary();
+        while (match(types)) {
+            Token op = previous();
+            ASTNode* right = unary();
+            ASTNode* left = expr;
+            expr = new ASTNode(
+                NodeType::BINARY,
+                op,
+                {left, right}
+            );
+        }
+        return expr;
     }
     
     ASTNode* unary() {
@@ -223,7 +250,7 @@ class Parser {
     }
 
     ASTNode* primary() {
-        static std::vector<TokenType> types = {STRING, NUMBER}; 
+        static std::vector<TokenType> types = {STRING, DECIMAL, INT}; 
         if (match(types)) {
             return new ASTNode(
                 NodeType::LITERAL,
@@ -237,7 +264,6 @@ class Parser {
         }
 
         if (check(IDENTIFIER)) {
-            std::cout << "Identifier\n";
             return new ASTNode(
                 NodeType::IDENTIFIER,
                 advance(),
@@ -250,6 +276,33 @@ class Parser {
             ASTNode* grouping = expression();
             consume(TokenType::RIGHT_PAREN, "Expected a closing parenthesis");
             return grouping;
+        }
+
+        if (check(LEFT_BRACKET)) {
+            Token startToken = advance();
+            std::vector<ASTNode*> items;
+
+            // Array literal
+            while (!check(RIGHT_BRACKET)) {
+                if (items.size() > 0) {
+                    consume(COMMA, "Expected separating comma between elements of array literal");
+                }
+
+                // Allow trailing comma
+                if (check(RIGHT_BRACKET)){                    
+                    break;
+                }
+
+                items.push_back(expression());
+            }
+
+            consume(RIGHT_BRACKET, "Unclosed array literal; Expected ']'");
+            
+            return new ASTNode(
+                NodeType::ARRAY_LITERAL,
+                startToken,
+                items
+            );
         }
 
         // peek().print();

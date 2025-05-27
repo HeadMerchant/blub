@@ -8,8 +8,6 @@
 #include "interpreter.h"
 
 int main(int argc, char *argv[]) {
-    printGreeting();
-
     // no source file passed in
     if (argc < 2) {
         throw std::invalid_argument("missing source file input argument");
@@ -21,9 +19,6 @@ int main(int argc, char *argv[]) {
 
     std::vector<Token> tokens;
     tokenize(fileContents, tokens);
-    std::cout << tokens.size() << "\n";
-    std::cout << "Address: " << &tokens << "\n";
-
     for (auto token : tokens) {
         token.print();
     }

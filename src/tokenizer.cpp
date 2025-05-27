@@ -64,17 +64,17 @@ class Tokenizer {
         }
         case '\n':{
             line++;
-            // addToken(STATEMENT_BREAK);
-            // while (peek() == '\n') {
-            //     advance();
-            //     line++;
-            // }
-            break;
-        }
-        case ';': {
             addToken(STATEMENT_BREAK);
+            while (peek() == '\n') {
+                advance();
+                line++;
+            }
             break;
         }
+        // case ';': {
+        //     addToken(STATEMENT_BREAK);
+        //     break;
+        // }
         case '"': {
             string();
             break;
@@ -88,11 +88,42 @@ class Tokenizer {
             }
             break;
         }
-        
+        case ',': {
+            addToken(COMMA);
+            break;
+        }
+        case '[': {
+            addToken(LEFT_BRACKET);
+            break;
+        }
+        case ']': {
+            addToken(RIGHT_BRACKET);
+            break;
+        }
+        case '*': {
+            addToken(MULT);
+            break;
+        }
+        case '/': {
+            addToken(DIV);
+            break;
+        }
+        case '+': {
+            addToken(PLUS);
+            break;
+        }
+        case '-': {
+            addToken(MINUS);
+            break;
+        }
         default:
             if(isalpha(c) || c == '_') {
                 identifier();
-            } else {
+            } else if (isdigit(c))
+            {
+                number();
+            }
+             else {
                 throw std::invalid_argument("Unexpected character: (" + std::string {c} + ") at line "+std::to_string(line)+"\n");
             }
         }
@@ -136,6 +167,24 @@ class Tokenizer {
             return;
         }
         addToken(IDENTIFIER);
+    }
+
+    void number() {
+        bool hasDecimal = false;
+        while (!isAtEnd())
+        {
+            char c = peek();
+            if (!(isdigit(c) || c == '.')) break;
+            if (c == '.') {
+                if (hasDecimal) {
+                   throw std::invalid_argument("Encountered second decimal when parsing number");
+                }
+                hasDecimal = true;
+            }
+            advance();
+        }
+        TokenType tokenType = hasDecimal ? DECIMAL : INT;
+        addToken(tokenType);
     }
 
     std::string_view lexeme() {

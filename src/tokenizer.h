@@ -1,5 +1,4 @@
 #pragma once
-#include <string>
 #include <vector>
 #include <string_view>
 #include <iostream>
@@ -10,18 +9,29 @@ enum TokenType {
     RIGHT_PAREN,
     LEFT_CURLY_BRACE,
     RIGHT_CURLY_BRACE,
+    LEFT_BRACKET,
+    RIGHT_BRACKET,
+    COMMA,
     COLON,
     CONSTANT_DECLARATION,
     DOUBLE_EQUAL,
     NOT_EQUAL,
     NOT,
+
+    // Binops
+    PLUS,
+    MINUS,
+    MULT,
+    DIV,
+
     // Keywords
     FUNCTION,
 
     // Literal
     IDENTIFIER,
     STRING,
-    NUMBER,
+    DECIMAL,
+    INT,
     
     // TODO: figure out meaningful whitespace
     STATEMENT_BREAK
