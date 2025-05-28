@@ -1,3 +1,4 @@
+#include <sstream>
 #include <string>
 #include <stdexcept>
 #include <iostream>
@@ -119,12 +120,12 @@ class Tokenizer {
         default:
             if(isalpha(c) || c == '_') {
                 identifier();
-            } else if (isdigit(c))
-            {
+            } else if (isdigit(c)) {
                 number();
-            }
-             else {
-                throw std::invalid_argument("Unexpected character: (" + std::string {c} + ") at line "+std::to_string(line)+"\n");
+            } else {
+                std::stringstream ss;
+                ss << "Unexpected character: (" << c << ") at line " << line;
+                throw std::invalid_argument(ss.str());
             }
         }
     }

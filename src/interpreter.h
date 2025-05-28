@@ -2,62 +2,72 @@
 #include <cassert>
 #include <cstdlib>
 #include <charconv>
-#include "parser.h"
+#include "parser/parser.h"
 #include "environment.h"
-#include <iostream>
-#include <sstream>
 #include <span>
 #include <stdexcept>
 #include <string>
-#include <vector>
 #include "interpreter/value.h"
 #include "tokenizer.h"
 
+
 class Interpreter {
     public:
-    std::vector<ASTNode*> program;
     ASTNode* main;
-    Environment* environment;
+    Environment fileEnvironment;
+    Parser& parser;
+    std::span<NodeIndex> program;
 
-    Interpreter(std::vector<ASTNode*> program): program(program), environment(new Environment()) {}
+    Interpreter(Parser& parser, std::span<NodeIndex> program): parser(parser), fileEnvironment({.parent = &Environment::baseEnvironment}), program(program) {}
 
-    InterpreterValue* interpret(ASTNode* node) {
+    InterpreterValue* interpret(NodeIndex nodeIndex) {
+        return interpret(nodeIndex, fileEnvironment);
+    }
+    
+    InterpreterValue* interpret(NodeIndex nodeIndex, Environment& environment, int depth = 0) {
+        auto encoded = parser.getNode(nodeIndex);
         // std::cout << "\n\nInterpreting node at token:";
         // node->token.print();
-        // std::cout << "Nodetype: " << static_cast<int>(node->type) << "\n"; 
-        // std::cout << "\n\n";
-        switch(node->type) {
+        std::string indent(depth, '\t');
+        depth += 1;
+        std::cout << indent << "Nodetype: " << static_cast<int>(encoded.nodeType) << "\n"; 
+        switch(encoded.nodeType) {
             case NodeType::BLOCK: {
-                // std::cout << node->children.size() << "\n";
-                for (auto child : node->children) {
-                    interpret(node);
+                Environment blockEnv{.parent = &environment};
+                auto node = parser.getBlock(nodeIndex);
+                for (auto child : node.statements) {
+                    interpret(child, blockEnv, depth);
                 }
                 return nullptr;
             }
             case NodeType::DECLARATION: {
-                auto name = node->children[0]->token.lexeme;
-                auto value = node->children[1];
-                environment->defs[name] = value;
+                auto node = parser.getDeclaration(nodeIndex);
+                // TODO: support using non-identifiers?
+                auto name = parser.getIdentifier(node.identifier);
+                auto value = interpret(node.value, environment, depth);
+                environment.defs[name.token->lexeme] = value;
                 return nullptr;
             }
             case NodeType::FUNCTION_CALL: {
-                auto function = node->children[0];
-                std::span<ASTNode*> args(node->children);
-                args = args.subspan(1, args.size()-1);
-                if (function->token.lexeme == "print") {
-                    if (args.size() != 1) {
-                        std::stringstream ss;
-                        ss << "Needed 1 arg; found: " << args.size();
-                        throw std::invalid_argument(ss.str());
-                    }
-                    StringType text = *interpret(args[0])->toString()->string();
-                    std::cout << text << "\n";
-                    return nullptr;
+                auto node = parser.getFunctionCall(nodeIndex);
+                auto function = interpret(node.functionValue, environment, depth);
+                std::vector<InterpreterValue*> arguments;
+                for (auto arg : node.arguments) {
+                    arguments.push_back(interpret(arg, environment, depth));
+                    std::cout << "arg: " << *arguments.back()->toString()->string() << "\n";
+                }
+                if (function->type == ValueType::NATIVE_FUNCTION) {
+                    auto nativeFunction = *function->nativeFunction();
+                    return nativeFunction(std::span<InterpreterValue *>(arguments));
+                }
+                if (function->type == ValueType::FUNCTION) {
+                    throw std::invalid_argument("TODO: implement user-defined functions");
                 }
                 return nullptr;
             }
             case NodeType::LITERAL: {
-                auto token = node->token;
+                auto node = parser.getLiteral(nodeIndex);
+                auto token = *node.token;
                 if (token.type == TokenType::STRING) {
                     return new InterpreterValue(new std::string(token.lexeme));
                 }
@@ -74,16 +84,18 @@ class Interpreter {
                 throw std::invalid_argument("Unable to create literal from value");
             }
             case NodeType::ARRAY_LITERAL: {
+                auto node = parser.getArrayLiteral(nodeIndex);
                 ArrayType* values = new ArrayType();
-                for (auto element : node->children) {
-                    values->push_back(interpret(element));
+                for (auto element : node.elements) {
+                    values->push_back(interpret(element, environment, depth));
                 }
                 return new InterpreterValue(values);
             }
             case NodeType::BINARY_OP: {
-                auto opType = node->token.type;
-                auto leftVal = interpret(node->children[0]);
-                auto rightVal = interpret(node->children[1]);
+                auto node = parser.getBinaryOp(nodeIndex);
+                auto opType = node.token->type;
+                auto leftVal = interpret(node.left, environment, depth);
+                auto rightVal = interpret(node.right, environment, depth);
                 switch (opType) {
                     case TokenType::PLUS:
                         return leftVal->add(rightVal);
@@ -97,9 +109,16 @@ class Interpreter {
                         throw std::invalid_argument("Unknown binary operation");
                 }
             }
+            case NodeType::IDENTIFIER: {
+                auto node = parser.getIdentifier(nodeIndex);
+                return environment.find(node.token->lexeme);
+            }
+            case NodeType::FUNCTION_LITERAL: {
+                auto node = parser.getFunctionLiteral(nodeIndex);
+                auto function = FunctionLiteral {.parser = parser, .function = node};
+                return new InterpreterValue(new FunctionLiteral(function));
+            }
             case NodeType::UNARY:
-            case NodeType::IDENTIFIER:
-            case NodeType::FUNCTION_LITERAL:
             case NodeType::PARAMETER_LIST:
             case NodeType::CALL:
             case NodeType::ARGS_LIST: {
@@ -114,14 +133,17 @@ class Interpreter {
             interpret(node);
         }
         // std::cout << "\n\ndone interpretting\n\n";
-        auto main = environment->find("main");
-        assert(main->type == NodeType::FUNCTION_LITERAL);
+        auto main = fileEnvironment.find("main");
         if (main == nullptr) {
            throw std::invalid_argument("Unable to find definition for function 'main'");
         }
 
-        for (auto statement : main->children[1]->children) {
-            interpret(statement);
+        auto mainFunction = main->function();
+        // TODO: add way to interpret this
+        auto mainBlock = mainFunction->parser.getBlock(mainFunction->function.body);
+        // Encodings::FunctionCall mainCall {.functionValue = , .arguments = std::span<NodeIndex>()};
+        for (auto statement : mainBlock.statements) {
+            interpret(statement, fileEnvironment, 1);
         }
     }
 };

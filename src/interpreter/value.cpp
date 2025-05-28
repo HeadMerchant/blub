@@ -4,7 +4,8 @@
 #include <stdexcept>
 #include <string>
 
-InterpreterValue InterpreterValue::functionString(new std::string("<Internal function>"));
+InterpreterValue InterpreterValue::functionString(new std::string("<user-defined function>"));
+InterpreterValue nativeFunctionString(new std::string("<native function>"));
 
 StringType* InterpreterValue::string() {
     assert(type == ValueType::STRING);
@@ -29,6 +30,11 @@ FunctionType* InterpreterValue::function() {
 IntType InterpreterValue::intVal() {
     assert(type == ValueType::INT);
     return *(IntType*) value;
+}
+
+NativeFunction* InterpreterValue::nativeFunction() {
+    assert(type == ValueType::NATIVE_FUNCTION);
+    return (NativeFunction*) value;
 }
 
 InterpreterValue* InterpreterValue::toString() {
@@ -63,6 +69,9 @@ InterpreterValue* InterpreterValue::toString() {
         case ValueType::INT: {
             auto rawValue = intVal();
             return new InterpreterValue(new std::string(std::to_string(rawValue)));
+        }
+        case ValueType::NATIVE_FUNCTION: {
+            return &nativeFunctionString;
         }
     }
     throw std::invalid_argument("Unable to convert value to string");

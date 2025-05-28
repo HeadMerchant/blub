@@ -1,10 +1,8 @@
-#include "greeting.h"
 #include "filereader.h"
-#include <iostream>
 #include <string>
 #include <stdexcept>
 #include "tokenizer.h"
-#include "parser.h"
+#include "parser/parser.h"
 #include "interpreter.h"
 
 int main(int argc, char *argv[]) {
@@ -23,11 +21,15 @@ int main(int argc, char *argv[]) {
         token.print();
     }
 
-    std::vector<ASTNode*> program = parseTokens(tokens);
-    for (auto ast : program) {
-        ast->print();
-    }
 
-    Interpreter interpreter(program);
+    Parser parser(tokens);
+
+    std::vector<NodeIndex> program = parser.parse();
+
+    // for (auto ast : program) {
+    //     ast->print();
+    // }
+
+    Interpreter interpreter(parser, program);
     interpreter.run();
 }

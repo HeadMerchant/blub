@@ -1,14 +1,15 @@
 #pragma once
-#include <stdexcept>
+#include <functional>
 #include <vector>
-#include "parser.h"
+#include "parser/parser.h"
 
 enum class ValueType {
     FUNCTION,
     STRING,
     FLOAT,
     ARRAY,
-    INT
+    INT,
+    NATIVE_FUNCTION
 };
 
 struct InterpreterValue;
@@ -16,8 +17,14 @@ struct InterpreterValue;
 typedef std::string StringType;
 typedef std::vector<InterpreterValue*> ArrayType;
 typedef float FloatType;
-typedef ASTNode* FunctionType;
+struct FunctionLiteral {
+    Parser& parser;
+    Encodings::FunctionLiteral function;
+};
+typedef FunctionLiteral FunctionType;
 typedef int IntType;
+using NativeFunction = std::function<InterpreterValue*(std::span<InterpreterValue*>)>;
+// using NativeFunction = InterpreterValue* (*)(std::span<InterpreterValue*>);
 
 struct InterpreterValue {
     public:
@@ -31,6 +38,8 @@ struct InterpreterValue {
     InterpreterValue(FloatType num): type(ValueType::FLOAT), value(new float(num)) {}
     InterpreterValue(FunctionType* func): type(ValueType::FUNCTION), value(func) {}
     InterpreterValue(IntType num): type(ValueType::INT), value(new int(num)) {}
+    // InterpreterValue(void* func): type(ValueType::NATIVE_FUNCTION), value(func) {}
+    InterpreterValue(NativeFunction* func): type(ValueType::NATIVE_FUNCTION), value(func) {}
 
     InterpreterValue* add(InterpreterValue* right);
 
@@ -45,6 +54,7 @@ struct InterpreterValue {
     FloatType floatVal();
     FunctionType* function();
     IntType intVal();
+    NativeFunction* nativeFunction();
 
     // TODO: add support for printing arity
     static InterpreterValue functionString;
