@@ -1,0 +1,15 @@
+vec2 :: struct {
+	x: float
+	y: float
+
+	dot :: fn (self: ^vec2, other: vec2): float {
+		return self.x*other.x + self.y*other.y
+	}
+
+	sqrMagnitude :: fn(self): self.dot(self)
+}
+
+main :: fn () {
+	v: vec2 = {1., 1.}
+	u := vec2 {-1., -1.}
+}

@@ -1,0 +1,11 @@
+main :: fn() {
+	x := "First value of x"
+	y := "y says 'hi'"
+
+	print("x: "+x)
+	print("y: "+y)
+	print("y + x: "+(y+x))
+
+	x = y + x
+	print("x: " + x)
+}

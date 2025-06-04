@@ -13,10 +13,16 @@ enum class TokenType {
     RIGHT_BRACKET,
     COMMA,
     COLON,
-    CONSTANT_DECLARATION,
+    // CONSTANT_DECLARATION,
+    ASSIGNMENT,
     DOUBLE_EQUAL,
     NOT_EQUAL,
     NOT,
+    EQUALITY,
+    LESS_THAN,
+    GREATER_THAN,
+    LEQ,
+    GEQ,
 
     // Binops
     PLUS,
@@ -26,6 +32,7 @@ enum class TokenType {
 
     // Keywords
     FUNCTION,
+    STRUCT,
 
     // Literal
     IDENTIFIER,
@@ -42,11 +49,8 @@ struct Token {
     const std::string_view lexeme;
     const int line;
     const TokenType type;
-
-    void print() const {
-        std::printf("Token(type:%d, lexeme:\"%.*s\", line:%d)", type, lexeme.length(), lexeme.data(), line);
-        std::cout << "\n";
-    }
 };
+
+std::ostream& operator<<(std::ostream& os, const Token& token);
 
 void tokenize(const std::string_view& srcFile, std::vector<Token>& tokensArray);

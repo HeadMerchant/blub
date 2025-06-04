@@ -1,0 +1,7 @@
+main :: fn() {
+	imAString := "string"
+	imAnInt := 5
+
+	# should error
+	imAnInt = imAString 
+}

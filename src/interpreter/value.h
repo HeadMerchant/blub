@@ -1,63 +1,179 @@
 #pragma once
+#include <cmath>
 #include <functional>
+#include <stdexcept>
 #include <vector>
 #include "parser/parser.h"
+#include <cassert>
 
 enum class ValueType {
-    FUNCTION,
-    STRING,
+    BOOL,
+    INT,
     FLOAT,
     ARRAY,
-    INT,
-    NATIVE_FUNCTION
+    STRING,
+    NATIVE_FUNCTION,
+    REFERENCE,
+    FUNCTION,
+
+    // Types
+    TRAIT,
+    STRUCT,
+    ENUM,
+    UNION,
+    INTRINSIC_TYPE,
+    USER_TYPE,
+    POINTER_TO,
+
+    // Wait until initialization to set type
+    INFER
 };
 
-struct InterpreterValue;
+struct Reference;
 
-typedef std::string StringType;
-typedef std::vector<InterpreterValue*> ArrayType;
-typedef float FloatType;
+using StringType = std::string*;
+using ArrayType = std::vector<Reference*>*;
+using FloatType = float;
 struct FunctionLiteral {
     Parser& parser;
     Encodings::FunctionLiteral function;
 };
-typedef FunctionLiteral FunctionType;
-typedef int IntType;
-using NativeFunction = std::function<InterpreterValue*(std::span<InterpreterValue*>)>;
+using FunctionType = FunctionLiteral*;
+using IntType = int;
+using NativeFunction = std::function<Reference*(std::span<Reference*>)>*;
 // using NativeFunction = InterpreterValue* (*)(std::span<InterpreterValue*>);
 
-struct InterpreterValue {
-    public:
+struct Struct {};
+struct Enum {};
+struct Union {};
+struct Trait {};
+// TODO: add type interning
+struct ParameterizedType {
+    Reference* type;
+    std::vector<Reference*> parameters;
+};
+struct UserTypeValue {
+    Reference* type;
+    Reference* value;
+};
+
+// Pointer/boxed type
+struct Reference {
+    union {
+        bool _bool;
+        IntType _int;
+        FloatType _float;
+        ArrayType _array;
+        StringType _string;
+        NativeFunction _nativeFunction;
+        Struct* _struct;
+        Enum* _enum;
+        Union* _union;
+        FunctionType _function;
+        Trait* _trait;
+        UserTypeValue _userType;
+        ValueType _intrinsicType;
+    } value;
+
     ValueType type;
-    private:
-    void* value;
+    ValueType typeParam;
+    bool isMutable = true;
+    bool isInitialized = false;
+    Reference(ValueType type): type(type), isInitialized(false) {}
+    Reference(StringType string): type(ValueType::STRING), value({._string = string}) {}
+    Reference(ArrayType array): type(ValueType::ARRAY), value({._array = array}) {}
+    Reference(FloatType num): type(ValueType::FLOAT), value({._float = num}) {}
+    Reference(FunctionType func): type(ValueType::FUNCTION), value({._function = func}) {}
+    Reference(IntType num): type(ValueType::INT), value({._int = num}) {}
+    Reference(NativeFunction func): type(ValueType::NATIVE_FUNCTION), value({._nativeFunction = func}) {}
 
-    public:
-    InterpreterValue(StringType* string): type(ValueType::STRING), value(string) {}
-    InterpreterValue(ArrayType* array): type(ValueType::ARRAY), value(array) {}
-    InterpreterValue(FloatType num): type(ValueType::FLOAT), value(new float(num)) {}
-    InterpreterValue(FunctionType* func): type(ValueType::FUNCTION), value(func) {}
-    InterpreterValue(IntType num): type(ValueType::INT), value(new int(num)) {}
-    // InterpreterValue(void* func): type(ValueType::NATIVE_FUNCTION), value(func) {}
-    InterpreterValue(NativeFunction* func): type(ValueType::NATIVE_FUNCTION), value(func) {}
+    static Reference* intrinsicType(ValueType type) {
+        auto ref = new Reference(ValueType::INTRINSIC_TYPE);
+        ref->value._intrinsicType = type;
+        ref->isInitialized = true;
+        ref->isMutable = false;
+        return ref;
+    }
 
-    InterpreterValue* add(InterpreterValue* right);
+    static Reference* ofType(Reference* type) {
+        assert(type->isType());
+        Reference* ref;
+        if (type->type == ValueType::INTRINSIC_TYPE) {
+            ref = new Reference(type->type);
+        } else {
+            ref = new Reference(ValueType::USER_TYPE);
+            ref->value._userType = {
+                .type = type
+            };
+        }
 
-    InterpreterValue* sub(InterpreterValue* right);
+        return ref;
+    }
 
-    InterpreterValue* div(InterpreterValue* right);
+    Reference* add(Reference* right);
 
-    InterpreterValue* mul(InterpreterValue* right);
+    Reference* sub(Reference* right);
 
-    StringType* string();
-    ArrayType* array();
+    Reference* div(Reference* right);
+
+    Reference* mul(Reference* right);
+
+    StringType string();
+    ArrayType array();
     FloatType floatVal();
-    FunctionType* function();
+    FunctionType function();
     IntType intVal();
-    NativeFunction* nativeFunction();
+    NativeFunction nativeFunction();
+
+    bool typesEquivalent(Reference* value) {
+        if (this->type != value->type) {
+            return false;
+        }
+
+        if (this->type == ValueType::POINTER_TO) {
+            return this->value._userType.type == value->value._userType.type;
+        }
+
+
+    }
+    
+    void assign(Reference* value) {
+        assert(value->type != ValueType::INFER);
+
+        if (!isMutable && isInitialized) {
+            throw std::invalid_argument("Unable to assign to an initialized immutable reference");
+        }
+
+        if ((type != ValueType::INFER) && (type != value->type)) {
+            throw std::invalid_argument("Non-matching types in assignment");
+        }
+
+        if () {
+            
+        }
+
+        type = value->type;
+        isInitialized = true;
+        this->value = value->value;
+    }
 
     // TODO: add support for printing arity
-    static InterpreterValue functionString;
+    static Reference functionString;
 
-    InterpreterValue* toString();
+    Reference* toString();
+
+    bool isType() {
+        switch(type) {
+            case ValueType::TRAIT:
+            case ValueType::STRUCT:
+            case ValueType::ENUM:
+            case ValueType::UNION:
+            case ValueType::INTRINSIC_TYPE:
+            case ValueType::USER_TYPE:
+            case ValueType::POINTER_TO:
+                return true;
+            default:
+                return false;
+        }
+    }
 };

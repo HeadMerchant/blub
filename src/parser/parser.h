@@ -8,6 +8,7 @@
 #include <span>
 #include <stdexcept>
 #include <vector>
+#include "../logging.h"
 
 enum class NodeType {
   DECLARATION,
@@ -21,7 +22,9 @@ enum class NodeType {
   CALL,
   ARGS_LIST,
   ARRAY_LITERAL,
-  BINARY_OP
+  BINARY_OP,
+  ASSIGNMENT,
+  DEFINITION
 };
 
 typedef uint32_t i32;
@@ -98,6 +101,23 @@ struct Block {
 struct ArrayLiteral {
   std::span<NodeIndex> elements;
 };
+
+struct Definition {
+  TokenPointer name;
+  NodeIndex type;
+  bool inferType;
+};
+
+enum class AssignmentType {
+  NAME,
+  DOT,
+  BRACKET
+};
+
+struct Assignment {
+  NodeIndex assignee;
+  NodeIndex value;
+};
 }; // namespace Encodings
 
 typedef std::vector<TokenIndex> NodeList;
@@ -106,12 +126,12 @@ typedef std::span<NodeIndex> ChildSpan;
 
 class Parser {
 public:
-  Parser(std::vector<Token> &tokens) : tokens(tokens) {}
-
+  Parser(std::vector<Token> &tokens) : tokens(tokens), log(logger(LogLevel::DEBUG)) {}
   const std::vector<Token> &tokens;
   std::vector<i32> extraData;
   std::vector<ASTNode> nodes;
   TokenIndex current = {0};
+  std::ostream& log;
 
   const Token &peek(TokenIndex ahead = {0}) {
     return tokens[current.value + ahead.value];
@@ -121,7 +141,7 @@ public:
     if (!isAtEnd())
       current.value++;
     TokenPointer token = previous();
-    std::cout << "Advancing: " << token->lexeme << "\n";
+    log << "Advancing: " << token->lexeme << "\n";
     return token;
   }
 
@@ -146,6 +166,7 @@ public:
   }
 
   const TokenPointer previous() { return tokens.data() + current.value - 1; }
+  Token getToken(TokenIndex token) { return tokens[token.value]; }
 
   bool match(std::vector<TokenType> &types) {
     for (auto type : types) {
@@ -160,7 +181,7 @@ public:
   const TokenPointer consume(TokenType type, std::string message) {
     if (check(type))
       return advance();
-    advance()->print();
+    log << advance();
     throw std::invalid_argument(message);
   }
 
@@ -358,6 +379,27 @@ public:
     return {.token = toPointer(encoded.token), .left = {encoded.left}, .right = {encoded.right} };
   }
 
+  NodeIndex addNode(Encodings::Assignment node, TokenPointer token) {
+    return addNode(ASTNode {.left = node.assignee.value, .right = node.value.value, .token = toIndex(token)});
+  }
+
+  Encodings::Assignment getAssignment(NodeIndex node) {
+    auto encoded = getNode(node);
+    return {.assignee = {encoded.left}, .value = {encoded.right}};
+  }
+
+  NodeIndex addNode(Encodings::Definition node, TokenPointer token) {
+    // Type is guaranteed to not have the same index as the definition
+    NodeIndex typeIndex = node.inferType ? NodeIndex {nodeIndex().value + 1} : node.type;
+    return addNode(ASTNode {.left = toIndex(node.name).value, .right = typeIndex.value, .token = toIndex(token), .nodeType = NodeType::DEFINITION});
+  }
+
+  Encodings::Definition getDefinition(NodeIndex node) {
+    auto encoded = getNode(node, NodeType::DEFINITION);
+    bool inferType = encoded.right == node.value;
+    return {.name = toPointer({encoded.left}), .type = {encoded.right}, .inferType = inferType };
+  }
+
 public:
   std::vector<NodeIndex> parse() {
     std::vector<NodeIndex> statements;
@@ -374,35 +416,51 @@ public:
   }
 
   NodeIndex statement() {
-    NodeIndex node;
     if (check(TokenType::STATEMENT_BREAK)) {
       advance();
     }
-    if (check(TokenType::IDENTIFIER) &&
-        check(TokenType::CONSTANT_DECLARATION, {1})) {
-      node = declaration();
-    } else {
-      node = expression();
-    }
+    NodeIndex node = assignment();
     if (!isAtEnd()) {
       consume(TokenType::STATEMENT_BREAK, "Expected a breaking statement");
     }
     return node;
   }
 
-  NodeIndex declaration() {
-    if (!check(TokenType::IDENTIFIER)) {
-      return expression();
+  NodeIndex assignment() {
+    bool isDefinition = check(TokenType::IDENTIFIER) && check(TokenType::COLON, {1});
+    if (isDefinition) {
+      NodeIndex name = definition();
+      if (check(TokenType::ASSIGNMENT) || check(TokenType::COLON)) {
+        TokenPointer token = advance();
+        NodeIndex value = expression();
+        return addNode(Encodings::Declaration {.identifier = name, .value = value}, toIndex(token));
+      }
+
+      return name;
     }
 
-    // Encodings::Identifier identifier =
-    auto name = addNode(Encodings::Identifier{.token = advance()});
-    // auto name = new ASTNode(NodeType::LITERAL, advance(), {});
-    auto token = consume(TokenType::CONSTANT_DECLARATION,
-                         "Expected a :: for constant declaration");
-    auto value = expression();
-    auto node = Encodings::Declaration{.identifier = name, .value = value};
-    return addNode(node, toIndex(token));
+    NodeIndex expr = expression();
+
+    if (check(TokenType::ASSIGNMENT)) {
+      TokenPointer token = advance();
+      auto value = expression();
+      return addNode(Encodings::Assignment {.assignee = expr, .value = value}, token);
+    }
+
+    return expr;
+  }
+
+  NodeIndex definition() {
+    TokenPointer name = consume(TokenType::IDENTIFIER, "Expected an identifier for a definition");
+    consume(TokenType::COLON, "Expected a ':' for type declaration");
+    TokenPointer token = previous();
+    bool infer = check(TokenType::COLON) || check(TokenType::ASSIGNMENT);
+    if (infer) {
+      return addNode(Encodings::Definition {.name = name, .inferType = infer}, token);
+    }
+
+    NodeIndex type = expression();
+    return addNode(Encodings::Definition {.name = name, .type = type, .inferType = false}, token);
   }
 
   NodeIndex expression() { return equality(); }
@@ -465,11 +523,11 @@ public:
     NodeIndex expr = primary();
     static std::vector<TokenType> open = {TokenType::LEFT_PAREN};
     if (match(open)) {
-      std::cout << "Looking in here\n";
+      log << "Looking in here\n";
       auto token = previous();
       std::vector<NodeIndex> args;
       while (!check(TokenType::RIGHT_PAREN)) {
-        std::cout << "finding arg\n";
+        log << "finding arg\n";
         args.push_back(expression());
       }
 
@@ -532,8 +590,8 @@ public:
       return addNode(node, toIndex(startToken));
     }
 
-    std::cout << "Last token:\n";
-    latestToken().print();
+    log << "Last token:\n";
+    log << latestToken();
     throw std::invalid_argument("Unable to parse");
   }
 
@@ -544,7 +602,6 @@ public:
     // Params
     consume(TokenType::LEFT_PAREN, "Expected '(' for parameter declaration");
 
-    // TODO: parameters
     std::vector<NodeIndex> parameters;
     while (!check(TokenType::RIGHT_PAREN)) {
       if (parameters.size() > 0) {
@@ -573,7 +630,7 @@ public:
     std::vector<NodeIndex> statements;
     std::vector<TokenType> types = {TokenType::RIGHT_CURLY_BRACE};
     while (!match(types)) {
-      std::cout << "looping\n";
+      log << "looping\n";
       // peek().print();
       // std::cout << "Finding statements\n";
       statements.push_back(statement());

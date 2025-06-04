@@ -1,9 +1,9 @@
 #include <sstream>
-#include <string>
 #include <stdexcept>
 #include <iostream>
 #include <vector>
 #include "tokenizer.h"
+#include "logging.h"
 #include <unordered_map>
 #include <string_view>
 
@@ -11,8 +11,16 @@ bool isAlphaUnder(char c) {
     return isalpha(c) || c == '_';
 }
 
+namespace Log {
+    std::ostream& log = logger(LogLevel::DEBUG);
+}
+
 std::unordered_map<std::string_view, TokenType> keywords = {
-    {"fn", TokenType::FUNCTION}
+    {"fn", TokenType::FUNCTION},
+    {"struct", TokenType::STRUCT},
+    // true/false
+    // use
+    // todo: union, enum, trait, import, impl, loop, match, if/else, mut, pointer
 };
 
 class Tokenizer {
@@ -49,12 +57,12 @@ class Tokenizer {
             break;
         }
         case ':':{
-            if (peek() == ':') {
-                advance();
-                addToken(TokenType::CONSTANT_DECLARATION);
-            } else {
+            // if (peek() == ':') {
+            //     advance();
+            //     addToken(TokenType::CONSTANT_DECLARATION);
+            // } else {
                 addToken(TokenType::COLON);
-            }
+            // }
             break;
         }
         case ' ':
@@ -72,10 +80,6 @@ class Tokenizer {
             }
             break;
         }
-        // case ';': {
-        //     addToken(STATEMENT_BREAK);
-        //     break;
-        // }
         case '"': {
             string();
             break;
@@ -115,6 +119,20 @@ class Tokenizer {
         }
         case '-': {
             addToken(TokenType::MINUS);
+            break;
+        }
+        // Comment
+        case '#': {
+            while (peek() != '\n') advance();
+            break;
+        }
+        case '=': {
+            if (peek() == '=') {
+                advance();
+                addToken(TokenType::EQUALITY);
+            } else {
+                addToken(TokenType::ASSIGNMENT);
+            }
             break;
         }
         default:
@@ -198,11 +216,9 @@ class Tokenizer {
             .line = line,
             .type = type
         });
-        std::cout << tokens.size() << "\n";
     }
 
     public: Tokenizer(const std::string_view& sourceCode, std::vector<Token>& tokens): sourceCode(sourceCode), tokens(tokens) {
-        std::cout << &tokens << "\n";
         while (!isAtEnd())
         {
             scanToken();
@@ -213,6 +229,11 @@ class Tokenizer {
 };
 
 void tokenize(const std::string_view& srcFile, std::vector<Token>& tokensArray) {
-    std::cout << "Source:\n" << srcFile << std::endl;
+    Log::log << "Source:\n" << srcFile << std::endl;
     Tokenizer(srcFile, tokensArray);
+}
+
+std::ostream& operator<<(std::ostream& os, const Token& token) {
+    Log::log << "Token(type: " << ((int) token.type) << ", lexeme: \"" << token.lexeme << "\", line: " << token.line << ")";
+    return os;
 }

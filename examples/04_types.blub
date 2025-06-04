@@ -1,0 +1,6 @@
+main :: fn() {
+	x : float
+	x = 2.0
+	print(x)
+	x = "string"
+}
