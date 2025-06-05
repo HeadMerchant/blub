@@ -21,8 +21,8 @@ Reference printValue = Reference(&printWrapper);
 
 Environment Environment::baseEnvironment = Environment(Map {
   {"print", &printValue},
-  {"float", Reference::intrinsicType(ValueType::FLOAT)},
-  {"int", Reference::intrinsicType(ValueType::FLOAT)},
-  {"bool", Reference::intrinsicType(ValueType::BOOL)},
-  {"string", Reference::intrinsicType(ValueType::STRING)},
+  {"float", Reference::toType(Types::Intrinsic::FLOAT)},
+  {"int", Reference::toType(Types::Intrinsic::FLOAT)},
+  {"bool", Reference::toType(Types::Intrinsic::BOOL)},
+  {"string", Reference::toType(Types::Intrinsic::STRING)},
 });

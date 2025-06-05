@@ -11,6 +11,7 @@
 #include "interpreter/value.h"
 #include "tokenizer.h"
 #include "logging.h"
+#include "types.h"
 
 class Interpreter {
     public:
@@ -60,10 +61,9 @@ class Interpreter {
             case NodeType::DEFINITION: {
                 auto node = parser.getDefinition(nodeIndex);
                 // TODO(types): type inference
+                Reference* ref;
                 if (node.inferType) {
-                    Reference* ref = new Reference(ValueType::INFER);
-                    environment.define(node.name->lexeme, ref);
-                    return ref;
+                    ref = new Reference(Types::Intrinsic::INFER);
                 } else {
                     Reference* type = interpret(node.type, environment);
                     if (!type->isType()) {
@@ -71,8 +71,10 @@ class Interpreter {
                         message << "Type for identifier " << node.name->lexeme << " is not a type";
                         throw std::invalid_argument(message.str());
                     }
-                    throw std::invalid_argument("TODO: Add explicit typing");
+                    ref = Reference::ofType(type);
                 }
+                environment.define(node.name->lexeme, ref);
+                return ref;
             }
             case NodeType::ASSIGNMENT: {
                 auto node = parser.getAssignment(nodeIndex);
@@ -104,11 +106,11 @@ class Interpreter {
                     arguments.push_back(interpret(arg, environment, depth));
                     // std::cout << "arg: " << *arguments.back()->toString()->string() << "\n";
                 }
-                if (function->type == ValueType::NATIVE_FUNCTION) {
+                if (function->type == Types::indexOf(Types::Intrinsic::NATIVE_FUNCTION)) {
                     auto nativeFunction = *function->nativeFunction();
                     return nativeFunction(std::span<Reference *>(arguments));
                 }
-                if (function->type == ValueType::FUNCTION) {
+                if (function->type == Types::indexOf(Types::Intrinsic::FUNCTION)) {
                     throw std::invalid_argument("TODO: implement user-defined functions");
                 }
                 return nullptr;
@@ -188,7 +190,7 @@ class Interpreter {
            throw std::invalid_argument("Unable to find definition for function 'main'");
         }
 
-        log << "Type of main: " << (i32) main->type << "\n";
+        log << "Type of main: " << main->type.value << "\n";
         auto mainFunction = main->function();
         log << "Address of main: " << mainFunction << "\n";
         // auto parser = mainFunction.parser;

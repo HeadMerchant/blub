@@ -4,30 +4,8 @@
 #include <stdexcept>
 #include <vector>
 #include "parser/parser.h"
+#include "types.h"
 #include <cassert>
-
-enum class ValueType {
-    BOOL,
-    INT,
-    FLOAT,
-    ARRAY,
-    STRING,
-    NATIVE_FUNCTION,
-    REFERENCE,
-    FUNCTION,
-
-    // Types
-    TRAIT,
-    STRUCT,
-    ENUM,
-    UNION,
-    INTRINSIC_TYPE,
-    USER_TYPE,
-    POINTER_TO,
-
-    // Wait until initialization to set type
-    INFER
-};
 
 struct Reference;
 
@@ -66,47 +44,42 @@ struct Reference {
         ArrayType _array;
         StringType _string;
         NativeFunction _nativeFunction;
-        Struct* _struct;
-        Enum* _enum;
-        Union* _union;
         FunctionType _function;
         Trait* _trait;
-        UserTypeValue _userType;
-        ValueType _intrinsicType;
+        Types::TypeIndex _type;
     } value;
 
-    ValueType type;
-    ValueType typeParam;
+    Types::TypeIndex type;
     bool isMutable = true;
     bool isInitialized = false;
-    Reference(ValueType type): type(type), isInitialized(false) {}
-    Reference(StringType string): type(ValueType::STRING), value({._string = string}) {}
-    Reference(ArrayType array): type(ValueType::ARRAY), value({._array = array}) {}
-    Reference(FloatType num): type(ValueType::FLOAT), value({._float = num}) {}
-    Reference(FunctionType func): type(ValueType::FUNCTION), value({._function = func}) {}
-    Reference(IntType num): type(ValueType::INT), value({._int = num}) {}
-    Reference(NativeFunction func): type(ValueType::NATIVE_FUNCTION), value({._nativeFunction = func}) {}
+    Reference(Types::TypeIndex type): type(type), isInitialized(false) {}
+    Reference(Types::Intrinsic type): type(Types::indexOf(type)), isInitialized(false) {}
+    Reference(StringType string): type(Types::indexOf(Types::Intrinsic::STRING)), value({._string = string}) {}
+    Reference(ArrayType array): type(Types::indexOf(Types::Intrinsic::ARRAY)), value({._array = array}) {}
+    Reference(FloatType num): type(Types::indexOf(Types::Intrinsic::FLOAT)), value({._float = num}) {}
+    Reference(FunctionType func): type(Types::indexOf(Types::Intrinsic::FUNCTION)), value({._function = func}) {}
+    Reference(IntType num): type(Types::indexOf(Types::Intrinsic::INT)), value({._int = num}) {}
+    Reference(NativeFunction func): type(Types::indexOf(Types::Intrinsic::NATIVE_FUNCTION)), value({._nativeFunction = func}) {}
 
-    static Reference* intrinsicType(ValueType type) {
-        auto ref = new Reference(ValueType::INTRINSIC_TYPE);
-        ref->value._intrinsicType = type;
+    static Reference* ofType(Reference* type) {
+        assert(type->isType());
+
+        return new Reference(type->value._type);
+    }
+
+    static Reference* toType(Types::TypeIndex index) {
+        auto ref = new Reference(Types::Intrinsic::TYPE);
+        ref->value._type = index;
         ref->isInitialized = true;
         ref->isMutable = false;
         return ref;
     }
 
-    static Reference* ofType(Reference* type) {
-        assert(type->isType());
-        Reference* ref;
-        if (type->type == ValueType::INTRINSIC_TYPE) {
-            ref = new Reference(type->type);
-        } else {
-            ref = new Reference(ValueType::USER_TYPE);
-            ref->value._userType = {
-                .type = type
-            };
-        }
-
+    static Reference* toType(Types::Intrinsic index) {
+        auto ref = new Reference(Types::Intrinsic::TYPE);
+        ref->value._type = Types::indexOf(index);
+        ref->isInitialized = true;
+        ref->isMutable = false;
         return ref;
     }
 
@@ -125,31 +98,15 @@ struct Reference {
     IntType intVal();
     NativeFunction nativeFunction();
 
-    bool typesEquivalent(Reference* value) {
-        if (this->type != value->type) {
-            return false;
-        }
-
-        if (this->type == ValueType::POINTER_TO) {
-            return this->value._userType.type == value->value._userType.type;
-        }
-
-
-    }
-    
     void assign(Reference* value) {
-        assert(value->type != ValueType::INFER);
+        assert(value->type != Types::indexOf(Types::Intrinsic::INFER));
 
         if (!isMutable && isInitialized) {
             throw std::invalid_argument("Unable to assign to an initialized immutable reference");
         }
 
-        if ((type != ValueType::INFER) && (type != value->type)) {
+        if ((type != Types::indexOf(Types::Intrinsic::INFER)) && (type != value->type)) {
             throw std::invalid_argument("Non-matching types in assignment");
-        }
-
-        if () {
-            
         }
 
         type = value->type;
@@ -163,17 +120,6 @@ struct Reference {
     Reference* toString();
 
     bool isType() {
-        switch(type) {
-            case ValueType::TRAIT:
-            case ValueType::STRUCT:
-            case ValueType::ENUM:
-            case ValueType::UNION:
-            case ValueType::INTRINSIC_TYPE:
-            case ValueType::USER_TYPE:
-            case ValueType::POINTER_TO:
-                return true;
-            default:
-                return false;
-        }
+        return type == Types::indexOf(Types::Intrinsic::TYPE);
     }
 };
