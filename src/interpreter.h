@@ -52,7 +52,6 @@ class Interpreter {
                 bool compileTime = parser.getToken(encoded.token).type == TokenType::COLON;
 
                 auto reference = interpret(node.identifier);
-                log << parser.getToken(encoded.token).line << "\n";
                 reference->assign(value);
 
                 // TODO: support assignment as expression???
@@ -83,20 +82,9 @@ class Interpreter {
 
                 auto assignee = interpret(node.assignee);
                 assignee->assign(value);
+              
                 // TODO: consider value
                 return nullptr;
-                // switch (assigneeEncoded.nodeType) {
-                //     case NodeType::IDENTIFIER: {
-                //         auto assignee = parser.getIdentifier(node.assignee);
-                //         environment.assign(assignee.token->lexeme, value);
-                //         return value;
-                //     }
-                //     default: {
-                //         std::stringstream ss;
-                //         ss << "Unable to assign to node of type: " << (i32) assigneeEncoded.nodeType;
-                //         throw std::invalid_argument(ss.str());
-                //     }
-                // }
             }
             case NodeType::FUNCTION_CALL: {
                 auto node = parser.getFunctionCall(nodeIndex);
@@ -169,6 +157,25 @@ class Interpreter {
                 auto value = new Reference(function);
                 log << "Literal address: " << function << "\nValue address: " << value << "\nActual value address: " << value->function() << "\n";
                 return value;
+            }
+            case NodeType::POINTER_OP: {
+                auto node = parser.getPointerOp(nodeIndex);
+                auto value = interpret(node.operand);
+                switch(node.opType) {
+                    case Encodings::PointerOpType::DEREFERENCE: {
+                        // TODO: better errors
+                        assert(Types::Pool.isPointer(value->type));
+                        return value->value._reference;
+                    }
+                    case Encodings::PointerOpType::REFERENCE: {
+                        if (value->isType()) {
+                            Types::TypeIndex pointerType = Types::Pool.pointerTo(value->value._type);
+                            return Reference::pointerTo(value->value._type);
+                        } else {
+                            return Reference::pointerTo(value);
+                        }
+                    }
+                }
             }
             case NodeType::UNARY:
             case NodeType::PARAMETER_LIST:

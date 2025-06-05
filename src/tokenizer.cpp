@@ -40,6 +40,10 @@ class Tokenizer {
         char c = advance();
         switch (c)
         {
+        case '^': {
+            addToken(TokenType::POINTER);
+            break;
+        }
         case '(':{
             addToken(TokenType::LEFT_PAREN);
             break;
@@ -57,12 +61,7 @@ class Tokenizer {
             break;
         }
         case ':':{
-            // if (peek() == ':') {
-            //     advance();
-            //     addToken(TokenType::CONSTANT_DECLARATION);
-            // } else {
-                addToken(TokenType::COLON);
-            // }
+            addToken(TokenType::COLON);
             break;
         }
         case ' ':
@@ -234,6 +233,6 @@ void tokenize(const std::string_view& srcFile, std::vector<Token>& tokensArray) 
 }
 
 std::ostream& operator<<(std::ostream& os, const Token& token) {
-    Log::log << "Token(type: " << ((int) token.type) << ", lexeme: \"" << token.lexeme << "\", line: " << token.line << ")";
+    os << "Token(type: " << ((int) token.type) << ", lexeme: \"" << token.lexeme << "\", line: " << token.line << ")";
     return os;
 }

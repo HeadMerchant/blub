@@ -71,6 +71,18 @@ namespace Types {
   class TypePool {
     std::map<Generic, TypeIndex> generics;
     std::vector<Type> types;
+    std::vector<std::string> names = {
+      "bool",
+      "int",
+      "float",
+      "array",
+      "string",
+      "native_function",
+      "reference",
+      "function",
+      "type",
+      "infer"
+    };
     std::map<TypeIndex, TypeIndex> pointersTo;
 
     public:
@@ -80,9 +92,10 @@ namespace Types {
       }
     }
 
-    TypeIndex addType(Type type) {
+    TypeIndex addType(Type type, std::string name) {
       TypeIndex index = {(i32) types.size()};
       types.push_back(type);
+      names.push_back(name);
       return index;
     }
 
@@ -93,7 +106,7 @@ namespace Types {
         return pointersTo[type];
       }
 
-      TypeIndex pointerIndex = addType(Type {.type = Intrinsic::POINTER_TO, .definition = type});
+      TypeIndex pointerIndex = addType(Type {.type = Intrinsic::POINTER_TO, .definition = type}, "^"+names[type.value]);
       pointersTo[type] = pointerIndex;
       
       return pointerIndex;
@@ -101,6 +114,14 @@ namespace Types {
     
     Type& operator[](TypeIndex index) {
       return types[index.value];
+    }
+
+    bool isPointer(TypeIndex index) {
+      return types[index.value].type == Intrinsic::POINTER_TO;
+    }
+
+    std::string& typeName(TypeIndex index) {
+      return names[index.value];
     }
   };
 

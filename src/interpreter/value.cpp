@@ -64,7 +64,6 @@ Reference* Reference::toString() {
     }
     if(type == Types::indexOf(Types::Intrinsic::FLOAT)) {
         float rawValue = floatVal();
-        std::cout << "Float value: " << rawValue;
         return new Reference (new std::string(std::to_string(rawValue)));
     }
     if(type == Types::indexOf(Types::Intrinsic::FUNCTION)) {
@@ -72,7 +71,6 @@ Reference* Reference::toString() {
     }
     if(type == Types::indexOf(Types::Intrinsic::INT)) {
         auto rawValue = intVal();
-        std::cout << "Int value: " << rawValue;
         return new Reference(new std::string(std::to_string(rawValue)));
     }
     if(type == Types::indexOf(Types::Intrinsic::NATIVE_FUNCTION)) {

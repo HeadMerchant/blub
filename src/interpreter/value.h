@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <vector>
 #include "parser/parser.h"
+#include <sstream>
 #include "types.h"
 #include <cassert>
 
@@ -47,6 +48,7 @@ struct Reference {
         FunctionType _function;
         Trait* _trait;
         Types::TypeIndex _type;
+        Reference* _reference;
     } value;
 
     Types::TypeIndex type;
@@ -83,6 +85,22 @@ struct Reference {
         return ref;
     }
 
+    static Reference* pointerTo(Reference* value) {
+        Types::TypeIndex pointerType = Types::Pool.pointerTo(value->type);
+        assert(Types::Pool[pointerType].definition == value->type);
+
+        auto ref = new Reference(pointerType);
+        ref->value._reference = value;
+
+        return ref;
+    }
+
+    static Reference* pointerTo(Types::TypeIndex type) {
+        Types::TypeIndex pointerType = Types::Pool.pointerTo(type);
+        return Reference::toType(pointerType);
+        
+    }
+    
     Reference* add(Reference* right);
 
     Reference* sub(Reference* right);
@@ -106,7 +124,9 @@ struct Reference {
         }
 
         if ((type != Types::indexOf(Types::Intrinsic::INFER)) && (type != value->type)) {
-            throw std::invalid_argument("Non-matching types in assignment");
+            std::stringstream ss;
+            ss << "Attempted to assign value of type " << Types::Pool.typeName(value->type) << " to reference of type " << Types::Pool.typeName(type);
+            throw std::invalid_argument(ss.str());
         }
 
         type = value->type;

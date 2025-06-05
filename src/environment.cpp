@@ -22,7 +22,7 @@ Reference printValue = Reference(&printWrapper);
 Environment Environment::baseEnvironment = Environment(Map {
   {"print", &printValue},
   {"float", Reference::toType(Types::Intrinsic::FLOAT)},
-  {"int", Reference::toType(Types::Intrinsic::FLOAT)},
+  {"int", Reference::toType(Types::Intrinsic::INT)},
   {"bool", Reference::toType(Types::Intrinsic::BOOL)},
   {"string", Reference::toType(Types::Intrinsic::STRING)},
 });

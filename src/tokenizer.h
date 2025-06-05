@@ -13,6 +13,10 @@ enum class TokenType {
     RIGHT_BRACKET,
     COMMA,
     COLON,
+
+    // Unary ops
+    POINTER,
+    
     // CONSTANT_DECLARATION,
     ASSIGNMENT,
     DOUBLE_EQUAL,

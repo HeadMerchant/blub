@@ -23,6 +23,7 @@ enum class NodeType {
   ARGS_LIST,
   ARRAY_LITERAL,
   BINARY_OP,
+  POINTER_OP,
   ASSIGNMENT,
   DEFINITION
 };
@@ -68,6 +69,16 @@ struct Declaration {
 struct UnaryOp {
   TokenPointer token;
   NodeIndex operand;
+};
+
+enum class PointerOpType {
+  REFERENCE,
+  DEREFERENCE
+};
+
+struct PointerOp {
+  NodeIndex operand;
+  PointerOpType opType;
 };
 
 struct BinaryOp {
@@ -380,7 +391,8 @@ public:
   }
 
   NodeIndex addNode(Encodings::Assignment node, TokenPointer token) {
-    return addNode(ASTNode {.left = node.assignee.value, .right = node.value.value, .token = toIndex(token)});
+    std::cout << "Adding assignment " << *token << "\n";
+    return addNode(ASTNode {.left = node.assignee.value, .right = node.value.value, .token = toIndex(token), .nodeType = NodeType::ASSIGNMENT});
   }
 
   Encodings::Assignment getAssignment(NodeIndex node) {
@@ -398,6 +410,15 @@ public:
     auto encoded = getNode(node, NodeType::DEFINITION);
     bool inferType = encoded.right == node.value;
     return {.name = toPointer({encoded.left}), .type = {encoded.right}, .inferType = inferType };
+  }
+
+  NodeIndex addNode(Encodings::PointerOp node, TokenPointer token) {
+    return addNode(ASTNode {.left = node.operand.value, .right = (i32) node.opType, .token = toIndex(token), .nodeType = NodeType::POINTER_OP});
+  }
+
+  Encodings::PointerOp getPointerOp(NodeIndex node) {
+    auto encoded = getNode(node, NodeType::POINTER_OP);
+    return {.operand = {encoded.left}, .opType = (Encodings::PointerOpType) encoded.right};
   }
 
 public:
@@ -433,9 +454,11 @@ public:
       if (check(TokenType::ASSIGNMENT) || check(TokenType::COLON)) {
         TokenPointer token = advance();
         NodeIndex value = expression();
+        std::cout << "Assigning " << getDefinition(name).name->lexeme << "\n";
         return addNode(Encodings::Declaration {.identifier = name, .value = value}, toIndex(token));
       }
 
+      std::cout << "Defining " << getDefinition(name).name->lexeme << "\n";
       return name;
     }
 
@@ -509,14 +532,26 @@ public:
   }
 
   NodeIndex unary() {
-    static std::vector<TokenType> types = {TokenType::NOT};
-    if (match(types)) {
+    static std::vector<TokenType> ops = {TokenType::NOT};
+    NodeIndex expr;
+    if (match(ops)) {
       TokenPointer op = previous();
       auto node = Encodings::UnaryOp{.token = op, .operand = call()};
-      return addNode(node);
+      expr = addNode(node);
+    } else if (check(TokenType::POINTER)) {
+      TokenPointer op = advance();
+      auto node = Encodings::PointerOp{.operand = call(), .opType = Encodings::PointerOpType::REFERENCE};
+      expr = addNode(node, op);
+    } else {
+      expr = call();
     }
 
-    return call();
+    if (check(TokenType::POINTER)) {
+      auto node = Encodings::PointerOp({.operand = expr, .opType = Encodings::PointerOpType::DEREFERENCE});
+      expr = addNode(node, advance());
+    }
+    // TODO: dot accessor
+    return expr;
   }
 
   NodeIndex call() {
