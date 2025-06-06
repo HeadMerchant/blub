@@ -484,11 +484,11 @@ public:
       if (check(TokenType::ASSIGNMENT) || check(TokenType::COLON)) {
         TokenPointer token = advance();
         NodeIndex value = expression();
-        std::cout << "Assigning " << getDefinition(name).name->lexeme << "\n";
+        log << "Assigning " << getDefinition(name).name->lexeme << "\n";
         return addNode(Encodings::Declaration {.identifier = name, .value = value}, toIndex(token));
       }
 
-      std::cout << "Defining " << getDefinition(name).name->lexeme << "\n";
+      log << "Defining " << getDefinition(name).name->lexeme << "\n";
       return name;
     }
 
@@ -695,7 +695,7 @@ public:
     while (!check(TokenType::RIGHT_PAREN)) {
       if (parameters.size() > 0) {
         consume(TokenType::COMMA,
-                "Expected separating comma between elements of array literal");
+                "Expected separating comma between parameters");
       }
 
       // Allow trailing comma
@@ -703,7 +703,7 @@ public:
         break;
       }
 
-      parameters.push_back(expression());
+      parameters.push_back(definition());
     }
     consume(TokenType::RIGHT_PAREN, "Expected ')' for declaration");
 

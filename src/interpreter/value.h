@@ -1,5 +1,4 @@
 #pragma once
-#include <cmath>
 #include <functional>
 #include <stdexcept>
 #include <vector>
@@ -13,11 +12,15 @@ struct Reference;
 using StringType = std::string*;
 using ArrayType = std::vector<Reference*>*;
 using FloatType = float;
+
+class Environment;
 struct FunctionLiteral {
     Parser& parser;
+    Environment* declarationEnvironment;
     Encodings::FunctionLiteral function;
 };
 using FunctionType = FunctionLiteral*;
+
 using IntType = int;
 using NativeFunction = std::function<Reference*(std::span<Reference*>)>*;
 // using NativeFunction = InterpreterValue* (*)(std::span<InterpreterValue*>);

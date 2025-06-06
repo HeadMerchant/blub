@@ -91,16 +91,15 @@ class Interpreter {
                 std::vector<Reference*> arguments;
                 for (auto arg : node.arguments) {
                     arguments.push_back(interpret(arg, environment, depth));
-                    // std::cout << "arg: " << *arguments.back()->toString()->string() << "\n";
                 }
                 if (function->type == Types::indexOf(Types::Intrinsic::NATIVE_FUNCTION)) {
                     auto nativeFunction = *function->nativeFunction();
                     return nativeFunction(std::span<Reference *>(arguments));
                 }
                 if (function->type == Types::indexOf(Types::Intrinsic::FUNCTION)) {
-                    throw std::invalid_argument("TODO: implement user-defined functions");
+                    return callUserFunction(function->function(), std::span<Reference *>(arguments));
                 }
-                return nullptr;
+                throw std::invalid_argument("Unknown function type");
             }
             case NodeType::LITERAL: {
                 auto node = parser.getLiteral(nodeIndex);
@@ -152,7 +151,7 @@ class Interpreter {
             }
             case NodeType::FUNCTION_LITERAL: {
                 auto node = parser.getFunctionLiteral(nodeIndex);
-                auto function = new FunctionLiteral(FunctionLiteral {.parser = parser, .function = node});
+                auto function = new FunctionLiteral(FunctionLiteral {.parser = parser, .declarationEnvironment = &environment, .function = node});
                 auto value = new Reference(function);
                 log << "Literal address: " << function << "\nValue address: " << value << "\nActual value address: " << value->function() << "\n";
                 return value;
@@ -202,6 +201,31 @@ class Interpreter {
         throw std::invalid_argument("Bruh im crashing tf out");
     }
 
+    Reference* callUserFunction(FunctionLiteral* definition, std::span<Reference*> arguments) {
+        // TODO: consider heap allocating for closures
+        Environment callEnv = Environment(definition->declarationEnvironment);
+
+        if (arguments.size() > definition->function.parameters.size()) {
+            throw std::invalid_argument("Too many arguments to function call");
+        }
+
+        if (arguments.size() < definition->function.parameters.size()) {
+            // TODO: default arguments
+            throw std::invalid_argument("Too few arguments to function call");
+        }
+
+        for (i32 i = 0; i < arguments.size(); i++) {
+            auto param = definition->function.parameters[i];
+            auto arg = arguments[i];
+            // TODO: use parser from function definition
+            assert(definition->parser.getNode(param).nodeType == NodeType::DEFINITION);
+            interpret(param, callEnv)->assign(arg);
+        }
+
+        auto returnVal = interpret(definition->function.body, callEnv);
+        return returnVal;
+    }
+    
     void run() {
         for (auto node : program) {
             interpret(node);
@@ -215,12 +239,13 @@ class Interpreter {
         log << "Type of main: " << main->type.value << "\n";
         auto mainFunction = main->function();
         log << "Address of main: " << mainFunction << "\n";
+        callUserFunction(mainFunction, std::span<Reference*>());
         // auto parser = mainFunction.parser;
         // TODO: add way to interpret this
-        auto mainBlock = mainFunction->parser.getBlock(mainFunction->function.body);
-        // Encodings::FunctionCall mainCall {.functionValue = , .arguments = std::span<NodeIndex>()};
-        for (auto statement : mainBlock.statements) {
-            interpret(statement, fileEnvironment, 1);
-        }
+        // auto mainBlock = mainFunction->parser.getBlock(mainFunction->function.body);
+        // // Encodings::FunctionCall mainCall {.functionValue = , .arguments = std::span<NodeIndex>()};
+        // for (auto statement : mainBlock.statements) {
+        //     interpret(statement, fileEnvironment, 1);
+        // }
     }
 };

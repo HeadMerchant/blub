@@ -1,0 +1,8 @@
+main :: fn() {
+	sayHi("bro")
+	sayHi("friends")
+}
+
+sayHi :: fn(toWho: string) {
+	print("Hello to " + toWho)
+}

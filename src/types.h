@@ -7,7 +7,9 @@
 
 namespace Types {
   enum class Intrinsic {
-      BOOL = 0,
+      VOID = 0,
+      TUPLE,
+      BOOL,
       INT,
       FLOAT,
       ARRAY,
@@ -74,6 +76,8 @@ namespace Types {
     std::map<Generic, TypeIndex> generics;
     std::vector<Type> types;
     std::vector<std::string> names = {
+      "void",
+      "tuple",
       "bool",
       "int",
       "float",
