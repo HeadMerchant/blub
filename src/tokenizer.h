@@ -17,6 +17,11 @@ enum class TokenType {
     // Unary ops
     POINTER,
     
+    IF,
+    ELSE,
+    TRUE,
+    FALSE,
+    
     // CONSTANT_DECLARATION,
     ASSIGNMENT,
     DOUBLE_EQUAL,

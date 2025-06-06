@@ -1,7 +1,5 @@
+#pragma once
 #include <cstdint>
+#include <cassert>
 
-typedef int32_t int32;
-struct Index {
-    int32_t value;
-};
-
+using i32 = uint32_t;

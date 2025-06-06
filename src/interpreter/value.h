@@ -3,7 +3,7 @@
 #include <functional>
 #include <stdexcept>
 #include <vector>
-#include "parser/parser.h"
+#include "parser.h"
 #include <sstream>
 #include "types.h"
 #include <cassert>
@@ -54,6 +54,9 @@ struct Reference {
     Types::TypeIndex type;
     bool isMutable = true;
     bool isInitialized = false;
+    static Reference* True;
+    static Reference* False;
+    
     Reference(Types::TypeIndex type): type(type), isInitialized(false) {}
     Reference(Types::Intrinsic type): type(Types::indexOf(type)), isInitialized(false) {}
     Reference(StringType string): type(Types::indexOf(Types::Intrinsic::STRING)), value({._string = string}) {}
@@ -62,6 +65,14 @@ struct Reference {
     Reference(FunctionType func): type(Types::indexOf(Types::Intrinsic::FUNCTION)), value({._function = func}) {}
     Reference(IntType num): type(Types::indexOf(Types::Intrinsic::INT)), value({._int = num}) {}
     Reference(NativeFunction func): type(Types::indexOf(Types::Intrinsic::NATIVE_FUNCTION)), value({._nativeFunction = func}) {}
+    private:
+    Reference(bool value): type(Types::indexOf(Types::Intrinsic::BOOL)), isMutable(false), isInitialized(true), value({._bool = value}) {}
+
+    public:
+        
+    static Reference* of(bool boolean) {
+        return boolean ? True : False;
+    }
 
     static Reference* ofType(Reference* type) {
         assert(type->isType());

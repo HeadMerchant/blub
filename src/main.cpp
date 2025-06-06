@@ -2,7 +2,7 @@
 #include <string>
 #include <stdexcept>
 #include "tokenizer.h"
-#include "parser/parser.h"
+#include "parser.h"
 #include "interpreter.h"
 #include "logging.h"
 

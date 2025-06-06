@@ -18,6 +18,10 @@ namespace Log {
 std::unordered_map<std::string_view, TokenType> keywords = {
     {"fn", TokenType::FUNCTION},
     {"struct", TokenType::STRUCT},
+    {"if", TokenType::IF},
+    {"else", TokenType::ELSE},
+    {"true", TokenType::TRUE},
+    {"false", TokenType::FALSE},
     // true/false
     // use
     // todo: union, enum, trait, import, impl, loop, match, if/else, mut, pointer
@@ -73,7 +77,7 @@ class Tokenizer {
         case '\n':{
             line++;
             addToken(TokenType::STATEMENT_BREAK);
-            while (peek() == '\n') {
+            while (!isAtEnd() && peek() == '\n') {
                 advance();
                 line++;
             }

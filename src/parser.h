@@ -1,14 +1,14 @@
 // TODO: function calls
 #pragma once
-#include "../tokenizer.h"
+#include "tokenizer.h"
 #include <bit>
 #include <cassert>
-#include <cstdint>
 #include <iostream>
 #include <span>
 #include <stdexcept>
 #include <vector>
-#include "../logging.h"
+#include "logging.h"
+#include "common.h"
 
 enum class NodeType {
   DECLARATION,
@@ -25,10 +25,11 @@ enum class NodeType {
   BINARY_OP,
   POINTER_OP,
   ASSIGNMENT,
-  DEFINITION
+  DEFINITION,
+  IF,
+  BOOLEAN_LITERAL
 };
 
-typedef uint32_t i32;
 
 struct NodeIndex {
   i32 value;
@@ -129,6 +130,15 @@ struct Assignment {
   NodeIndex assignee;
   NodeIndex value;
 };
+
+struct If {
+  NodeIndex condition;
+  NodeIndex value;
+  // Don't need a separate node type for else because else only stores a single expression
+  // TODO: consider adding back else node for clearer messages?
+  NodeIndex elseValue;
+  bool hasElse;
+};
 }; // namespace Encodings
 
 typedef std::vector<TokenIndex> NodeList;
@@ -172,8 +182,7 @@ public:
   }
 
   bool isAtEnd(TokenIndex ahead = {0}) {
-    return peek(ahead).type == TokenType::END_OF_FILE ||
-           current.value >= tokens.size();
+    return current.value + ahead.value >= tokens.size() || peek(ahead).type == TokenType::END_OF_FILE;
   }
 
   const TokenPointer previous() { return tokens.data() + current.value - 1; }
@@ -421,6 +430,27 @@ public:
     return {.operand = {encoded.left}, .opType = (Encodings::PointerOpType) encoded.right};
   }
 
+  NodeIndex addNode(Encodings::If node, TokenPointer token) {
+    std::vector<NodeIndex> children = {node.condition, node.value};
+    auto dataIndex = addData(ChildSpan(children));
+
+    auto nodeIndex = (i32) nodes.size();
+    return addNode(ASTNode {.left = dataIndex.value, .right = node.hasElse ? node.elseValue.value : nodeIndex, .token = toIndex(token), .nodeType = NodeType::IF});
+  }
+  
+  Encodings::If getIf(NodeIndex node) {
+    auto encoded = getNode(node, NodeType::IF);
+    return {.condition = {extraData[encoded.left]}, .value = {extraData[encoded.left + 1]}, .elseValue = {encoded.right}, .hasElse = encoded.right != node.value};
+  }
+
+  NodeIndex addNode(bool value, TokenPointer token) {
+    return addNode(ASTNode{.left = value, .token = toIndex(token), .nodeType = NodeType::BOOLEAN_LITERAL});
+  }
+
+  bool getBooleanLiteral(NodeIndex node) {
+    return getNode(node, NodeType::BOOLEAN_LITERAL).left;
+  }
+
 public:
   std::vector<NodeIndex> parse() {
     std::vector<NodeIndex> statements;
@@ -593,8 +623,32 @@ public:
       return addNode(node);
     }
 
-    static std::vector<TokenType> leftParen = {TokenType::LEFT_PAREN};
-    if (match(leftParen)) {
+    if (check(TokenType::IF)) {
+      auto ifToken = advance();
+      consume(TokenType::LEFT_PAREN, "Condition for 'if' statement needs to be surrounded by parentheses '('");
+      auto condition = expression();
+      consume(TokenType::RIGHT_PAREN, "Condition for 'if' statement needs to be surrounded by parentheses ')'");
+      auto value = expression();
+
+      auto ifNode = Encodings::If {.condition = condition, .value = value, .hasElse = false};
+      if (check(TokenType::ELSE)) {
+        advance();
+        ifNode.elseValue = expression();
+        ifNode.hasElse = true;
+      }
+      return addNode(ifNode, ifToken);
+    }
+
+    if (check(TokenType::TRUE)) {
+      return addNode(true, advance());
+    }
+
+    if (check(TokenType::FALSE)) {
+      return addNode(false, advance());
+    }
+
+    if (check(TokenType::LEFT_PAREN)) {
+      advance();
       NodeIndex grouping = expression();
       consume(TokenType::RIGHT_PAREN, "Expected a closing parenthesis");
       return grouping;

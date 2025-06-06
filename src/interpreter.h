@@ -1,8 +1,7 @@
 #pragma once
 #include <cassert>
-#include <cstdlib>
 #include <charconv>
-#include "parser/parser.h"
+#include "parser.h"
 #include "environment.h"
 #include <span>
 #include <sstream>
@@ -183,6 +182,22 @@ class Interpreter {
             case NodeType::ARGS_LIST: {
               break;
             }
+            case NodeType::IF: {
+                auto node = parser.getIf(nodeIndex);
+                auto condition = interpret(node.condition);
+                if (condition->type != Types::indexOf(Types::Intrinsic::BOOL)) {
+                    throw std::invalid_argument("Condition of an 'if' statement needs to be of type 'bool', but was type '"+Types::Pool.typeName(condition->type)+"'");
+                }
+                if (condition->value._bool) {
+                    return interpret(node.value);
+                } else if (node.hasElse) {
+                    return interpret(node.elseValue);
+                }
+
+                return nullptr;
+            }
+            case NodeType::BOOLEAN_LITERAL:
+                return Reference::of(parser.getBooleanLiteral(nodeIndex));
             }
         throw std::invalid_argument("Bruh im crashing tf out");
     }

@@ -1,7 +1,9 @@
 #pragma once
 
-#include "parser/parser.h"
+#include "common.h"
 #include <map>
+#include <vector>
+#include <string>
 
 namespace Types {
   enum class Intrinsic {

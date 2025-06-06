@@ -1,0 +1,7 @@
+main :: fn() {
+	exampleTrue := if (true) 1 else 0
+	exampleFalse := if (false) 1 else 0
+
+	print("true: "+exampleTrue)
+	print("false: "+exampleFalse)
+}

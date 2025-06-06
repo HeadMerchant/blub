@@ -1,6 +1,5 @@
 #include "value.h"
 #include "types.h"
-#include <iostream>
 #include <cassert>
 #include <sstream>
 #include <stdexcept>
@@ -10,6 +9,8 @@ Reference Reference::functionString(new std::string("<user-defined function>"));
 Reference nativeFunctionString(new std::string("<native function>"));
 Reference trueString(new std::string("true"));
 Reference falseString(new std::string("false"));
+Reference* Reference::True = new Reference(true);
+Reference* Reference::False= new Reference(false);
 
 StringType Reference::string() {
     assert(type == Types::indexOf(Types::Intrinsic::STRING));

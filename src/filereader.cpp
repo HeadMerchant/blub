@@ -1,13 +1,12 @@
-#include <iostream>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 
 std::string readFile(std::string filePath) {
     std::ifstream inputFile(filePath);
 
     if (!inputFile.is_open()) {
-        std::cerr << "Error: could not open the file." << std::endl;
-        return "<couldn't read file>";
+        throw std::invalid_argument("Error: could not open the file.");
     }
 
     std::string fileContents = std::string(
