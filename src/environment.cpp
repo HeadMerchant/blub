@@ -6,13 +6,13 @@ Reference *print(std::span<Reference *> args) {
     std::stringstream ss;
     ss << "Needed 1 arg for print; found: " << args.size() << "\n";
     for (auto arg : args) {
-      ss << *arg->toString()->string() << ", ";
+      ss << std::get<StringType>(arg->toString()->value) << ", ";
     }
 
     throw std::invalid_argument(ss.str());
   }
-  std::string text = *args[0]->toString()->string();
-  std::cerr << text << "\n";
+  std::string text = std::get<StringType>(args[0]->toString()->value);
+  std::cout << text << "\n";
   return nullptr;
 };
 

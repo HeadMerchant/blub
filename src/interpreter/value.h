@@ -1,6 +1,7 @@
 #pragma once
 #include <functional>
 #include <stdexcept>
+#include <variant>
 #include <vector>
 #include "parser.h"
 #include <sstream>
@@ -9,27 +10,21 @@
 
 struct Reference;
 
-using StringType = std::string*;
-using ArrayType = std::vector<Reference*>*;
+using StringType = std::string;
+using ArrayType = std::vector<Reference*>;
 using FloatType = float;
 
 class Environment;
 struct FunctionLiteral {
-    Parser& parser;
+    Parser* parser;
     Environment* declarationEnvironment;
     Encodings::FunctionLiteral function;
 };
-using FunctionType = FunctionLiteral*;
+using FunctionType = FunctionLiteral;
 
 using IntType = int;
 using NativeFunction = std::function<Reference*(std::span<Reference*>)>*;
-// using NativeFunction = InterpreterValue* (*)(std::span<InterpreterValue*>);
 
-struct Struct {};
-struct Enum {};
-struct Union {};
-struct Trait {};
-// TODO: add type interning
 struct ParameterizedType {
     Reference* type;
     std::vector<Reference*> parameters;
@@ -41,18 +36,7 @@ struct UserTypeValue {
 
 // Pointer/boxed type
 struct Reference {
-    union {
-        bool _bool;
-        IntType _int;
-        FloatType _float;
-        ArrayType _array;
-        StringType _string;
-        NativeFunction _nativeFunction;
-        FunctionType _function;
-        Trait* _trait;
-        Types::TypeIndex _type;
-        Reference* _reference;
-    } value;
+    std::variant<bool, IntType, FloatType, ArrayType, StringType, NativeFunction, FunctionType, Types::TypeIndex, Reference*> value;
 
     Types::TypeIndex type;
     bool isMutable = true;
@@ -62,14 +46,15 @@ struct Reference {
     
     Reference(Types::TypeIndex type): type(type), isInitialized(false) {}
     Reference(Types::Intrinsic type): type(Types::indexOf(type)), isInitialized(false) {}
-    Reference(StringType string): type(Types::indexOf(Types::Intrinsic::STRING)), value({._string = string}) {}
-    Reference(ArrayType array): type(Types::indexOf(Types::Intrinsic::ARRAY)), value({._array = array}) {}
-    Reference(FloatType num): type(Types::indexOf(Types::Intrinsic::FLOAT)), value({._float = num}) {}
-    Reference(FunctionType func): type(Types::indexOf(Types::Intrinsic::FUNCTION)), value({._function = func}) {}
-    Reference(IntType num): type(Types::indexOf(Types::Intrinsic::INT)), value({._int = num}) {}
-    Reference(NativeFunction func): type(Types::indexOf(Types::Intrinsic::NATIVE_FUNCTION)), value({._nativeFunction = func}) {}
+    Reference(StringType string): type(Types::indexOf(Types::Intrinsic::STRING)), value(string) {}
+    Reference(ArrayType array): type(Types::indexOf(Types::Intrinsic::ARRAY)), value(array) {}
+    Reference(FloatType num): type(Types::indexOf(Types::Intrinsic::FLOAT)), value(num) {}
+    Reference(FunctionType func): type(Types::indexOf(Types::Intrinsic::FUNCTION)), value(func) {}
+    Reference(IntType num): type(Types::indexOf(Types::Intrinsic::INT)), value(num) {}
+    Reference(NativeFunction func): type(Types::indexOf(Types::Intrinsic::NATIVE_FUNCTION)), value(func) {}
+    Reference(const Reference& ref, bool isMutable): type(ref.type), value(ref.value), isMutable(true), isInitialized(ref.isInitialized) {}
     private:
-    Reference(bool value): type(Types::indexOf(Types::Intrinsic::BOOL)), isMutable(false), isInitialized(true), value({._bool = value}) {}
+    Reference(bool value): type(Types::indexOf(Types::Intrinsic::BOOL)), isMutable(false), isInitialized(true), value(value) {}
 
     public:
         
@@ -80,12 +65,12 @@ struct Reference {
     static Reference* ofType(Reference* type) {
         assert(type->isType());
 
-        return new Reference(type->value._type);
+        return new Reference(std::get<Types::TypeIndex>(type->value));
     }
 
     static Reference* toType(Types::TypeIndex index) {
         auto ref = new Reference(Types::Intrinsic::TYPE);
-        ref->value._type = index;
+        ref->value = index;
         ref->isInitialized = true;
         ref->isMutable = false;
         return ref;
@@ -93,7 +78,7 @@ struct Reference {
 
     static Reference* toType(Types::Intrinsic index) {
         auto ref = new Reference(Types::Intrinsic::TYPE);
-        ref->value._type = Types::indexOf(index);
+        ref->value = Types::indexOf(index);
         ref->isInitialized = true;
         ref->isMutable = false;
         return ref;
@@ -101,10 +86,10 @@ struct Reference {
 
     static Reference* pointerTo(Reference* value) {
         Types::TypeIndex pointerType = Types::Pool.pointerTo(value->type);
-        assert(Types::Pool[pointerType].definition == value->type);
+        assert(Types::Pool[pointerType].definition == value->type.value);
 
         auto ref = new Reference(pointerType);
-        ref->value._reference = value;
+        ref->value = value;
 
         return ref;
     }
@@ -123,29 +108,60 @@ struct Reference {
 
     Reference* mul(Reference* right);
 
-    StringType string();
-    ArrayType array();
-    FloatType floatVal();
-    FunctionType function();
-    IntType intVal();
-    NativeFunction nativeFunction();
+    Reference* getField(std::string_view fieldName) {
+        // TODO: consider limiting depth
+        if (Types::Pool.isPointer(type)) {
+            return std::get<Reference*>(value)->getField(fieldName);
+        }
 
-    void assign(Reference* value) {
-        assert(value->type != Types::indexOf(Types::Intrinsic::INFER));
+        Types::Type typeDefinition = Types::Pool.getDefinition(type);
+        if (typeDefinition.type == Types::Intrinsic::STRUCT) {
+            Types::Struct& structDefinition = Types::Pool.getStruct(type);
+
+            Reference* fieldValue = structDefinition.getField(fieldName);
+            if (fieldValue != nullptr) {
+                return fieldValue;
+            }
+
+            i32 fieldIndex = structDefinition.fields.indexOf(fieldName);
+            return std::get<ArrayType>(this->value).at(fieldIndex);
+        }
+
+        throw std::invalid_argument("Unable to access fields for type " + Types::Pool.typeName(type));
+    }
+
+    void assign(Reference* newValue) {
+        assert(newValue->type != Types::indexOf(Types::Intrinsic::INFER));
 
         if (!isMutable && isInitialized) {
             throw std::invalid_argument("Unable to assign to an initialized immutable reference");
         }
 
-        if ((type != Types::indexOf(Types::Intrinsic::INFER)) && (type != value->type)) {
+        if (Types::Pool.isStruct(type) && newValue->type == Types::indexOf(Types::Intrinsic::ARRAY)) {
+            ArrayType& structValue = std::get<ArrayType>(this->value);
+            ArrayType& assignValue = std::get<ArrayType>(newValue->value);
+            if (structValue.size() != assignValue.size()) {
+                std::stringstream ss;
+                ss << "Unable to assign array of length " << assignValue.size() << " to struct with " << structValue.size() << " members";
+                throw std::invalid_argument(ss.str());
+            }
+
+            for (i32 i = 0; i < structValue.size(); i++) {
+                structValue[i]->assign(assignValue[i]);
+            }
+            isInitialized = true;
+            return;
+        }
+
+        if ((type != Types::indexOf(Types::Intrinsic::INFER)) && (type != newValue->type)) {
             std::stringstream ss;
-            ss << "Attempted to assign value of type " << Types::Pool.typeName(value->type) << " to reference of type " << Types::Pool.typeName(type);
+            ss << "Attempted to assign value of type " << Types::Pool.typeName(newValue->type) << " to reference of type " << Types::Pool.typeName(type);
             throw std::invalid_argument(ss.str());
         }
 
-        type = value->type;
+        type = newValue->type;
         isInitialized = true;
-        this->value = value->value;
+        this->value = newValue->value;
     }
 
     // TODO: add support for printing arity

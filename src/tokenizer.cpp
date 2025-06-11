@@ -48,6 +48,10 @@ class Tokenizer {
             addToken(TokenType::POINTER);
             break;
         }
+        case '.': {
+            addToken(TokenType::DOT);
+            break;
+        }
         case '(':{
             addToken(TokenType::LEFT_PAREN);
             break;

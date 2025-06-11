@@ -2,14 +2,13 @@ vec2 :: struct {
 	x: float
 	y: float
 
-	dot :: fn (self: ^vec2, other: vec2): float {
-		return self.x*other.x + self.y*other.y
-	}
-
-	sqrMagnitude :: fn(self): self.dot(self)
+	# dot :: fn (self: ^vec2, other: vec2): float {
+	# 	return self.x*other.x + self.y*other.y
+	# }
 }
 
 main :: fn () {
-	v: vec2 = {1., 1.}
-	u := vec2 {-1., -1.}
-}
+	v: vec2 = [5., 4.]
+	# u := vec2 [-1., -1.]
+	print("x: "+v.x + ", y: "+v.y)
+} 

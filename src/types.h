@@ -2,13 +2,49 @@
 
 #include "common.h"
 #include <map>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
+#include <sstream>
 #include <string>
+
+struct Reference;
+using Identifier = std::string_view;
+using Map = std::unordered_map<Identifier, Reference *>;
+
+struct SymbolMap {
+  Map symbolValues;
+  std::unordered_map<Identifier, i32> symbolIndex;
+
+  void define(Identifier identifier, Reference* value) {
+    if (symbolValues.contains(identifier)) {
+      std::stringstream message;
+      message << "Attempting to define already-defined symbol: " << identifier;
+      throw std::invalid_argument(message.str());
+    }
+    
+    // NEXT
+    symbolValues[identifier] = value;
+    symbolIndex[identifier] = symbolIndex.size();
+  }
+
+  bool isDefined(Identifier identifier) {
+    return symbolValues.contains(identifier);
+  }
+
+  int indexOf(Identifier identifier) {
+    if (!isDefined(identifier)) {
+      std::stringstream ss;
+      ss << "Undefined field name " << identifier;
+      throw std::invalid_argument(ss.str());
+    }
+    return symbolIndex[identifier];
+  }
+};
 
 namespace Types {
   enum class Intrinsic {
       VOID = 0,
-      TUPLE,
       BOOL,
       INT,
       FLOAT,
@@ -25,7 +61,9 @@ namespace Types {
       INFER,
 
       LAST = INFER,
-      POINTER_TO
+      POINTER_TO,
+      TUPLE,
+      STRUCT,
   };
 
   const i32 NUM_INTRINSICS = static_cast<i32>(Intrinsic::LAST) + 1;
@@ -52,11 +90,29 @@ namespace Types {
   }
   
   struct DataIndex {i32 value;};
+  struct StructIndex {i32 value;};
+
+  struct Struct {
+    SymbolMap fields;
+    SymbolMap statics;
+
+    Reference* getField(std::string_view field) {
+      if (statics.isDefined(field)) {
+        return statics.symbolValues[field];
+      }
+
+      return nullptr;
+    }
+
+    i32 numFields() const {
+      return fields.symbolValues.size();
+    }
+  };
 
   // TODO: SoA this struct
   struct Type {
     Intrinsic type;
-    TypeIndex definition;
+    i32 definition;
   };
 
   struct Generic {
@@ -77,7 +133,6 @@ namespace Types {
     std::vector<Type> types;
     std::vector<std::string> names = {
       "void",
-      "tuple",
       "bool",
       "int",
       "float",
@@ -87,9 +142,11 @@ namespace Types {
       "reference",
       "function",
       "type",
-      "infer"
+      "infer",
     };
     std::map<TypeIndex, TypeIndex> pointersTo;
+    std::vector<Struct> structPool;
+    // TODO: enum
 
     public:
     TypePool(): types(NUM_INTRINSICS) {
@@ -112,18 +169,49 @@ namespace Types {
         return pointersTo[type];
       }
 
-      TypeIndex pointerIndex = addType(Type {.type = Intrinsic::POINTER_TO, .definition = type}, "^"+names[type.value]);
+      TypeIndex pointerIndex = addType(Type {.type = Intrinsic::POINTER_TO, .definition = type.value}, "^"+names[type.value]);
       pointersTo[type] = pointerIndex;
       
       return pointerIndex;
+    }
+    
+    TypeIndex addStruct(Struct structDefinition, std::string name) {
+      i32 structIndex = structPool.size();
+      structPool.push_back(structDefinition);
+      Type type = {.type = Intrinsic::STRUCT, .definition = structIndex};
+      return addType(type, name);
+    }
+
+    bool setTypeName(TypeIndex type, std::string name) {
+      if (names[type.value] != "") return false;
+      names[type.value] = name;
+      return true;
     }
     
     Type& operator[](TypeIndex index) {
       return types[index.value];
     }
 
+    Struct& getStruct(StructIndex index) {
+      return structPool[index.value];
+    }
+
+    Struct& getStruct(TypeIndex index) {
+      Type definition = (*this)[index];
+      assert(definition.type == Intrinsic::STRUCT);
+      return getStruct(StructIndex{definition.definition});
+    }
+
     bool isPointer(TypeIndex index) {
       return types[index.value].type == Intrinsic::POINTER_TO;
+    }
+
+    bool isStruct(TypeIndex index) {
+      return types[index.value].type == Intrinsic::STRUCT;
+    }
+    
+    Type getDefinition(TypeIndex index) {
+      return types[index.value];
     }
 
     std::string& typeName(TypeIndex index) {

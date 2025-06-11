@@ -27,9 +27,18 @@ enum class NodeType {
   ASSIGNMENT,
   DEFINITION,
   IF,
-  BOOLEAN_LITERAL
+  BOOLEAN_LITERAL,
+  STRUCT,
+  DOT_ACCESS,
 };
 
+enum class BinaryOps {
+  PLUS,
+  MINUS,
+  MUL,
+  DIVIDE,
+  BRACKET_ACCESS
+};
 
 struct NodeIndex {
   i32 value;
@@ -59,7 +68,10 @@ struct ASTNode {
   // }
 };
 
-typedef const Token *TokenPointer;
+using TokenPointer = const Token*;
+using NodeList = std::vector<TokenIndex> ;
+using DataSpan = std::span<i32> ;
+using ChildSpan = std::span<NodeIndex> ;
 
 namespace Encodings {
 struct Declaration {
@@ -80,6 +92,11 @@ enum class PointerOpType {
 struct PointerOp {
   NodeIndex operand;
   PointerOpType opType;
+};
+
+struct DotAccessor {
+  NodeIndex object;
+  TokenPointer fieldName;
 };
 
 struct BinaryOp {
@@ -139,11 +156,13 @@ struct If {
   NodeIndex elseValue;
   bool hasElse;
 };
+
+struct Struct {
+  ChildSpan children;
+};
+
 }; // namespace Encodings
 
-typedef std::vector<TokenIndex> NodeList;
-typedef std::span<i32> DataSpan;
-typedef std::span<NodeIndex> ChildSpan;
 
 class Parser {
 public:
@@ -172,6 +191,10 @@ public:
     if (peek().type == type) {
       advance();
     }
+  }
+
+  void acceptN(TokenType type) {
+    while (!isAtEnd() && peek().type == type) advance();
   }
 
   bool check(TokenType type, TokenIndex ahead = {0}) {
@@ -203,6 +226,11 @@ public:
       return advance();
     log << advance();
     throw std::invalid_argument(message);
+  }
+
+  void consumeAtLeast1(TokenType needed, std::string message) {
+    consume(needed, message);
+    while (check(needed)) advance();
   }
 
   const Token &latestToken() {
@@ -451,6 +479,26 @@ public:
     return getNode(node, NodeType::BOOLEAN_LITERAL).left;
   }
 
+  NodeIndex addNode(Encodings::Struct node, TokenPointer token) {
+    auto dataIndex = addData(node.children);
+    return addNode(ASTNode {.left = dataIndex.value, .right = (i32) node.children.size(), .token = toIndex(token), .nodeType = NodeType::STRUCT});
+  }
+
+  Encodings::Struct getStruct(NodeIndex node) {
+    auto encoded = getNode(node, NodeType::STRUCT);
+    
+    return {.children = getChildren().subspan(encoded.left, encoded.right)};
+  }
+
+  NodeIndex addNode(Encodings::DotAccessor node, TokenPointer token) {
+    return addNode(ASTNode {.left = node.object.value, .right = toIndex(node.fieldName).value, .token = toIndex(token), .nodeType = NodeType::DOT_ACCESS});
+  }
+
+  Encodings::DotAccessor getDotAccess(NodeIndex node) {
+    auto encoded = getNode(node,NodeType::DOT_ACCESS);
+    return {.object = {encoded.left}, .fieldName = toPointer({encoded.right})};
+  }
+  
 public:
   std::vector<NodeIndex> parse() {
     std::vector<NodeIndex> statements;
@@ -472,7 +520,7 @@ public:
     }
     NodeIndex node = assignment();
     if (!isAtEnd()) {
-      consume(TokenType::STATEMENT_BREAK, "Expected a breaking statement");
+      consumeAtLeast1(TokenType::STATEMENT_BREAK, "Expected a breaking statement");
     }
     return node;
   }
@@ -480,16 +528,7 @@ public:
   NodeIndex assignment() {
     bool isDefinition = check(TokenType::IDENTIFIER) && check(TokenType::COLON, {1});
     if (isDefinition) {
-      NodeIndex name = definition();
-      if (check(TokenType::ASSIGNMENT) || check(TokenType::COLON)) {
-        TokenPointer token = advance();
-        NodeIndex value = expression();
-        log << "Assigning " << getDefinition(name).name->lexeme << "\n";
-        return addNode(Encodings::Declaration {.identifier = name, .value = value}, toIndex(token));
-      }
-
-      log << "Defining " << getDefinition(name).name->lexeme << "\n";
-      return name;
+      return declaration();
     }
 
     NodeIndex expr = expression();
@@ -503,6 +542,19 @@ public:
     return expr;
   }
 
+  NodeIndex declaration() {
+      NodeIndex name = definition();
+      if (check(TokenType::ASSIGNMENT) || check(TokenType::COLON)) {
+        TokenPointer token = advance();
+        NodeIndex value = expression();
+        log << "Assigning " << getDefinition(name).name->lexeme << "\n";
+        return addNode(Encodings::Declaration {.identifier = name, .value = value}, toIndex(token));
+      }
+
+      log << "Defining " << getDefinition(name).name->lexeme << "\n";
+      return name;
+  }
+  
   NodeIndex definition() {
     TokenPointer name = consume(TokenType::IDENTIFIER, "Expected an identifier for a definition");
     consume(TokenType::COLON, "Expected a ':' for type declaration");
@@ -580,7 +632,12 @@ public:
       auto node = Encodings::PointerOp({.operand = expr, .opType = Encodings::PointerOpType::DEREFERENCE});
       expr = addNode(node, advance());
     }
-    // TODO: dot accessor
+
+    if (check(TokenType::DOT)) {
+      auto token = advance();
+      auto node = Encodings::DotAccessor({.object = expr, .fieldName = consume(TokenType::IDENTIFIER, "Expected identifier after '.' accessor")});
+      expr = addNode(node, token);
+    }
     return expr;
   }
 
@@ -616,6 +673,10 @@ public:
 
     if (check(TokenType::FUNCTION)) {
       return function();
+    }
+
+    if (check(TokenType::STRUCT)) {
+      return structDefinition();
     }
 
     if (check(TokenType::IDENTIFIER)) {
@@ -686,6 +747,10 @@ public:
 
   NodeIndex function() {
     // Keyword
+
+  if (check(TokenType::STRUCT)) {
+    return structDefinition();
+  }  // 
     consume(TokenType::FUNCTION, "Expected 'fn' keyword");
     auto keyword = previous();
     // Params
@@ -727,6 +792,25 @@ public:
 
     auto node = Encodings::Block {.statements = ChildSpan(statements)};
     return addNode(node, toIndex(startToken));
+  }
+
+  NodeIndex structDefinition() {
+    consume(TokenType::STRUCT, "Expected 'struct' token at the beginning of struct definition");
+    auto token = previous();
+
+    // TODO: distinct types
+    std::vector<NodeIndex> definitions;
+    consume(TokenType::LEFT_CURLY_BRACE, "Struct field definitions must be declared between {}");
+    acceptN(TokenType::STATEMENT_BREAK);
+    while (!check(TokenType::RIGHT_CURLY_BRACE)) {
+      definitions.push_back(declaration());
+      if(!check(TokenType::RIGHT_CURLY_BRACE)) {
+        consumeAtLeast1(TokenType::STATEMENT_BREAK, "Statement break needed after field definition");
+      }
+    }
+    consume(TokenType::RIGHT_CURLY_BRACE, "Struct field definitions must be declared between {}");
+
+    return addNode(Encodings::Struct {.children = ChildSpan(definitions)}, token);
   }
 };
 

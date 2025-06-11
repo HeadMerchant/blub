@@ -16,6 +16,7 @@ enum class TokenType {
 
     // Unary ops
     POINTER,
+    DOT,
     
     IF,
     ELSE,

@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cassert>
 #include <charconv>
 #include "parser.h"
@@ -49,16 +50,27 @@ class Interpreter {
 
                 // TODO: unused rn
                 bool compileTime = parser.getToken(encoded.token).type == TokenType::COLON;
+                if (compileTime) {
+                    // Name type
+                    if (value->isType() && parser.getNode(node.identifier).nodeType == NodeType::IDENTIFIER) {
+                        Types::Pool.setTypeName(
+                            std::get<Types::TypeIndex>(value->value),
+                            std::move(
+                              std::string(parser.getIdentifier(node.identifier).token->lexeme)
+                            )
+                        );
+                    }
+                }
 
                 auto reference = interpret(node.identifier);
                 reference->assign(value);
+                reference->isMutable = !compileTime;
 
                 // TODO: support assignment as expression???
                 return nullptr;
             }
             case NodeType::DEFINITION: {
                 auto node = parser.getDefinition(nodeIndex);
-                // TODO(types): type inference
                 Reference* ref;
                 if (node.inferType) {
                     ref = new Reference(Types::Intrinsic::INFER);
@@ -69,7 +81,23 @@ class Interpreter {
                         message << "Type for identifier " << node.name->lexeme << " is not a type";
                         throw std::invalid_argument(message.str());
                     }
+                    Types::TypeIndex typeIndex = std::get<Types::TypeIndex>(type->value);
                     ref = Reference::ofType(type);
+
+                    // Initialize struct
+                    if (Types::Pool.isStruct(typeIndex)) {
+                        Types::Struct& structDefinition = Types::Pool.getStruct(typeIndex);
+                        std::vector<Reference*> structValue(structDefinition.numFields());
+                        log << "Number of fields in struct" << Types::Pool.typeName(typeIndex) << ": " << structDefinition.fields.symbolValues.size() << "\n";
+                        // TODO: NEXT
+                        for (auto [fieldName, index] : structDefinition.fields.symbolIndex) {
+                            log << "Field: " << fieldName << ", index: " << index << "\n";
+                            structValue[index] = new Reference(*structDefinition.fields.symbolValues[fieldName], true);
+                        }
+                        ref->value = structValue;
+                        // TODO: initialize field values; not just containers
+
+                    }
                 }
                 environment.define(node.name->lexeme, ref);
                 return ref;
@@ -93,11 +121,11 @@ class Interpreter {
                     arguments.push_back(interpret(arg, environment, depth));
                 }
                 if (function->type == Types::indexOf(Types::Intrinsic::NATIVE_FUNCTION)) {
-                    auto nativeFunction = *function->nativeFunction();
+                    auto nativeFunction = *std::get<NativeFunction>(function->value);
                     return nativeFunction(std::span<Reference *>(arguments));
                 }
                 if (function->type == Types::indexOf(Types::Intrinsic::FUNCTION)) {
-                    return callUserFunction(function->function(), std::span<Reference *>(arguments));
+                    return callUserFunction(&std::get<FunctionType>(function->value), std::span<Reference *>(arguments));
                 }
                 throw std::invalid_argument("Unknown function type");
             }
@@ -105,7 +133,7 @@ class Interpreter {
                 auto node = parser.getLiteral(nodeIndex);
                 auto token = *node.token;
                 if (token.type == TokenType::STRING) {
-                    return new Reference(new std::string(token.lexeme));
+                    return new Reference(std::move(std::string(token.lexeme)));
                 }
                 if (token.type == TokenType::DECIMAL) {
                     float result;
@@ -121,11 +149,11 @@ class Interpreter {
             }
             case NodeType::ARRAY_LITERAL: {
                 auto node = parser.getArrayLiteral(nodeIndex);
-                ArrayType values = new std::vector<Reference*>();
+                ArrayType values = std::vector<Reference*>();
                 for (auto element : node.elements) {
-                    values->push_back(interpret(element, environment, depth));
+                    values.push_back(interpret(element, environment, depth));
                 }
-                return new Reference(values);
+                return new Reference(std::move(values));
             }
             case NodeType::BINARY_OP: {
                 auto node = parser.getBinaryOp(nodeIndex);
@@ -151,9 +179,8 @@ class Interpreter {
             }
             case NodeType::FUNCTION_LITERAL: {
                 auto node = parser.getFunctionLiteral(nodeIndex);
-                auto function = new FunctionLiteral(FunctionLiteral {.parser = parser, .declarationEnvironment = &environment, .function = node});
-                auto value = new Reference(function);
-                log << "Literal address: " << function << "\nValue address: " << value << "\nActual value address: " << value->function() << "\n";
+                auto function = FunctionLiteral(FunctionLiteral {.parser = &parser, .declarationEnvironment = &environment, .function = node});
+                auto value = new Reference(std::move(function));
                 return value;
             }
             case NodeType::POINTER_OP: {
@@ -163,12 +190,11 @@ class Interpreter {
                     case Encodings::PointerOpType::DEREFERENCE: {
                         // TODO: better errors
                         assert(Types::Pool.isPointer(value->type));
-                        return value->value._reference;
+                        return std::get<Reference*>(value->value);
                     }
                     case Encodings::PointerOpType::REFERENCE: {
                         if (value->isType()) {
-                            Types::TypeIndex pointerType = Types::Pool.pointerTo(value->value._type);
-                            return Reference::pointerTo(value->value._type);
+                            return Reference::pointerTo(std::get<Types::TypeIndex>(value->value));
                         } else {
                             return Reference::pointerTo(value);
                         }
@@ -187,7 +213,7 @@ class Interpreter {
                 if (condition->type != Types::indexOf(Types::Intrinsic::BOOL)) {
                     throw std::invalid_argument("Condition of an 'if' statement needs to be of type 'bool', but was type '"+Types::Pool.typeName(condition->type)+"'");
                 }
-                if (condition->value._bool) {
+                if (std::get<bool>(condition->value)) {
                     return interpret(node.value);
                 } else if (node.hasElse) {
                     return interpret(node.elseValue);
@@ -197,6 +223,35 @@ class Interpreter {
             }
             case NodeType::BOOLEAN_LITERAL:
                 return Reference::of(parser.getBooleanLiteral(nodeIndex));
+            case NodeType::STRUCT: {
+                auto node = parser.getStruct(nodeIndex);
+                auto structDefinition = Types::Struct();
+                auto definitionEnv = new Environment(&environment);
+                for (auto fieldIndex : node.children) {
+                    interpret(fieldIndex, *definitionEnv);
+                }
+
+                std::vector<Identifier> fields;
+                std::transform(definitionEnv->defs.symbolValues.begin(), definitionEnv->defs.symbolValues.end(), std::back_inserter(fields), [](std::pair<Identifier, Reference*> a){return a.first;});
+                std::sort(fields.begin(), fields.end(), [definitionEnv](Identifier a, Identifier b) { return definitionEnv->defs.indexOf(a) < definitionEnv->defs.indexOf(b);});
+                for (auto field : fields) {
+                    auto value = definitionEnv->defs.symbolValues[field];
+                    // Copy fields into either fields or statics
+                    if (value->isMutable) {
+                        structDefinition.fields.define(field, value);
+                    } else {
+                        structDefinition.statics.define(field, value);
+                    }
+                }
+                free(definitionEnv);
+                Types::TypeIndex structTypeIndex = Types::Pool.addStruct(structDefinition, "");
+                return Reference::toType(structTypeIndex);
+            }
+            case NodeType::DOT_ACCESS: {
+                auto node = parser.getDotAccess(nodeIndex);
+                Reference* object = interpret(node.object);
+                return object->getField(node.fieldName->lexeme);
+            }
             }
         throw std::invalid_argument("Bruh im crashing tf out");
     }
@@ -218,7 +273,7 @@ class Interpreter {
             auto param = definition->function.parameters[i];
             auto arg = arguments[i];
             // TODO: use parser from function definition
-            assert(definition->parser.getNode(param).nodeType == NodeType::DEFINITION);
+            assert(definition->parser->getNode(param).nodeType == NodeType::DEFINITION);
             interpret(param, callEnv)->assign(arg);
         }
 
@@ -237,9 +292,9 @@ class Interpreter {
         }
 
         log << "Type of main: " << main->type.value << "\n";
-        auto mainFunction = main->function();
-        log << "Address of main: " << mainFunction << "\n";
-        callUserFunction(mainFunction, std::span<Reference*>());
+        auto mainFunction = std::get<FunctionType>(main->value);
+        log << "Address of main: " << &mainFunction << "\n";
+        callUserFunction(&mainFunction, std::span<Reference*>());
         // auto parser = mainFunction.parser;
         // TODO: add way to interpret this
         // auto mainBlock = mainFunction->parser.getBlock(mainFunction->function.body);
