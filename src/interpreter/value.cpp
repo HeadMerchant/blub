@@ -34,14 +34,16 @@ Reference* Reference::toString() {
         return new Reference(std::move(std::string(value)));
     }
     if(type == Types::indexOf(Types::Intrinsic::FLOAT)) {
-        float rawValue = std::get<FloatType>(value);
-        return new Reference (std::move(std::to_string(rawValue)));
+        FloatType rawValue = std::get<FloatType>(value);
+        std::stringstream ss;
+        ss << rawValue;
+        return new Reference (std::move(ss.str()));
     }
     if(type == Types::indexOf(Types::Intrinsic::FUNCTION)) {
        return &Reference::functionString;
     }
     if(type == Types::indexOf(Types::Intrinsic::INT)) {
-        float rawValue = std::get<IntType>(value);
+        IntType rawValue = std::get<IntType>(value);
         return new Reference(std::move(std::to_string(rawValue)));
     }
     if(type == Types::indexOf(Types::Intrinsic::NATIVE_FUNCTION)) {
