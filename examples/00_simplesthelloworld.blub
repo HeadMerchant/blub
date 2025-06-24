@@ -1,0 +1,3 @@
+main :: fn() {
+	printf(c"Hello world")
+}

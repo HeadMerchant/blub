@@ -47,6 +47,7 @@ enum class TokenType {
     // Literal
     IDENTIFIER,
     STRING,
+    NULL_TERMINATED_STRING,
     DECIMAL,
     INT,
     

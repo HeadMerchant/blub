@@ -88,6 +88,7 @@ class Tokenizer {
             break;
         }
         case '"': {
+            start++;
             string();
             break;
         }
@@ -143,7 +144,13 @@ class Tokenizer {
             break;
         }
         default:
-            if(isalpha(c) || c == '_') {
+            // c-style/null terminated string
+            if (c == 'c' && peek() == '"') {
+                advance();
+                // Remove starting " from the token
+                start += 2;
+                string(TokenType::NULL_TERMINATED_STRING);
+            } else if(isalpha(c) || c == '_') {
                 identifier();
             } else if (isdigit(c)) {
                 number();
@@ -163,9 +170,7 @@ class Tokenizer {
         return sourceCode[current];
     }
 
-    void string() {
-        // Remove starting " from the token
-        start++;
+    void string(TokenType tokenType = TokenType::STRING) {
         while (peek() != '"' && !isAtEnd())
         {
             advance();
@@ -175,10 +180,10 @@ class Tokenizer {
             throw std::invalid_argument("Unterminated string");
         }
 
-        addToken(TokenType::STRING);
+        addToken(tokenType);
 
         // Grab closing double quote
-        advance();        
+        advance();
     }
 
     void identifier() {

@@ -1,10 +1,14 @@
 #include "filereader.h"
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <stdexcept>
 #include "tokenizer.h"
 #include "parser.h"
-#include "interpreter.h"
+#include "llvm_comp.h"
 #include "logging.h"
+
+namespace fs = std::filesystem;
 
 int main(int argc, char *argv[]) {
     std::ostream& log = logger(LogLevel::DEBUG);
@@ -31,7 +35,13 @@ int main(int argc, char *argv[]) {
     // for (auto ast : program) {
     //     ast->print();
     // }
-
-    Interpreter interpreter(parser, program);
-    interpreter.run();
+    std::string outFilename = fs::path(sourceFile).stem().string() + ".ll";
+    std::ofstream outFile(outFilename, std::ofstream::out | std::ofstream::trunc);
+    if (!outFile.is_open()) {
+        throw std::invalid_argument("Unable to write llvm bytecode to " + outFilename);
+    }
+    std::cout << "Writing to file " << outFilename << "\n";
+    LLVMCompiler interpreter(parser, program);
+    interpreter.run(outFile);
+    outFile.close();
 }

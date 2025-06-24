@@ -4,6 +4,7 @@
 #include <bit>
 #include <cassert>
 #include <iostream>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -72,10 +73,11 @@ using TokenPointer = const Token*;
 using NodeList = std::vector<TokenIndex> ;
 using DataSpan = std::span<i32> ;
 using ChildSpan = std::span<NodeIndex> ;
+using OptionalNode = std::optional<NodeIndex>;
 
 namespace Encodings {
 struct Declaration {
-  NodeIndex identifier;
+  NodeIndex definition;
   NodeIndex value;
 };
 
@@ -115,6 +117,7 @@ struct Identifier {
 
 struct FunctionLiteral {
   std::span<NodeIndex> parameters;
+  OptionalNode returnType;
   NodeIndex body;
 };
 
@@ -133,8 +136,7 @@ struct ArrayLiteral {
 
 struct Definition {
   TokenPointer name;
-  NodeIndex type;
-  bool inferType;
+  OptionalNode type;
 };
 
 enum class AssignmentType {
@@ -153,8 +155,7 @@ struct If {
   NodeIndex value;
   // Don't need a separate node type for else because else only stores a single expression
   // TODO: consider adding back else node for clearer messages?
-  NodeIndex elseValue;
-  bool hasElse;
+  OptionalNode elseValue;
 };
 
 struct Struct {
@@ -321,7 +322,7 @@ public:
 
   NodeIndex addNode(Encodings::Declaration node, TokenIndex token) {
     return addNode(ASTNode{
-        .left = node.identifier.value,
+        .left = node.definition.value,
         .right = node.value.value,
         .token = token,
         .nodeType = NodeType::DECLARATION,
@@ -330,7 +331,7 @@ public:
 
   Encodings::Declaration getDeclaration(NodeIndex index) {
     auto encoded = getNode(index, NodeType::DECLARATION);
-    return {.identifier = {encoded.left}, .value = {encoded.right}};
+    return {.definition = {encoded.left}, .value = {encoded.right}};
   }
 
   NodeIndex addNode(Encodings::UnaryOp node) {
@@ -358,8 +359,10 @@ public:
 
   NodeIndex addNode(Encodings::FunctionLiteral node, TokenIndex token) {
     // Block stored directed after args
+    i32 nextIndex = nodes.size();
     auto dataIndex = addData(node.parameters);
-    extraData.push_back(node.body.value);
+    addData(node.returnType.value_or({nextIndex}));
+    addData(node.body);
     return addNode(ASTNode{.left = dataIndex.value,
                            .right = (i32)node.parameters.size(),
                            .token = token,
@@ -372,8 +375,10 @@ public:
 
     auto startIndex = encoded.left;
     auto length = encoded.right;
+    NodeIndex returnType = parameters[startIndex + length];
     return {.parameters = parameters.subspan(startIndex, length),
-            .body = parameters[startIndex + length]};
+            .returnType = (returnType.value == node.value) ? std::nullopt : OptionalNode(returnType),
+            .body = parameters[startIndex + length + 1]};
   }
 
   NodeIndex addNode(Encodings::FunctionCall node, TokenIndex token) {
@@ -439,14 +444,14 @@ public:
 
   NodeIndex addNode(Encodings::Definition node, TokenPointer token) {
     // Type is guaranteed to not have the same index as the definition
-    NodeIndex typeIndex = node.inferType ? NodeIndex {nodeIndex().value + 1} : node.type;
+    NodeIndex typeIndex = node.type.value_or({(i32) nodeIndex().value + 1});
     return addNode(ASTNode {.left = toIndex(node.name).value, .right = typeIndex.value, .token = toIndex(token), .nodeType = NodeType::DEFINITION});
   }
 
   Encodings::Definition getDefinition(NodeIndex node) {
     auto encoded = getNode(node, NodeType::DEFINITION);
     bool inferType = encoded.right == node.value;
-    return {.name = toPointer({encoded.left}), .type = {encoded.right}, .inferType = inferType };
+    return {.name = toPointer({encoded.left}), .type = inferType ? std::nullopt : OptionalNode(encoded.right)};
   }
 
   NodeIndex addNode(Encodings::PointerOp node, TokenPointer token) {
@@ -462,13 +467,13 @@ public:
     std::vector<NodeIndex> children = {node.condition, node.value};
     auto dataIndex = addData(ChildSpan(children));
 
-    auto nodeIndex = (i32) nodes.size();
-    return addNode(ASTNode {.left = dataIndex.value, .right = node.hasElse ? node.elseValue.value : nodeIndex, .token = toIndex(token), .nodeType = NodeType::IF});
+    NodeIndex nodeIndex = {(i32) nodes.size()};
+    return addNode(ASTNode {.left = dataIndex.value, .right = node.elseValue.value_or(nodeIndex).value, .token = toIndex(token), .nodeType = NodeType::IF});
   }
   
   Encodings::If getIf(NodeIndex node) {
     auto encoded = getNode(node, NodeType::IF);
-    return {.condition = {extraData[encoded.left]}, .value = {extraData[encoded.left + 1]}, .elseValue = {encoded.right}, .hasElse = encoded.right != node.value};
+    return {.condition = {extraData[encoded.left]}, .value = {extraData[encoded.left + 1]}, .elseValue = (encoded.right != node.value) ? OptionalNode(encoded.right) : std::nullopt };
   }
 
   NodeIndex addNode(bool value, TokenPointer token) {
@@ -548,7 +553,7 @@ public:
         TokenPointer token = advance();
         NodeIndex value = expression();
         log << "Assigning " << getDefinition(name).name->lexeme << "\n";
-        return addNode(Encodings::Declaration {.identifier = name, .value = value}, toIndex(token));
+        return addNode(Encodings::Declaration {.definition = name, .value = value}, toIndex(token));
       }
 
       log << "Defining " << getDefinition(name).name->lexeme << "\n";
@@ -561,11 +566,11 @@ public:
     TokenPointer token = previous();
     bool infer = check(TokenType::COLON) || check(TokenType::ASSIGNMENT);
     if (infer) {
-      return addNode(Encodings::Definition {.name = name, .inferType = infer}, token);
+      return addNode(Encodings::Definition {.name = name, .type = std::nullopt}, token);
     }
 
     NodeIndex type = expression();
-    return addNode(Encodings::Definition {.name = name, .type = type, .inferType = false}, token);
+    return addNode(Encodings::Definition {.name = name, .type = type}, token);
   }
 
   NodeIndex expression() { return equality(); }
@@ -665,7 +670,7 @@ public:
 
   NodeIndex primary() {
     static std::vector<TokenType> types = {TokenType::STRING,
-                                           TokenType::DECIMAL, TokenType::INT};
+                                           TokenType::DECIMAL, TokenType::INT, TokenType::NULL_TERMINATED_STRING};
     if (match(types)) {
       auto node = Encodings::Literal{.token = previous()};
       return addNode(node);
@@ -691,12 +696,13 @@ public:
       consume(TokenType::RIGHT_PAREN, "Condition for 'if' statement needs to be surrounded by parentheses ')'");
       auto value = expression();
 
-      auto ifNode = Encodings::If {.condition = condition, .value = value, .hasElse = false};
+      auto ifNode = Encodings::If {.condition = condition, .value = value};
+      OptionalNode elseNode = std::nullopt;
       if (check(TokenType::ELSE)) {
         advance();
-        ifNode.elseValue = expression();
-        ifNode.hasElse = true;
+        elseNode = expression();
       }
+      ifNode.elseValue = elseNode;
       return addNode(ifNode, ifToken);
     }
 
@@ -746,11 +752,10 @@ public:
   }
 
   NodeIndex function() {
-    // Keyword
+    if (check(TokenType::STRUCT)) {
+      return structDefinition();
+    } 
 
-  if (check(TokenType::STRUCT)) {
-    return structDefinition();
-  }  // 
     consume(TokenType::FUNCTION, "Expected 'fn' keyword");
     auto keyword = previous();
     // Params
@@ -772,9 +777,16 @@ public:
     }
     consume(TokenType::RIGHT_PAREN, "Expected ')' for declaration");
 
+    std::optional<NodeIndex> returnType = std::nullopt;
+    if (check(TokenType::COMMA)) {
+      advance();
+      // TODO: make sure this can be evaluated at comptime
+      returnType = expression();
+    }
+    
     // Block
     auto body = block();
-    auto node = Encodings::FunctionLiteral {.parameters = ChildSpan(parameters), .body = body};
+    auto node = Encodings::FunctionLiteral {.parameters = ChildSpan(parameters), .returnType = returnType, .body = body};
     return addNode(node, toIndex(keyword));
   }
 
@@ -783,11 +795,13 @@ public:
     auto startToken = previous();
     std::vector<NodeIndex> statements;
     std::vector<TokenType> types = {TokenType::RIGHT_CURLY_BRACE};
+    acceptN(TokenType::STATEMENT_BREAK);
     while (!match(types)) {
       log << "looping\n";
       // peek().print();
       // std::cout << "Finding statements\n";
       statements.push_back(statement());
+      acceptN(TokenType::STATEMENT_BREAK);
     }
 
     auto node = Encodings::Block {.statements = ChildSpan(statements)};

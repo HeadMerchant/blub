@@ -1,0 +1,8 @@
+String :: struct {
+	length: usize
+	data: ^u8
+}
+
+print :: fn(message: String) {
+	printf(c"%.*s", message.length, message.data)
+}
