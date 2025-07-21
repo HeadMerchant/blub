@@ -1,14 +1,15 @@
 #pragma once
 
 #include "common.h"
+#include "interpreter/value.h"
 #include <iostream>
 #include <map>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <unordered_map>
 #include <array>
 #include <algorithm>
-#include <variant>
 #include <vector>
 #include <sstream>
 #include <string>
@@ -52,11 +53,13 @@ namespace Types {
       VOID = 0,
       UNTYPED_INT,
       UNTYPED_FLOAT,
+      TUPLE,
       ARRAY,
       STRING,
       NATIVE_FUNCTION,
       REFERENCE,
       FUNCTION,
+      FUNCTION_TABLE,
       LLVM_TYPE,
       LLVM_FUNCTION,
 
@@ -68,11 +71,12 @@ namespace Types {
 
       LAST = INFER,
       POINTER_TO,
-      TUPLE,
-      STRUCT
+      STRUCT,
+      GENERIC
   };
 
   const i32 NUM_INTRINSICS = static_cast<i32>(Intrinsic::LAST) + 1;
+  const i32 NUM_BUILTINS = 14;
 
   namespace Encodings {
     struct Struct {};
@@ -89,6 +93,8 @@ namespace Types {
     }
   };
 
+  using OptionalType = std::optional<TypeIndex>;
+
   constexpr TypeIndex indexOf(Intrinsic type) {
     i32 value = static_cast<i32>(type);
     assert (type <= Intrinsic::LAST);
@@ -97,6 +103,8 @@ namespace Types {
   
   struct DataIndex {i32 value;};
   struct StructIndex {i32 value;};
+  struct GenericIndex {i32 value;};
+  struct TupleIndex {i32 value;};
 
   struct Struct {
     SymbolMap fields;
@@ -124,25 +132,25 @@ namespace Types {
 
   struct Generic {
     TypeIndex type;
-    const std::vector<TypeIndex> parameters;
+    const TupleIndex parameters;
 
     bool operator==(const Generic &other) const {
-      return (type == other.type) && (parameters == other.parameters);
+      return (type == other.type) && (parameters.value == other.parameters.value);
     }
 
     bool operator<(const Generic &other) const {
-      return type < other.type || (type == other.type && parameters < other.parameters);
+      return type < other.type || (type == other.type && parameters.value < other.parameters.value);
     }
   };
 
   class TypePool {
     public:
-    std::map<Generic, TypeIndex> generics;
     std::vector<Type> types;
     std::vector<std::string> names = {
       "VOID",
       "UNTYPED_INT",
       "UNTYPED_FLOAT",
+      "TUPLE",
       "ARRAY",
       "STRING",
       "NATIVE_FUNCTION",
@@ -155,6 +163,10 @@ namespace Types {
     };
     std::map<TypeIndex, TypeIndex> pointersTo;
     std::vector<Struct> structPool;
+    std::vector<std::vector<TypeIndex>> tuplePool;
+    std::map<std::vector<TypeIndex>, TypeIndex> tuples;
+    std::map<Generic, TypeIndex> generics;
+    std::vector<Generic> genericPool;
 
     // TODO: enum
 
@@ -175,9 +187,10 @@ namespace Types {
     TypeIndex usize;
     TypeIndex isize;
 
-    TypePool(): types(NUM_INTRINSICS) {
+    TypePool(): types() {
+      types.reserve(NUM_INTRINSICS + NUM_BUILTINS);
       for (i32 i = 0; i < NUM_INTRINSICS; i++) {
-        types[i] = {.type = static_cast<Intrinsic>(i)};
+        types.emplace_back(static_cast<Intrinsic>(i));
       }
 
       u8 = addLLVMType("i8", "u8");
@@ -208,8 +221,7 @@ namespace Types {
     TypeIndex pointerTo(TypeIndex type) {
       assert(type.value <= types.size());
 
-      if (pointersTo.count(type) > 0) {
-        std::cout << "Pointer already exists" << std::endl;
+      if (pointersTo.contains(type)) {
         return pointersTo[type];
       }
 
@@ -217,6 +229,15 @@ namespace Types {
       pointersTo[type] = pointerIndex;
       
       return pointerIndex;
+    }
+    
+    OptionalType dereference(TypeIndex type) {
+      if (!isPointer(type)) {
+        return std::nullopt;
+      }
+      Type rawType = (*this)[type];
+
+      return TypeIndex {rawType.definition};
     }
     
     TypeIndex addStruct(Struct structDefinition, std::string name) {
@@ -272,21 +293,14 @@ namespace Types {
       return std::string_view(types[index.value].llvmName);
     }
 
-    using FieldType = std::variant<i32, Reference*>;
-    FieldType getFieldIndex(TypeIndex typeIndex, std::string_view fieldName) {
+    std::optional<Reference*> getFieldIndex(TypeIndex typeIndex, std::string_view fieldName) {
       Types::Struct& structDefinition = getStruct(typeIndex);
-
-      Reference* fieldValue = structDefinition.getField(fieldName);
-      if (fieldValue != nullptr) {
-          return fieldValue;
-      }
-
-      i32 fieldIndex = structDefinition.fields.indexOf(fieldName);
-      return fieldIndex;
+      return structDefinition.fields.symbolValues[fieldName];
     }
 
     // TODO: function overloading???
-    std::optional<TypeIndex> isAssignable(TypeIndex value, TypeIndex targetType) {
+    // TODO: support nested tuples
+    OptionalType isAssignable(TypeIndex value, TypeIndex targetType) {
       bool inferredAssignment = targetType == indexOf(Intrinsic::INFER);
 
       if (value == indexOf(Intrinsic::INFER) || value == indexOf(Intrinsic::VOID)) {
@@ -309,24 +323,8 @@ namespace Types {
         return value;
       }
 
-      bool targetIsNumeric;
-      {
-        static std::array<TypeIndex, 11> numericTypes = {
-          u8, u16, u32, u64,
-          s8, s16, s32, s64,
-          f16, f32, f64,
-        };
-        targetIsNumeric = std::find(numericTypes.begin(), numericTypes.end(), targetType) != numericTypes.end();
-      }
-
-      bool valueIsUntypedNumeric; 
-      {
-        static std::array<TypeIndex, 2> numericUntyped = {
-          indexOf(Intrinsic::UNTYPED_INT),
-          indexOf(Intrinsic::UNTYPED_FLOAT)
-        };
-        valueIsUntypedNumeric = std::find(numericUntyped.begin(), numericUntyped.end(), value) != numericUntyped.end();
-      }
+      bool targetIsNumeric = isNumeric(targetType) && !isUntypedNumeric(targetType);
+      bool valueIsUntypedNumeric = isUntypedNumeric(value);
       
       if (targetIsNumeric && valueIsUntypedNumeric) {
         return targetType;
@@ -335,12 +333,195 @@ namespace Types {
       return std::nullopt;
     }
 
+    OptionalType coerce(TypeIndex a, TypeIndex b) {
+      assert(a != indexOf(Intrinsic::INFER) && b != indexOf(Intrinsic::INFER));
+      if (a == b) {
+        return a;
+      }
+
+      bool aUntyped = isUntypedNumeric(a);
+      bool bUntyped = isUntypedNumeric(b);
+      if (!(aUntyped || bUntyped)) {
+        return std::nullopt;
+      }
+
+      if (aUntyped && bUntyped) {
+        if (a == indexOf(Intrinsic::UNTYPED_FLOAT) || b == indexOf(Intrinsic::UNTYPED_FLOAT)) return indexOf(Intrinsic::UNTYPED_FLOAT);
+        return indexOf(Intrinsic::UNTYPED_INT);
+      }
+
+      if (aUntyped) {
+        if (isTypedFloat(b) || a == indexOf(Intrinsic::UNTYPED_INT)) return b;
+        // Can't coerce float to int
+        return std::nullopt;
+      }
+      if (isTypedFloat(a) || b == indexOf(Intrinsic::UNTYPED_INT)) return a;
+      return std::nullopt;
+    }
+
+    bool isNumeric(TypeIndex type) {
+      static std::array<TypeIndex, 11> numericTypes = {
+        u8, u16, u32, u64,
+        s8, s16, s32, s64,
+        f16, f32, f64,
+      };
+      return std::find(numericTypes.begin(), numericTypes.end(), type) != numericTypes.end();
+    }
+
+    bool isFloat(TypeIndex type) {
+      return type == f16 || type == f32 || type == f64 || type == indexOf(Intrinsic::UNTYPED_FLOAT);
+    }
+
+    bool isInt(TypeIndex type) {
+      static std::array<TypeIndex, 9> numericTypes = {
+        u8, u16, u32, u64,
+        s8, s16, s32, s64,
+        indexOf(Intrinsic::UNTYPED_INT)
+      };
+      return std::find(numericTypes.begin(), numericTypes.end(), type) != numericTypes.end();
+    }
+
+    bool isSignedInt(TypeIndex type) {
+      static std::array<TypeIndex, 5> numericTypes = {
+        s8, s16, s32, s64,
+        indexOf(Intrinsic::UNTYPED_INT)
+      };
+      return std::find(numericTypes.begin(), numericTypes.end(), type) != numericTypes.end();
+    }
+    
+    bool isTypedFloat(TypeIndex type) {
+      static std::array<TypeIndex, 11> numericTypes = {
+        f16, f32, f64,
+      };
+      return std::find(numericTypes.begin(), numericTypes.end(), type) != numericTypes.end();
+    }
+
+    bool isUntypedNumeric(TypeIndex type) {
+      return (type == indexOf(Intrinsic::UNTYPED_INT)) || (type == indexOf(Intrinsic::UNTYPED_FLOAT));
+    }
+
+    OptionalType isTupleAssignable(TypeIndex value, TypeIndex targetType) {
+      if (value == targetType) {
+        return value;
+      }
+      
+      std::span<TypeIndex> valueElements = tupleElements(value);
+      std::span<TypeIndex> targetElements = tupleElements(targetType);
+      if (valueElements.size() != targetElements.size()) {
+        return std::nullopt;
+      }
+
+      for (int i = 0; i < valueElements.size(); i++) {
+        if (!isAssignable(
+              value = valueElements[i],
+              targetType = targetElements[i]
+            ).has_value()) return std::nullopt;
+      }
+
+      return targetType;
+    }
+    
     void printTypes() {
       std::cout << "Number of types: " << names.size() << "\n";
       for (auto name : names) {
           std::cout << name << "\n";
       }
       std::cout << std::endl;
+    }
+
+    TypeIndex addGeneric(Generic generic) {
+      if (generics.contains(generic)) {
+        return generics.at(generic);
+      }
+
+      i32 genericIndex = genericPool.size();
+      genericPool.push_back(std::move(generic));
+      // TODO: llvm type name
+      Type typeDefinition = {.type = Intrinsic::GENERIC, .llvmName = "TODO:GENERIC", .definition = genericIndex};
+      std::stringstream prettyName;
+      
+      prettyName << typeName(generic.type) << "<";
+      bool hasMultiple = false;
+      Type tupleDefinition = types[generic.parameters.value];
+      assert(tupleDefinition.type == Intrinsic::TUPLE);
+      for (auto typeIndex : tuplePool[tupleDefinition.definition]) {
+        if (hasMultiple) {
+          prettyName << ", ";
+        }
+        prettyName << typeName(typeIndex);
+      }
+      prettyName << ">";
+      TypeIndex type = addType(typeDefinition, std::string(prettyName.str()));
+      
+      return type;
+    }
+
+    TypeIndex addGeneric(TypeIndex baseType, std::vector<TypeIndex> parameters) {
+      TypeIndex tupleType = tupleOf(std::move(parameters));
+      Type tupleDefinition = (*this)[tupleType];
+      Generic generic = {.type = baseType, .parameters = {tupleDefinition.definition}};
+      return addGeneric(std::move(generic));
+    }
+    
+    TypeIndex tupleOf(std::vector<TypeIndex> types) {
+      if (tuples.contains(types)) {
+        return tuples[types];
+      }
+
+      i32 tupleIndex = (i32) tuplePool.size();
+      tuplePool.push_back(types);
+      // TODO: llvm name
+      Type typeDefinition = {.type = Intrinsic::TUPLE, .llvmName = "", .definition = tupleIndex};
+
+      std::stringstream prettyName;
+      prettyName << "(";
+      bool hasMultiple = false;
+      for (auto typeIndex : types) {
+        if (hasMultiple) {
+          prettyName << ", ";
+        }
+        prettyName << typeName(typeIndex);
+      }
+      prettyName << ")";
+
+      TypeIndex type = addType(typeDefinition, std::move(prettyName.str()));
+      tuples[std::move(types)] = type;
+
+      return type;
+    }
+
+    std::span<TypeIndex> tupleElements(TypeIndex type) {
+      Type typeDefinition = getDefinition(type);
+      assert(typeDefinition.type == Intrinsic::TUPLE);
+      i32 tupleIndex = typeDefinition.definition;
+      return std::span(tuplePool[tupleIndex]);
+    }
+
+    TypeIndex addFunction(std::vector<TypeIndex> parameters, TypeIndex returnType) {
+      TypeIndex paramType = tupleOf(std::move(parameters));
+      std::vector<TypeIndex> genericParameters = {paramType, returnType};
+      return addGeneric(indexOf(Intrinsic::FUNCTION), std::move(genericParameters));
+    }
+
+    Generic getGeneric(TypeIndex genericType) {
+      Type typeDefinition = types[genericType.value];
+      assert(typeDefinition.type == Intrinsic::GENERIC);
+      return genericPool[typeDefinition.definition];
+    }
+
+    std::pair<TypeIndex, TypeIndex> functionParamsAndReturnType(TypeIndex functionType) {
+      Generic generic = getGeneric(functionType);
+      assert(generic.type == indexOf(Intrinsic::FUNCTION));
+      TupleIndex signature = generic.parameters;
+      std::vector<TypeIndex>& signatureTypes =  tuplePool[signature.value];
+      assert(signatureTypes.size() == 2);
+      return {signatureTypes[0], signatureTypes[1]};
+    }
+
+    // pointers, ints, etc
+    // TODO: use a more specific condition
+    bool isLlvmLiteralType(TypeIndex type) {
+      return getLLVMType(type)[0] != '%';
     }
   };
 

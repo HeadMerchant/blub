@@ -1,0 +1,9 @@
+add :: fn(a: s32, b: s32): s32 = llvm.add(a, b)
+
+print :: fn(a: s32) {
+	printf(c"%d", a)
+}
+
+main :: fn() {
+	print(2 + 3) # expect 5
+}

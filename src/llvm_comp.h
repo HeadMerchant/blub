@@ -1,5 +1,4 @@
 #pragma once
-#include <algorithm>
 #include <cassert>
 #include "parser.h"
 #include "environment.h"
@@ -15,6 +14,17 @@
 #include "logging.h"
 #include "types.h"
 #include "common.h"
+
+struct CompilerContext {
+    // NodeIndex index;
+    // std::ostream& outputFile;
+    // Environment& environment;
+    
+    std::optional<std::string_view> name;
+
+    Types::OptionalType expectedType;
+    Types::OptionalType returnType;
+};
 
 class LLVMCompiler {
     public:
@@ -38,64 +48,52 @@ class LLVMCompiler {
         return std::move(std::string(value->llvmName()));
     }
 
-    Reference* interpret(NodeIndex nodeIndex, Environment& environment, std::ostream& outputFile) {
+    Reference* dereference(Reference* value, std::ostream& outputFile, Environment& environment) {
+        Types::OptionalType dereferencedType = Types::Pool().dereference(value->type);
+        if (!dereferencedType.has_value()) {
+            std::stringstream message;
+            message << "Unable to dereference non-pointer type " << Types::Pool().typeName(value->type);
+            throw std::invalid_argument(std::move(message.str()));
+        }
+        
+        auto type = dereferencedType.value();
+        auto llvmType = Types::Pool().getLLVMType(type);
+        switch (value->storageType) {
+            case StorageType::VARIABLE: {
+                LLVMName dereferencedVariable = environment.addTemporary();
+                outputFile
+                    << dereferencedVariable << " = load " << llvmType << ", ptr " << value->llvmName() << "\n";
+                return Reference::variable(dereferencedType.value(), std::move(dereferencedVariable));
+            }
+            case StorageType::LITERAL: {
+                return Reference::variable(dereferencedType.value(), std::move(LLVMName(value->llvmName())));
+            }
+        }
+    }
+    
+    Reference* interpret(NodeIndex nodeIndex, Environment& environment, std::ostream& outputFile, CompilerContext& context) {
         auto encoded = parser.getNode(nodeIndex);
         auto prefix = environment.prefix;
         switch(encoded.nodeType) {
             case NodeType::BLOCK: {
-                TODO("Block declarations");
-                // Environment blockEnv(environment);
-                // auto node = parser.getBlock(nodeIndex);
-                // for (auto child : node.statements) {
-                //     interpret(child, blockEnv, depth);
-                // }
-                // return nullptr;
+                auto node = parser.getBlock(nodeIndex);
+                Environment blockEnv(environment);
+                for (auto child : node.statements) {
+                    interpret(child, blockEnv, outputFile, context);
+                }
+                return Reference::Void();
             }
             case NodeType::DECLARATION: {
                 auto node = parser.getDeclaration(nodeIndex);
-                // TODO: support using non-identifiers?
-                auto value = interpret(node.value, environment, outputFile);
+                // NOTE: don't support using non-identifiers
+                auto definitionName = parser.getDefinition(node.definition).name->lexeme;
+                auto valueContext = CompilerContext(context);
+                valueContext.name = definitionName;
+                auto value = interpret(node.value, environment, outputFile, valueContext);
 
                 bool compileTime = parser.getToken(encoded.token).type == TokenType::COLON;
-                auto definitionName = parser.getDefinition(node.definition).name->lexeme;
-                if (compileTime) {
-                    std::stringstream instruction;
-                    // Name type
-                    if (value->isType() && parser.getNode(node.definition).nodeType == NodeType::IDENTIFIER) {
-                        bool isDefined = Types::Pool().setTypeName(
-                            std::get<Types::TypeIndex>(value->value),
-                            std::move(
-                              std::string(parser.getIdentifier(node.definition).token->lexeme)
-                            )
-                        );
-                        if (!isDefined) {
-                            TODO("Anonymous structs");
-                        }
-                    } else if (value->isFunction()) {
-                        std::cout << "Type of identifier: " << static_cast<i32>(parser.getNode(node.definition).nodeType) << std::endl;
-                        std::stringstream nameStream;
-                        nameStream << "@" << environment.prefix << definitionName;
-                        std::string name = nameStream.str();
-                        // TODO parameters
-                        instruction << "define void " << name << " (){\n";
-                        // TODO function body
-                        auto functionLiteral = std::get<FunctionType>(value->value);
-                        auto body = parser.getBlock(functionLiteral.function.body);
 
-                        std::stringstream envPrefixBuilder;
-                        // envPrefixBuilder << environment.prefix << definitionName << ".";
-                        Environment functionEnv(environment);
-                        for (auto statement : body.statements) {
-                            interpret(statement, functionEnv, instruction);
-                        }
-
-                        instruction << "ret void\n}\n";
-                    }
-                    
-                    globalsStack.push(std::move(instruction));
-                }
-
-                auto reference = interpret(node.definition, environment, outputFile);
+                auto reference = interpret(node.definition, environment, outputFile, context);
                 reference->assign(value);
                 reference->isMutable = !compileTime;
                 if (!compileTime) {
@@ -115,7 +113,7 @@ class LLVMCompiler {
                 if (!node.type.has_value()) {
                     ref = Reference::variable(Types::indexOf(Types::Intrinsic::INFER), std::move(llvmName.str()));
                 } else {
-                    Reference* type = interpret(node.type.value(), environment, outputFile);
+                    Reference* type = interpret(node.type.value(), environment, outputFile, context);
                     if (!type->isType()) {
                         std::stringstream message;
                         message << "Type for identifier " << node.name->lexeme << " is not a type";
@@ -145,9 +143,9 @@ class LLVMCompiler {
             case NodeType::ASSIGNMENT: {
                 auto node = parser.getAssignment(nodeIndex);
                 auto assigneeEncoded = parser.getNode(node.assignee);
-                auto value = interpret(node.value, environment, outputFile);
+                auto value = interpret(node.value, environment, outputFile, context);
 
-                auto assignee = interpret(node.assignee, environment, outputFile);
+                auto assignee = interpret(node.assignee, environment, outputFile, context);
                 if (assignee->storageType != StorageType::VARIABLE) {
                     throw std::invalid_argument("Can't assign to literal");
                 }
@@ -161,11 +159,11 @@ class LLVMCompiler {
             }
             case NodeType::FUNCTION_CALL: {
                 auto node = parser.getFunctionCall(nodeIndex);
-                auto function = interpret(node.functionValue, environment, outputFile);
+                auto function = interpret(node.functionValue, environment, outputFile, context);
                 
                 std::vector<Reference*> arguments;
                 for (auto arg : node.arguments) {
-                    arguments.push_back(interpret(arg, environment, outputFile));
+                    arguments.push_back(interpret(arg, environment, outputFile, context));
                 }
                 if (function->type == Types::indexOf(Types::Intrinsic::FUNCTION)) {
                     TODO("Calling for user functions");
@@ -201,7 +199,7 @@ class LLVMCompiler {
                 auto token = *node.token;
                 if (token.type == TokenType::STRING) {
                     TODO("Length-based strings");
-                    auto name = environment.addConstant();
+                    auto [_, name] = environment.addConstant();
                     auto stringValue = token.lexeme;
                     static std::string nullByte = "\\00";
                     // TODO: use string types instead of C strings
@@ -212,7 +210,7 @@ class LLVMCompiler {
                     return ref;
                 }
                 if (token.type == TokenType::NULL_TERMINATED_STRING) {
-                    auto name = environment.addConstant();
+                    auto [_, name] = environment.addConstant();
                     auto stringValue = token.lexeme;
                     static std::string nullByte = "\\00";
                     std::stringstream instruction;
@@ -243,50 +241,156 @@ class LLVMCompiler {
             case NodeType::BINARY_OP: {
                 auto node = parser.getBinaryOp(nodeIndex);
                 auto opType = node.token->type;
-                auto leftVal = interpret(node.left, environment, outputFile);
-                auto rightVal = interpret(node.right, environment, outputFile);
-                TODO("Binary ops");
-                // switch (opType) {
-                //     case TokenType::PLUS:
-                //         return leftVal->add(rightVal);
-                //     case TokenType::MINUS:
-                //         return leftVal->sub(rightVal);
-                //     case TokenType::DIV:
-                //         return leftVal->div(rightVal);
-                //     case TokenType::MULT:
-                //         return leftVal->mul(rightVal);
-                //     default:
-                //         throw std::invalid_argument("Unknown binary operation");
-                // }
+                auto leftVal = interpret(node.left, environment, outputFile, context);
+                auto rightVal = interpret(node.right, environment, outputFile, context);
+                auto resultType = Types::Pool().coerce(leftVal->type, rightVal->type);
+                if (!resultType.has_value()) {
+                    throw std::invalid_argument("Unable to perform binary operation on incompatible types");
+                }
+                auto type = resultType.value();
+                auto leftLiteral = toLiteral(leftVal, outputFile, environment);
+                auto rightLiteral = toLiteral(rightVal, outputFile, environment);
+                auto resultName = environment.addTemporary();
+                outputFile << resultName << " = ";
+
+                switch (opType) {
+                    case TokenType::PLUS: {
+                        if (Types::Pool().isInt(type)) outputFile << "add";
+                        else if (Types::Pool().isFloat(type)) outputFile << "fadd";
+                        else crashBinOp(node.token, leftVal, rightVal);
+                        break;
+                    }
+                    case TokenType::MINUS: {
+                        if (Types::Pool().isInt(type)) outputFile << "sub";
+                        else if (Types::Pool().isFloat(type)) outputFile << "fsub";
+                        else crashBinOp(node.token, leftVal, rightVal);
+                        break;
+                    }
+                    case TokenType::DIV: {
+                        if (Types::Pool().isSignedInt(type)) outputFile << "sdiv";
+                        else if (Types::Pool().isInt(type)) outputFile << "udiv";
+                        else if (Types::Pool().isFloat(type)) outputFile << "fdiv";
+                        else crashBinOp(node.token, leftVal, rightVal);
+                        break;
+                    }
+                    case TokenType::MULT: {
+                        if (Types::Pool().isInt(type)) outputFile << "mul";
+                        else if (Types::Pool().isFloat(type)) outputFile << "fmul";
+                        else crashBinOp(node.token, leftVal, rightVal);
+                        break;
+                    }
+                    default:
+                        throw std::invalid_argument("Unknown binary operation");
+                }
+
+                auto llvmTypeName = Types::Pool().getLLVMType(type);
+                outputFile << " " << llvmTypeName << " " << leftLiteral << ", " << rightLiteral << "\n";
+                return Reference::literal(type, std::move(resultName));
             }
             case NodeType::IDENTIFIER: {
                 auto node = parser.getIdentifier(nodeIndex);
-                return environment.find(node.token->lexeme);
+                std::optional<Reference*> value = environment.find(node.token->lexeme);
+                if (!value.has_value()) {
+                    std::stringstream message;
+                    message << "Identifier \"" << node.token->lexeme << "\" not defined";
+                    throw std::invalid_argument(message.str());
+                }
+                return value.value();
             }
             case NodeType::FUNCTION_LITERAL: {
                 auto node = parser.getFunctionLiteral(nodeIndex);
-                auto function = FunctionLiteral(FunctionLiteral {.parser = &parser, .declarationEnvironment = &environment, .function = node});
-                auto value = new Reference(std::move(function));
-                return value;
+                Types::TypeIndex returnType = Types::indexOf(Types::Intrinsic::VOID);
+                if (node.returnType.has_value()) {
+                    auto boxedReturnType = interpret(node.returnType.value(), environment, outputFile, context);
+                    if (!boxedReturnType->isType()) {
+                        throw std::invalid_argument("Return type of function must be a compile-time known type");
+                    }
+                    returnType = std::get<Types::TypeIndex>(boxedReturnType->value);
+                }
+
+                std::stringstream instruction;
+                std::string llvmName;
+                std::string _prefix;
+                std::string_view prefix;
+                if(context.name.has_value()) {
+                    prefix = context.name.value();
+                    llvmName = environment.addConstant(prefix);
+                } else {
+                    auto [prefixNum, name] = environment.addConstant();
+                    llvmName = std::move(name);
+                    _prefix = std::to_string(prefixNum);
+                    prefix = std::string_view(_prefix);
+                }
+
+                Environment functionEnvironment = Environment(&environment, llvmName);
+                CompilerContext functionContext(context);
+                functionContext.returnType = returnType;
+                
+                bool canReturn = Types::Pool().isLlvmLiteralType(returnType);
+                instruction << "define " << (canReturn ? Types::Pool().getLLVMType(returnType) : "void") << " " << llvmName << " (";
+                bool hasParameters = false;
+                if (!canReturn) {
+                    // TODO: factor out %return register
+                    instruction << Types::Pool().getLLVMType(returnType) << "* noalias sret %return";
+                    hasParameters = true;
+                }
+                for (NodeIndex parameterIndex : node.parameters) {
+                    if (hasParameters) {
+                        instruction << ", ";
+                    }
+                    hasParameters = true;
+
+                    auto parameterDefinition = parser.getDefinition(parameterIndex);
+                    // TODO: default values
+                    if (!parameterDefinition.type.has_value()) {
+                        throw std::invalid_argument("Parameters must have a type");
+                    }
+
+                    Types::TypeIndex parameterType = std::get<Types::TypeIndex>(interpret(parameterDefinition.type.value(), functionEnvironment, instruction, context)->value);
+                    bool isLiteralParameter = Types::Pool().isLlvmLiteralType(parameterType);
+                    
+                    std::string_view paramName = parameterDefinition.name->lexeme;
+                    std::string parameterLlvmName = "%" + std::string(paramName);
+                    functionEnvironment.define(paramName, isLiteralParameter ? Reference::literal(parameterType, std::move(parameterLlvmName)) : Reference::variable(parameterType, std::move(llvmName)));
+
+                    instruction << Types::Pool().getLLVMType(parameterType);
+                    if (!isLiteralParameter) {
+                        // TODO: type alignment; for now align to s64
+                        instruction << "* byval align 8 " << parameterLlvmName;
+                    }
+                }
+                // TODO: attributes https://llvm.org/docs/LangRef.html#function-attributes
+                instruction << ") {\n";
+
+                auto body = parser.getBlock(node.body);
+                std::vector<Types::TypeIndex> parameterTypes;
+                for (auto statement : body.statements) {
+                    interpret(statement, functionEnvironment, instruction, functionContext);
+                }
+
+                // TODO: ensure return value
+                if (returnType == indexOf(Types::Intrinsic::VOID)) {
+                    instruction << "ret void\n";
+                }
+
+                instruction << "}\n\n";
+                globalsStack.push(std::move(instruction));
+                Types::TypeIndex functionType = Types::Pool().addFunction(parameterTypes, returnType);
+                return Reference::literal(functionType, std::move(llvmName));
             }
             case NodeType::POINTER_OP: {
                 auto node = parser.getPointerOp(nodeIndex);
-                auto value = interpret(node.operand, environment, outputFile);
-                TODO("Dereferencing");
-                // switch(node.opType) {
-                //     case Encodings::PointerOpType::DEREFERENCE: {
-                //         // TODO: better errors
-                //         assert(Types::Pool.isPointer(value->type));
-                //         return std::get<Reference*>(value->value);
-                //     }
-                //     case Encodings::PointerOpType::REFERENCE: {
-                //         if (value->isType()) {
-                //             return Reference::pointerTo(std::get<Types::TypeIndex>(value->value));
-                //         } else {
-                //             return Reference::pointerTo(value);
-                //         }
-                //     }
-                // }
+                auto value = interpret(node.operand, environment, outputFile, context);
+                switch(node.opType) {
+                    case Encodings::PointerOpType::DEREFERENCE: return dereference(value, outputFile, environment);
+                    case Encodings::PointerOpType::REFERENCE: {
+                        if (value->isType()) {
+                            return Reference::pointerTo(std::get<Types::TypeIndex>(value->value));
+                        } else {
+                            return Reference::pointerTo(value);
+                        }
+                    }
+                }
             }
             case NodeType::UNARY:
             case NodeType::PARAMETER_LIST:
@@ -297,7 +401,7 @@ class LLVMCompiler {
             case NodeType::IF: {
                 auto node = parser.getIf(nodeIndex);
                 // TODO: add br instruction
-                auto condition = interpret(node.condition, environment, outputFile);
+                auto condition = interpret(node.condition, environment, outputFile, context);
                 if (condition->type != Types::Pool().boolean) {
                     std::stringstream ss;
                     ss << "Condition of an 'if' statement needs to be of type 'bool', but was type '" << Types::Pool().typeName(condition->type) << "' " << condition->llvmName();
@@ -313,7 +417,7 @@ class LLVMCompiler {
                 // If
                 std::stringstream ifInstruction;
                 ifInstruction << ifLabel << ":\n";
-                auto ifResult = interpret(node.value, environment, ifInstruction);
+                auto ifResult = interpret(node.value, environment, ifInstruction, context);
                 std::optional<Types::TypeIndex> resultType = ifResult->type;
 
                 // Else
@@ -321,7 +425,7 @@ class LLVMCompiler {
                 std::stringstream elseInstruction;
                 if (node.elseValue.has_value()) {
                     elseInstruction << elseLabel << ":\n";
-                    elseResult = interpret(node.elseValue.value(), environment, elseInstruction);
+                    elseResult = interpret(node.elseValue.value(), environment, elseInstruction, context);
                     resultType = Types::Pool().isAssignable(resultType.value(), elseResult->type);
                 }
 
@@ -358,46 +462,106 @@ class LLVMCompiler {
 
                 return Reference::Void();
             }
-            case NodeType::BOOLEAN_LITERAL:
+            case NodeType::BOOLEAN_LITERAL: {
                 std::cout << "Boolean literal" << std::endl;
                 return Reference::of(parser.getBooleanLiteral(nodeIndex));
+            }
             case NodeType::STRUCT: {
                 auto node = parser.getStruct(nodeIndex);
+                // TODO: methods
                 auto structDefinition = Types::Struct();
-                auto definitionEnv = new Environment(environment);
-                for (auto fieldIndex : node.children) {
-                    interpret(fieldIndex, *definitionEnv, outputFile);
-                }
 
-                std::vector<Identifier> fields;
-                std::transform(definitionEnv->defs.symbolValues.begin(), definitionEnv->defs.symbolValues.end(), std::back_inserter(fields), [](std::pair<Identifier, Reference*> a){return a.first;});
-                std::sort(fields.begin(), fields.end(), [definitionEnv](Identifier a, Identifier b) { return definitionEnv->defs.indexOf(a) < definitionEnv->defs.indexOf(b);});
-                for (auto field : fields) {
-                    auto value = definitionEnv->defs.symbolValues[field];
-                    // Copy fields into either fields or statics
-                    if (value->isMutable) {
-                        structDefinition.fields.define(field, value);
-                    } else {
-                        structDefinition.statics.define(field, value);
+                std::stringstream ss;
+                std::string llvmName = context.name.has_value() ? environment.addGlobal(context.name.value()) : environment.addGlobal();
+                ss << llvmName << " = type {";
+                for (auto fieldIndex : node.children) {
+                    auto fieldNode = parser.getNode(fieldIndex);
+                    auto nodeType = fieldNode.nodeType;
+                    switch (nodeType) {
+                        case NodeType::DEFINITION: {
+                            auto definitionNode = parser.getDefinition(fieldIndex);
+                            Reference* boxedType = interpret(definitionNode.type.value(), environment, outputFile, context);
+                            Types::TypeIndex type = std::get<Types::TypeIndex>(boxedType->value);
+
+                            // TODO: default values
+                            structDefinition.fields.define(definitionNode.name->lexeme, Reference::ofType(boxedType));
+                            ss << Types::Pool().getLLVMType(type) << ", ";
+                            break;
+                        }
+                        default: throw std::invalid_argument("TODO: implement struct fields");
                     }
                 }
-                free(definitionEnv);
-                Types::TypeIndex structTypeIndex = Types::Pool().addStruct(structDefinition, "");
-                return Reference::typeReference(structTypeIndex);
+                ss << "}";
+                globalsStack.push(ss);
             }
             case NodeType::DOT_ACCESS: {
                 auto node = parser.getDotAccess(nodeIndex);
-                Reference* object = interpret(node.object, environment, outputFile);
-                return object->getField(node.fieldName->lexeme);
+                Reference* object = interpret(node.object, environment, outputFile, context);
+                if (object->isType()) {
+                    throw std::invalid_argument("Unable to get field for non-object");
+                }
+                Types::TypeIndex type = object->type;
+
+                // TODO: auto dereference pointers
+                Types::OptionalType dereferenced = Types::Pool().dereference(type);
+                if (dereferenced.has_value()) {
+                    TODO("Implement automatic dereferencing for field access on pointer types");
+                }
+                std::string_view fieldName = node.fieldName->lexeme;
+                std::optional<Reference*> boxedField = Types::Pool().getFieldIndex(type, fieldName);
+
+                if (!boxedField.has_value()) {
+                    
+                    throw std::invalid_argument("Field");
+                }
+                
+                // TODO: literals
+                Reference* field = boxedField.value();
+                std::string fieldPointer = environment.addTemporary();
+                Types::TypeIndex fieldType = field->type;
+                if (object->storageType == StorageType::VARIABLE) {
+                    outputFile << fieldPointer << " = getelementptr inbounds " << Types::Pool().getLLVMType(object->type) << ", ptr " << object->llvmName() << ", i32 0, i32 " << ;
+                }
             }
+            case NodeType::WHILE: {
+                auto node = parser.getWhileLoop(nodeIndex);
+                auto loopId = environment.getNextTemporary();
+                auto loopHeader = environment.addLabel("while", loopId);
+                auto loopBody = loopHeader + ".continue";
+                auto endLabel = loopHeader + ".break";
+                auto condition = interpret(node.condition, environment, outputFile, context);
+                if (condition->type != Types::Pool().boolean) {
+                    std::stringstream ss;
+                    ss << "Condition for while loop must be of type 'bool', but was of type '" << Types::Pool().typeName(condition->type) << "'";
+                    throw std::invalid_argument(ss.str());
+                }
+
+                outputFile << loopHeader << ":\n";
+                auto conditionLiteral = toLiteral(condition, outputFile, environment);
+
+                outputFile << "br i1 " << conditionLiteral << ", label %" << loopBody << ", label %" << endLabel << "\n";
+                outputFile << loopBody << ":\n";
+
+                interpret(node.loopBody, environment, outputFile, context);
+
+                outputFile << "br label %" << loopHeader;
+                outputFile << endLabel << ":\n";
+                return Reference::Void();
             }
+        }
         throw std::invalid_argument("Bruh im crashing tf out");
     }
 
+    void crashBinOp(TokenPointer token, Reference* leftVal, Reference* rightVal) {
+        std::stringstream ss;
+        ss << "Unable to perform binary operation '" << token->lexeme << "' on types '" << Types::Pool().typeName(leftVal->type) << "' and '" << Types::Pool().typeName(rightVal->type) << "'";
+        throw std::invalid_argument(std::move(ss.str()));
+    }
     
     void run(std::ostream& outputFile) {
+        CompilerContext context;
         for (auto node : program) {
-            interpret(node, fileEnvironment, outputFile);
+            interpret(node, fileEnvironment, outputFile, context);
             while (!globalsStack.empty()) {
                 outputFile << globalsStack.front().str() << "\n";
                 globalsStack.pop();

@@ -17,9 +17,15 @@ enum class TokenType {
     // Unary ops
     POINTER,
     DOT,
+    NOT,
     
+    // Control flow
     IF,
     ELSE,
+    FOR,
+    WHILE,
+
+    // Literals
     TRUE,
     FALSE,
     
@@ -27,7 +33,6 @@ enum class TokenType {
     ASSIGNMENT,
     DOUBLE_EQUAL,
     NOT_EQUAL,
-    NOT,
     EQUALITY,
     LESS_THAN,
     GREATER_THAN,
@@ -39,6 +44,15 @@ enum class TokenType {
     MINUS,
     MULT,
     DIV,
+    LOGICAL_AND,
+    LOGICAL_OR,
+    BITWISE_AND,
+    BITWISE_OR,
+    XOR,
+    REMAINDER,
+    SHIFT_LEFT,
+    SHIFT_RIGHT,
+    ARITHMETIC_SHIFT_RIGHT,
 
     // Keywords
     FUNCTION,

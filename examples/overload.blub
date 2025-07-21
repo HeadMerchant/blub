@@ -1,0 +1,15 @@
+print :: fn(message: i32) {
+	printf(c"%d", message)
+}
+
+print :: fn(message: bool) {
+	printf(if (message) c"true" else c"false")
+}
+
+main :: fn() {
+	print(0)
+	print(3)
+	print(7)
+	print(true)
+	print(false)
+}

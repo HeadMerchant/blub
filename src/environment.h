@@ -25,14 +25,14 @@ class Environment {
 
   Environment(Map defs, Environment* parent = nullptr): parent(parent), defs(defs), imports() {}
 
-  Reference *find(std::string_view name) {
+  std::optional<Reference*> find(std::string_view name) {
     Environment *env = this;
     while (env) {
       if (env->defs.isDefined(name))
         return env->defs.symbolValues[name];
       env = env->parent;
     }
-    return nullptr;
+    return std::nullopt;
   }
 
   bool define(std::string_view name, Reference *value) {
@@ -67,16 +67,27 @@ class Environment {
     return std::move(nameBuilder.str());
   }
 
-  std::string addConstant() {
+  std::pair<i32, std::string> addConstant() {
     std::stringstream name;
     name << "@" << prefix << nextAnonymousConstant;
-    nextAnonymousConstant++;
-    return std::move(name.str());
+    return {nextAnonymousConstant++, std::move(name.str())};
   }
 
-  std::string addConstant(std::string name) {
+  std::string addConstant(std::string_view name) {
     std::stringstream ss;
     ss << "@" << prefix << name;
+    return std::move(ss.str());
+  }
+
+  std::string addGlobal(std::string_view name) {
+    std::stringstream ss;
+    ss << "%" << prefix << name;
+    return std::move(ss.str());
+  }
+
+  std::string addGlobal() {
+    std::stringstream ss;
+    ss << "%" << prefix << nextAnonymousConstant++;
     return std::move(ss.str());
   }
 

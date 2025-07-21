@@ -22,7 +22,11 @@ std::unordered_map<std::string_view, TokenType> keywords = {
     {"else", TokenType::ELSE},
     {"true", TokenType::TRUE},
     {"false", TokenType::FALSE},
-    // true/false
+    {"and", TokenType::LOGICAL_AND},
+    {"or", TokenType::LOGICAL_OR},
+    {"for", TokenType::FOR},
+    {"while", TokenType::WHILE},
+    {"xor", TokenType::XOR},
     // use
     // todo: union, enum, trait, import, impl, loop, match, if/else, mut, pointer
 };
@@ -140,6 +144,32 @@ class Tokenizer {
                 addToken(TokenType::EQUALITY);
             } else {
                 addToken(TokenType::ASSIGNMENT);
+            }
+            break;
+        }
+        case '|': {
+            addToken(TokenType::BITWISE_OR);
+            break;
+        }
+        case '&': {
+            addToken(TokenType::BITWISE_AND);
+            break;
+        }
+        case '<': {
+            if (peek() == '=') {
+                advance();
+                addToken(TokenType::LEQ);
+            } else {
+                addToken(TokenType::LESS_THAN);
+            }
+            break;
+        }
+        case '>': {
+            if (peek() == '=') {
+                advance();
+                addToken(TokenType::GEQ);
+            } else {
+                addToken(TokenType::GREATER_THAN);
             }
             break;
         }

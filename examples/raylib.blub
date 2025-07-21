@@ -1,0 +1,26 @@
+Color :: struct {
+	red: u8
+	green: u8
+	blue: u8
+	alpha: u8
+}
+InitWindow :: fn(width: s32, height: s32, title: ^u8)
+WindowShouldClose :: fn(): bool
+ClearBackground :: fn(color: Color)
+DrawText :: fn(message: ^u8, posX: s32, posY: s32, fontSize: s32, color: Color)
+CloseWindow :: fn()
+
+main :: fn() {
+    initWindow(800, 450, c"raylib [core] example - basic window")
+
+    while (!WindowShouldClose()) {
+        BeginDrawing();
+        ClearBackground(RAYWHITE);
+        DrawText(c"Congrats! You created your first window!", 190, 200, 20, LIGHTGRAY);
+        EndDrawing();
+    }
+
+    CloseWindow();
+
+    return 0;
+}

@@ -2,7 +2,6 @@
 #include <functional>
 #include <stdexcept>
 #include <vector>
-#include "parser.h"
 #include "types.h"
 #include <cassert>
 #include <variant>
@@ -14,11 +13,13 @@ using ArrayType = std::vector<Reference*>;
 using FloatType = float;
 
 class Environment;
+
+using Definition = std::pair<std::string_view, Types::TypeIndex>;
 struct FunctionLiteral {
-    Parser* parser;
-    Environment* declarationEnvironment;
-    Encodings::FunctionLiteral function;
+    std::vector<Definition> parameters;
+    Types::TypeIndex returnType;
 };
+
 using FunctionType = FunctionLiteral;
 
 using IntType = int;
@@ -44,7 +45,44 @@ enum class StorageType {
 };
 
 using LLVMName = std::string;
-using LiteralValue = std::variant<Types::TypeIndex, FunctionType, UserTypeValue, LLVMName, LLVMFunction>;
+
+// using FunctionSignature = std::pair<Types::TypeIndex, LLVMName>;
+// using OptionalFunctionSignature = std::optional<FunctionSignature*>;
+// struct FunctionOverloadTable {
+//     std::vector<FunctionSignature> functions;
+
+//     OptionalFunctionSignature findSignature(Types::TypeIndex arguments) {
+//         for (FunctionSignature& function : functions) {
+//             Types::TypeIndex signature = function.first;
+//             auto [parameters, returnType] = Types::Pool().functionParamsAndReturnType(signature);
+//             Types::OptionalType isAssignable = Types::Pool().isTupleAssignable(arguments, parameters);
+//             // TODO: tie-breaking
+//             if (isAssignable.has_value()) {
+//                 return &function;
+//             }
+//         }
+
+//         return std::nullopt;
+//     }
+
+//     std::string_view addSignature(Types::TypeIndex function, std::string name) {
+//         auto newParameters = Types::Pool().functionParamsAndReturnType(function).first;
+//         for (FunctionSignature& signature : functions) {
+//             auto [parameters, returnType] = Types::Pool().functionParamsAndReturnType(signature.first);
+//             Types::OptionalType isAssignable = Types::Pool().isTupleAssignable(newParameters, parameters);
+//             if (isAssignable.has_value()) {
+//                 std::stringstream message;
+//                 message << "Pre-existing function definition with signature " << Types::Pool().typeName(parameters);
+//                 throw std::invalid_argument(std::move(message.str()));
+//             }
+//         }
+        
+//         functions.emplace_back(function, std::move(name));
+//         return std::string_view(functions.back().second);
+//     }
+// };
+
+using LiteralValue = std::variant<Types::TypeIndex, UserTypeValue, LLVMName, LLVMFunction, FunctionType, i32>;
 struct Reference {
     Types::TypeIndex type;
     LiteralValue value;
@@ -66,11 +104,13 @@ struct Reference {
     }
     
     Reference(Types::TypeIndex type): type(type), isInitialized(false) {}
+    Reference(Types::TypeIndex type, LiteralValue value): type(type), value(std::move(value)) {}
     Reference(Types::TypeIndex type, LLVMName llvmName, StorageType storageType): type(type), value(std::move(llvmName)), storageType(storageType) {}
     Reference(Types::Intrinsic type): type(Types::indexOf(type)), isInitialized(false) {}
     Reference(FunctionType function): type(Types::indexOf(Types::Intrinsic::FUNCTION)), value(std::move(function)) {}
     Reference(LLVMFunction function): type(Types::indexOf(Types::Intrinsic::LLVM_FUNCTION)), value(std::move(function)), storageType(StorageType::LITERAL) {}
     Reference(bool value): type(Types::Pool().boolean), isMutable(false), isInitialized(true), value(value ? "true" : "false"), storageType(StorageType::LITERAL) {}
+    // Reference(FunctionOverloadTable value): type(Types::indexOf(Types::Intrinsic::FUNCTION_TABLE)), isMutable(false), isInitialized(true), value(std::move(value)) {}
 
     public:
     static Reference* literal(Types::TypeIndex type, LLVMName llvmName) {
@@ -106,38 +146,17 @@ struct Reference {
     }
 
     static Reference* pointerTo(Reference* value) {
+        if (value->storageType != StorageType::VARIABLE) {
+            throw std::invalid_argument("Unable to create reference to temporary value");
+        }
         Types::TypeIndex pointerType = Types::Pool().pointerTo(value->type);
         assert(Types::Pool()[pointerType].definition == value->type.value);
-
-        auto ref = new Reference(pointerType);
-        return ref;
+        return Reference::variable(pointerType, std::string(value->llvmName()));
     }
 
     static Reference* pointerTo(Types::TypeIndex type) {
         Types::TypeIndex pointerType = Types::Pool().pointerTo(type);
         return Reference::typeReference(pointerType);
-    }
-
-    Reference* getField(std::string_view fieldName) {
-        // TODO: consider limiting depth
-        // TODO: static variables
-        // if (isType()) {
-        //     return ->getField(fieldName);
-        // }
-
-        Types::Type typeDefinition = Types::Pool().getDefinition(type);
-        if (typeDefinition.type == Types::Intrinsic::STRUCT) {
-            Types::Struct& structDefinition = Types::Pool().getStruct(type);
-
-            Reference* fieldValue = structDefinition.getField(fieldName);
-            if (fieldValue != nullptr) {
-                return fieldValue;
-            }
-
-            i32 fieldIndex = structDefinition.fields.indexOf(fieldName);
-        }
-
-        throw std::invalid_argument("Unable to access fields for type " + Types::Pool().typeName(type));
     }
 
     void assign(Reference* newValue) {
@@ -196,4 +215,17 @@ struct Reference {
     std::string_view llvmName() {
         return std::string_view(std::get<LLVMName>(value));
     }
+
+    static Reference* structField(Types::TypeIndex type, i32 fieldIndex) {
+        return new Reference(type, LiteralValue(fieldIndex));
+    }
+    
+    std::optional<i32*> structFieldIndex() {
+        if (i32* indexPointer = std::get_if<i32>(&value)) {
+            return indexPointer;
+        } else {
+            return std::nullopt;
+        }
+    }
 };
+

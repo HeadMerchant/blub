@@ -31,6 +31,7 @@ enum class NodeType {
   BOOLEAN_LITERAL,
   STRUCT,
   DOT_ACCESS,
+  WHILE,
 };
 
 enum class BinaryOps {
@@ -76,6 +77,11 @@ using ChildSpan = std::span<NodeIndex> ;
 using OptionalNode = std::optional<NodeIndex>;
 
 namespace Encodings {
+struct WhileLoop {
+  NodeIndex condition;
+  NodeIndex loopBody;
+};
+
 struct Declaration {
   NodeIndex definition;
   NodeIndex value;
@@ -503,6 +509,15 @@ public:
     auto encoded = getNode(node,NodeType::DOT_ACCESS);
     return {.object = {encoded.left}, .fieldName = toPointer({encoded.right})};
   }
+
+  NodeIndex addNode(Encodings::WhileLoop node, TokenPointer token) {
+    return addNode(ASTNode {.left = node.condition.value, .right = node.loopBody.value, .nodeType = NodeType::WHILE});
+  }
+
+  Encodings::WhileLoop getWhileLoop(NodeIndex node) {
+    auto encoded = getNode(node,NodeType::WHILE);
+    return {.condition = {encoded.left}, .loopBody = {encoded.right}};
+  }
   
 public:
   std::vector<NodeIndex> parse() {
@@ -825,6 +840,14 @@ public:
     consume(TokenType::RIGHT_CURLY_BRACE, "Struct field definitions must be declared between {}");
 
     return addNode(Encodings::Struct {.children = ChildSpan(definitions)}, token);
+  }
+
+  NodeIndex whileLoop() {
+    TokenPointer token = consume(TokenType::WHILE, "'while' loop requires 'while' keyword");
+    NodeIndex condition = expression();
+    NodeIndex loopBody = block();
+    Encodings::WhileLoop loop = {.condition = condition, .loopBody = loopBody};
+    return addNode(loop, token);
   }
 };
 
