@@ -14,6 +14,7 @@
 #include "logging.h"
 #include "types.h"
 #include "common.h"
+#include <fmt/format.h>
 
 struct CompilerContext {
     // NodeIndex index;
@@ -474,6 +475,7 @@ class LLVMCompiler {
                 std::stringstream ss;
                 std::string llvmName = context.name.has_value() ? environment.addGlobal(context.name.value()) : environment.addGlobal();
                 ss << llvmName << " = type {";
+                i32 fieldIndexNumber = 0;
                 for (auto fieldIndex : node.children) {
                     auto fieldNode = parser.getNode(fieldIndex);
                     auto nodeType = fieldNode.nodeType;
@@ -484,14 +486,15 @@ class LLVMCompiler {
                             Types::TypeIndex type = std::get<Types::TypeIndex>(boxedType->value);
 
                             // TODO: default values
-                            structDefinition.fields.define(definitionNode.name->lexeme, Reference::ofType(boxedType));
+                            structDefinition.fields.define(definitionNode.name->lexeme, Reference::structField(type, fieldIndexNumber));
                             ss << Types::Pool().getLLVMType(type) << ", ";
                             break;
                         }
                         default: throw std::invalid_argument("TODO: implement struct fields");
                     }
+                    fieldIndexNumber++;
                 }
-                ss << "}";
+                ss << "}\n";
                 globalsStack.push(ss);
             }
             case NodeType::DOT_ACCESS: {
@@ -501,6 +504,7 @@ class LLVMCompiler {
                     throw std::invalid_argument("Unable to get field for non-object");
                 }
                 Types::TypeIndex type = object->type;
+                std::string_view objectLlvmType = Types::Pool().getLLVMType(type);
 
                 // TODO: auto dereference pointers
                 Types::OptionalType dereferenced = Types::Pool().dereference(type);
@@ -511,16 +515,24 @@ class LLVMCompiler {
                 std::optional<Reference*> boxedField = Types::Pool().getFieldIndex(type, fieldName);
 
                 if (!boxedField.has_value()) {
-                    
-                    throw std::invalid_argument("Field");
+                    throw std::invalid_argument(fmt::format("No field '{}' found in struct '{}'", fieldName, Types::Pool().typeName(type)));
                 }
                 
                 // TODO: literals
                 Reference* field = boxedField.value();
                 std::string fieldPointer = environment.addTemporary();
                 Types::TypeIndex fieldType = field->type;
+                if (!field->structFieldIndex().has_value()) {
+                    throw std::invalid_argument(fmt::format("Internal: malformed field index {}. Non-integer index value", field->llvmName()));
+                }
+
+                i32 fieldIndex = *field->structFieldIndex().value();
                 if (object->storageType == StorageType::VARIABLE) {
-                    outputFile << fieldPointer << " = getelementptr inbounds " << Types::Pool().getLLVMType(object->type) << ", ptr " << object->llvmName() << ", i32 0, i32 " << ;
+                    outputFile << fmt::format("{} = getelementptr inbounds {}, ptr {}, i32 0, i32 {}\n", fieldPointer, objectLlvmType, object->llvmName(), fieldIndex);
+                    return Reference::variable(fieldType, std::move(fieldPointer));
+                } else {
+                    outputFile << fmt::format("{} = extractvalue {} {}, {}\n", fieldPointer, objectLlvmType, object->llvmName(), fieldIndex);
+                    return Reference::literal(fieldType, std::move(fieldPointer));
                 }
             }
             case NodeType::WHILE: {
