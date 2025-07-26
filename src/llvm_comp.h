@@ -202,10 +202,9 @@ class LLVMCompiler {
                     TODO("Length-based strings");
                     auto [_, name] = environment.addConstant();
                     auto stringValue = token.lexeme;
-                    static std::string nullByte = "\\00";
                     // TODO: use string types instead of C strings
                     std::stringstream instruction;
-                    instruction << name << " = global [" << stringValue.length()+1 << " x i8] c\"" << stringValue << nullByte << "\", align 1\n";
+                    instruction << fmt::format(" = global [{} x i8] c\"{}\" align 1\n", name, stringValue.length(), stringValue);
                     globalsStack.push(std::move(instruction));
                     Reference* ref = Reference::literal(Types::indexOf(Types::Intrinsic::STRING), std::move(name));
                     return ref;
@@ -215,7 +214,7 @@ class LLVMCompiler {
                     auto stringValue = token.lexeme;
                     static std::string nullByte = "\\00";
                     std::stringstream instruction;
-                    instruction << name << " = global [" << stringValue.length()+1 << " x i8] c\"" << stringValue << nullByte << "\", align 1\n";
+                    instruction << fmt::format(" = global [{} x i8] c\"{}{}\" align 1\n", name, stringValue.length()+1, stringValue, nullByte);
                     globalsStack.push(std::move(instruction));
                     Reference* ref = Reference::literal(Types::Pool().pointerTo(Types::Pool().u8), std::move(name));
                     return ref;
@@ -244,57 +243,81 @@ class LLVMCompiler {
                 auto opType = node.token->type;
                 auto leftVal = interpret(node.left, environment, outputFile, context);
                 auto rightVal = interpret(node.right, environment, outputFile, context);
-                auto resultType = Types::Pool().coerce(leftVal->type, rightVal->type);
-                if (!resultType.has_value()) {
-                    throw std::invalid_argument("Unable to perform binary operation on incompatible types");
-                }
-                auto type = resultType.value();
                 auto leftLiteral = toLiteral(leftVal, outputFile, environment);
                 auto rightLiteral = toLiteral(rightVal, outputFile, environment);
                 auto resultName = environment.addTemporary();
-                outputFile << resultName << " = ";
 
-                switch (opType) {
-                    case TokenType::PLUS: {
-                        if (Types::Pool().isInt(type)) outputFile << "add";
-                        else if (Types::Pool().isFloat(type)) outputFile << "fadd";
-                        else crashBinOp(node.token, leftVal, rightVal);
-                        break;
+                if (bool isArithmetic = (opType == TokenType::PLUS || opType == TokenType::MINUS || opType == TokenType::MULT || opType == TokenType::DIV)) {
+                    auto resultType = Types::Pool().coerce(leftVal->type, rightVal->type);
+                    if (!resultType.has_value()) {
+                        throw std::invalid_argument("Unable to perform binary operation on incompatible types");
                     }
-                    case TokenType::MINUS: {
-                        if (Types::Pool().isInt(type)) outputFile << "sub";
-                        else if (Types::Pool().isFloat(type)) outputFile << "fsub";
-                        else crashBinOp(node.token, leftVal, rightVal);
-                        break;
+                    auto type = resultType.value();
+                    std::string binaryOperator;
+                    switch (opType) {
+                        case TokenType::PLUS: {
+                            if (Types::Pool().isInt(type)) binaryOperator = "add";
+                            else if (Types::Pool().isFloat(type)) binaryOperator = "fadd";
+                            else crashBinOp(node.token, leftVal, rightVal);
+                            break;
+                        }
+                        case TokenType::MINUS: {
+                            if (Types::Pool().isInt(type)) binaryOperator = "sub";
+                            else if (Types::Pool().isFloat(type)) binaryOperator = "fsub";
+                            else crashBinOp(node.token, leftVal, rightVal);
+                            break;
+                        }
+                        case TokenType::DIV: {
+                            if (Types::Pool().isSignedInt(type)) binaryOperator = "sdiv";
+                            else if (Types::Pool().isInt(type)) binaryOperator = "udiv";
+                            else if (Types::Pool().isFloat(type)) binaryOperator = "fdiv";
+                            else crashBinOp(node.token, leftVal, rightVal);
+                            break;
+                        }
+                        case TokenType::MULT: {
+                            if (Types::Pool().isInt(type)) binaryOperator = "mul";
+                            else if (Types::Pool().isFloat(type)) binaryOperator = "fmul";
+                            else crashBinOp(node.token, leftVal, rightVal);
+                            break;
+                        }
+                        default:
+                            throw std::invalid_argument("Unknown binary operation");
                     }
-                    case TokenType::DIV: {
-                        if (Types::Pool().isSignedInt(type)) outputFile << "sdiv";
-                        else if (Types::Pool().isInt(type)) outputFile << "udiv";
-                        else if (Types::Pool().isFloat(type)) outputFile << "fdiv";
-                        else crashBinOp(node.token, leftVal, rightVal);
-                        break;
-                    }
-                    case TokenType::MULT: {
-                        if (Types::Pool().isInt(type)) outputFile << "mul";
-                        else if (Types::Pool().isFloat(type)) outputFile << "fmul";
-                        else crashBinOp(node.token, leftVal, rightVal);
+                    auto llvmTypeName = Types::Pool().getLLVMType(type);
+                    outputFile << fmt::format("{} = {} {} {}, {}", resultName, binaryOperator, llvmTypeName, leftLiteral, rightLiteral) << "\n";
+                    return Reference::literal(type, std::move(resultName));
+                }
+
+                auto leftType = leftVal->type;
+                auto rightType = rightVal->type;
+
+                switch(opType) {
+                    // TODO: slicing operations
+                    case TokenType::LEFT_BRACKET: {
+                        if (auto sliceElement = Types::Pool().sliceType(leftType)) {
+                            Types::TypeIndex elementType = *sliceElement;
+                            TODO("Indices for slices");
+                        } else if (auto arrayElement = Types::Pool().arrayType(rightType)) {
+                            Types::TypeIndex elementType = *arrayElement;
+                            if (!Types::Pool().isInt(rightType)) {
+                                throw std::invalid_argument("Index must be an integer");
+                            }
+                            outputFile << fmt::format("{} = getelementptr {}, ptr {}, {} {}", resultName, Types::Pool().getLLVMType(elementType), leftLiteral, Types::Pool().getLLVMType(rightType), rightLiteral) << "\n";
+                            return Reference::variable(elementType, std::move(resultName));
+                        } else crashBinOp(node.token, leftVal, rightVal);
                         break;
                     }
                     default:
                         throw std::invalid_argument("Unknown binary operation");
                 }
 
-                auto llvmTypeName = Types::Pool().getLLVMType(type);
-                outputFile << " " << llvmTypeName << " " << leftLiteral << ", " << rightLiteral << "\n";
-                return Reference::literal(type, std::move(resultName));
             }
             case NodeType::IDENTIFIER: {
                 auto node = parser.getIdentifier(nodeIndex);
                 std::optional<Reference*> value = environment.find(node.token->lexeme);
                 if (!value.has_value()) {
-                    std::stringstream message;
-                    message << "Identifier \"" << node.token->lexeme << "\" not defined";
-                    throw std::invalid_argument(message.str());
+                    std::string message = fmt::format("Identifier \"{}\" not defined", node.token->lexeme);
+                    throw std::invalid_argument(std::move(message));
                 }
                 return value.value();
             }
@@ -328,7 +351,7 @@ class LLVMCompiler {
                 functionContext.returnType = returnType;
                 
                 bool canReturn = Types::Pool().isLlvmLiteralType(returnType);
-                instruction << "define " << (canReturn ? Types::Pool().getLLVMType(returnType) : "void") << " " << llvmName << " (";
+                instruction << fmt::format("define {} {}(", (canReturn ? Types::Pool().getLLVMType(returnType) : "void"), llvmName);
                 bool hasParameters = false;
                 if (!canReturn) {
                     // TODO: factor out %return register
@@ -404,9 +427,8 @@ class LLVMCompiler {
                 // TODO: add br instruction
                 auto condition = interpret(node.condition, environment, outputFile, context);
                 if (condition->type != Types::Pool().boolean) {
-                    std::stringstream ss;
-                    ss << "Condition of an 'if' statement needs to be of type 'bool', but was type '" << Types::Pool().typeName(condition->type) << "' " << condition->llvmName();
-                    throw std::invalid_argument(ss.str());
+                    std::string message = fmt::format("Condition of an 'if' statement needs to be of type 'bool', but was type '{}' {}", Types::Pool().typeName(condition->type), condition->llvmName());
+                    throw std::invalid_argument(std::move(message));
                 }
 
                 auto blockIndex = environment.getNextTemporary();
@@ -434,20 +456,20 @@ class LLVMCompiler {
                 auto voidType = Types::indexOf(Types::Intrinsic::VOID);
                 auto hasReturnType = (resultType.value_or(voidType) != voidType) && node.elseValue.has_value();
                 if (hasReturnType) {
-                    outputFile << resultVariable << " = alloca " << Types::Pool().getLLVMType(resultType.value()) << "\n";
+                    outputFile << fmt::format("{} = alloca {}\n", resultVariable, Types::Pool().getLLVMType(resultType.value()));
                 }
                 std::string conditionName = toLiteral(condition, outputFile, environment);
 
                 if (node.elseValue.has_value()) {
-                    outputFile << "br i1 " << conditionName << ", label %" << ifLabel << ", label %" << elseLabel << "\n";
+                    outputFile << fmt::format("br i1 {}, label %{}, label %{}\n", conditionName, ifLabel, elseLabel);
                     outputFile << ifInstruction.str();
-                    outputFile << "br label %" << endLabel << "\n";
+                    outputFile << fmt::format("br label %{}\n", endLabel);
                     outputFile << elseInstruction.str();
                     outputFile << endLabel << ":\n";
                 } else {
-                    outputFile << "br i1 " << conditionName << ", label %" << ifLabel << ", label %" << endLabel << "\n";
+                    outputFile << fmt::format("br i1 {}, label %{}, label %{}\n", conditionName, ifLabel, endLabel);
                     outputFile << ifInstruction.str();
-                    outputFile << "br label %" << endLabel << "\n";
+                    outputFile << fmt::format("br label %{}\n", endLabel);
                     outputFile << endLabel << ":\n";
                 }
 
@@ -455,8 +477,8 @@ class LLVMCompiler {
                     // TODO: figure out i1, i16, etc... vs struct storage
                     auto phiResult = environment.addTemporary();
                     auto resultTypeName = Types::Pool().getLLVMType(resultType.value());
-                    outputFile << phiResult << " = phi " << resultTypeName << " [" << ifResult->llvmName() << ", %" << ifLabel << "], [" << elseResult->llvmName() << ", %" << elseLabel << "]\n";
-                    outputFile << "store " << resultTypeName << phiResult << ", " << resultTypeName << "* " << resultVariable << "\n";
+                    outputFile << fmt::format("{}  = phi {} [{}, %{}], [{}, %{}]\n", phiResult, resultTypeName, ifResult->llvmName(), ifLabel, elseResult->llvmName(), elseLabel);
+                    outputFile << fmt::format("store {} {}, {}* {}\n", resultTypeName, phiResult, resultTypeName, resultVariable);
                     // TODO: figure out storage type and assignment based on if and else branches
                     return Reference::variable(resultType.value(), std::move(resultVariable));
                 }
@@ -495,7 +517,7 @@ class LLVMCompiler {
                     fieldIndexNumber++;
                 }
                 ss << "}\n";
-                globalsStack.push(ss);
+                globalsStack.push(std::move(ss));
             }
             case NodeType::DOT_ACCESS: {
                 auto node = parser.getDotAccess(nodeIndex);
@@ -548,26 +570,41 @@ class LLVMCompiler {
                     throw std::invalid_argument(ss.str());
                 }
 
-                outputFile << loopHeader << ":\n";
+                outputFile << fmt::format("{}:\n", loopHeader);
                 auto conditionLiteral = toLiteral(condition, outputFile, environment);
 
-                outputFile << "br i1 " << conditionLiteral << ", label %" << loopBody << ", label %" << endLabel << "\n";
+                outputFile << fmt::format("br i1 {}, label %{}, label %{}\n", conditionLiteral, loopBody, endLabel);
                 outputFile << loopBody << ":\n";
 
                 interpret(node.loopBody, environment, outputFile, context);
 
-                outputFile << "br label %" << loopHeader;
+                outputFile << fmt::format("br label %{}\n", loopHeader);
                 outputFile << endLabel << ":\n";
                 return Reference::Void();
+            }
+            case NodeType::ARRAY_TYPE: {
+                auto node = parser.getArrayType(nodeIndex);
+
+                auto elementType = interpret(node.elementType, environment, outputFile, context)->unboxType();
+                if (!elementType.has_value()) {
+                    throw std::invalid_argument("Element type for array type (slice, fixed-size, etc) must be a compile-time known type");
+                }
+
+                if (auto slice = std::get_if<Encodings::ArrayType::Slice>(&node.storageType)) {
+                    return Reference::typeReference(Types::Pool().sliceOf(elementType.value()));
+                } else if (auto multiPointer = std::get_if<Encodings::ArrayType::MultiPointer>(&node.storageType)) {
+                    return Reference::typeReference(Types::Pool().multiPointerTo(elementType.value()));
+                }
+
+                TODO("Fixed-sized arrays");
             }
         }
         throw std::invalid_argument("Bruh im crashing tf out");
     }
 
     void crashBinOp(TokenPointer token, Reference* leftVal, Reference* rightVal) {
-        std::stringstream ss;
-        ss << "Unable to perform binary operation '" << token->lexeme << "' on types '" << Types::Pool().typeName(leftVal->type) << "' and '" << Types::Pool().typeName(rightVal->type) << "'";
-        throw std::invalid_argument(std::move(ss.str()));
+        std::string message = fmt::format("Unable to perform binary operation '{}' on types '{}' and '{}'", token->lexeme, Types::Pool().typeName(leftVal->type), Types::Pool().typeName(rightVal->type));
+        throw std::invalid_argument(std::move(message));
     }
     
     void run(std::ostream& outputFile) {
@@ -579,7 +616,7 @@ class LLVMCompiler {
                 globalsStack.pop();
             }
         }
-        // // std::cout << "\n\ndone interpretting\n\n";
+
         // auto main = fileEnvironment.find("main");
         // if (main == nullptr) {
         //    throw std::invalid_argument("Unable to find definition for function 'main'");

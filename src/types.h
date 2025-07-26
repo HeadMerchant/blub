@@ -1,7 +1,6 @@
 #pragma once
 
 #include "common.h"
-#include "interpreter/value.h"
 #include <iostream>
 #include <map>
 #include <optional>
@@ -54,7 +53,6 @@ namespace Types {
       UNTYPED_INT,
       UNTYPED_FLOAT,
       TUPLE,
-      ARRAY,
       STRING,
       NATIVE_FUNCTION,
       REFERENCE,
@@ -71,6 +69,10 @@ namespace Types {
 
       LAST = INFER,
       POINTER_TO,
+      // TODO: fixed-size array
+      SIZED_ARRAY,
+      SLICE,
+      MULTI_POINTER,
       STRUCT,
       GENERIC
   };
@@ -123,6 +125,12 @@ namespace Types {
     }
   };
 
+  struct PointerType {
+    TypeIndex pointer;
+    TypeIndex slice;
+    TypeIndex multiPointer;
+  };
+  
   // TODO: SoA this struct
   struct Type {
     Intrinsic type;
@@ -161,7 +169,7 @@ namespace Types {
       "TYPE",
       "INFER",
     };
-    std::map<TypeIndex, TypeIndex> pointersTo;
+    std::map<TypeIndex, PointerType> pointersTo;
     std::vector<Struct> structPool;
     std::vector<std::vector<TypeIndex>> tuplePool;
     std::map<std::vector<TypeIndex>, TypeIndex> tuples;
@@ -219,16 +227,33 @@ namespace Types {
     }
 
     TypeIndex pointerTo(TypeIndex type) {
-      assert(type.value <= types.size());
+      return pointerTypesFor(type).pointer;
+    }
+
+    TypeIndex sliceOf(TypeIndex type) {
+      return pointerTypesFor(type).slice;
+    }
+
+    TypeIndex multiPointerTo(TypeIndex type) {
+      return pointerTypesFor(type).multiPointer;
+    }
+
+    PointerType pointerTypesFor(TypeIndex type) {
+      assert(type.value < types.size());
 
       if (pointersTo.contains(type)) {
         return pointersTo[type];
       }
 
-      TypeIndex pointerIndex = addType(Type {.type = Intrinsic::POINTER_TO, .llvmName = "ptr", .definition = type.value}, "^"+names[type.value]);
-      pointersTo[type] = pointerIndex;
-      
-      return pointerIndex;
+      PointerType pointers = {
+        .pointer = addType(Type {.type = Intrinsic::POINTER_TO, .llvmName = "ptr", .definition = type.value}, "^"+names[type.value]),
+        // TODO: 32-bit mode
+        .slice = addType(Type {.type = Intrinsic::SLICE, .llvmName = "{ptr, i64}", .definition = type.value}, "[]"+names[type.value]),
+        .multiPointer = addType(Type {.type = Intrinsic::MULTI_POINTER, .llvmName = "ptr", .definition = type.value}, "[^]"+names[type.value]),
+      };
+      pointersTo[type] = pointers;
+
+      return pointers;
     }
     
     OptionalType dereference(TypeIndex type) {
@@ -522,6 +547,22 @@ namespace Types {
     // TODO: use a more specific condition
     bool isLlvmLiteralType(TypeIndex type) {
       return getLLVMType(type)[0] != '%';
+    }
+
+    OptionalType sliceType(TypeIndex type) {
+      Type definition = types[type.value];
+      if (definition.type != Intrinsic::SLICE) {
+        return std::nullopt;
+      }
+      return Types::TypeIndex{definition.definition};
+    }
+
+    OptionalType arrayType(TypeIndex type) {
+      Type definition = types[type.value];
+      if (definition.type != Intrinsic::MULTI_POINTER) {
+        return std::nullopt;
+      }
+      return Types::TypeIndex{definition.definition};
     }
   };
 

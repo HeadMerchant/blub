@@ -7,6 +7,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <variant>
 #include <vector>
 #include "logging.h"
 #include "common.h"
@@ -32,6 +33,7 @@ enum class NodeType {
   STRUCT,
   DOT_ACCESS,
   WHILE,
+  ARRAY_TYPE
 };
 
 enum class BinaryOps {
@@ -168,6 +170,15 @@ struct Struct {
   ChildSpan children;
 };
 
+struct ArrayType {
+  struct MultiPointer {};
+  struct SizedArray {NodeIndex length;};
+  struct Slice {};
+  using StorageType = std::variant<MultiPointer, SizedArray, Slice>;
+  StorageType storageType;
+  NodeIndex elementType;
+};
+
 }; // namespace Encodings
 
 
@@ -209,6 +220,16 @@ public:
       return false;
     }
     return peek(ahead).type == type;
+  }
+
+  bool check(std::span<TokenType> types, TokenIndex ahead = {0}) {
+    if (isAtEnd(ahead)) {
+      return false;
+    }
+    for (TokenType type : types) {
+      if (peek(ahead).type == type) return true;
+    }
+    return false;
   }
 
   bool isAtEnd(TokenIndex ahead = {0}) {
@@ -518,6 +539,33 @@ public:
     auto encoded = getNode(node,NodeType::WHILE);
     return {.condition = {encoded.left}, .loopBody = {encoded.right}};
   }
+
+  NodeIndex addNode(Encodings::ArrayType node, TokenPointer token) {
+    auto dataIndex = addData(node.elementType);
+    if (Encodings::ArrayType::SizedArray* sizedArray = std::get_if<Encodings::ArrayType::SizedArray>(&node.storageType)) {
+      addData(sizedArray->length);
+    }
+    return addNode(ASTNode {.left = dataIndex.value, .right = (i32) node.storageType.index(), .token = toIndex(token), .nodeType = NodeType::ARRAY_TYPE});
+  }
+
+  Encodings::ArrayType getArrayType(NodeIndex node) {
+    auto encoded = getNode(node, NodeType::ARRAY_TYPE);
+    
+    auto dataIndex = encoded.left;
+    auto variantIndex = encoded.right;
+
+    Encodings::ArrayType::StorageType storageType;
+    // TODO: figure out type-safe variant index
+    if (variantIndex == 1) {
+      storageType = Encodings::ArrayType::SizedArray{.length = {extraData[dataIndex + 1]}};
+    } else if (variantIndex == 2) {
+      storageType = Encodings::ArrayType::Slice{};
+    } else {
+      storageType = Encodings::ArrayType::MultiPointer{};
+    }
+
+    return Encodings::ArrayType {.storageType = storageType, .elementType = {extraData[dataIndex]}};
+  }
   
 public:
   std::vector<NodeIndex> parse() {
@@ -662,7 +710,7 @@ public:
   }
 
   NodeIndex call() {
-    NodeIndex expr = primary();
+    NodeIndex expr = access();
     static std::vector<TokenType> open = {TokenType::LEFT_PAREN};
     if (match(open)) {
       log << "Looking in here\n";
@@ -680,6 +728,21 @@ public:
       return addNode(node, toIndex(token));
     }
 
+    return expr;
+  }
+
+  NodeIndex access() {
+    NodeIndex expr = primary();
+    if (check(TokenType::LEFT_BRACKET)) {
+      auto token = advance();
+      if (check(TokenType::RIGHT_BRACKET)) {
+        return addNode(Encodings::UnaryOp {.token = token, .operand = expr});
+      }
+      auto index = expression();
+      consume(TokenType::RIGHT_BRACKET, "Expected a closing ']' after indexing or slicing operation");
+      expr = addNode(Encodings::BinaryOp {.token = token, .left = expr, .right = index});
+    }
+    
     return expr;
   }
 
@@ -738,6 +801,23 @@ public:
 
     if (check(TokenType::LEFT_BRACKET)) {
       TokenPointer startToken = advance();
+
+      // Multi-pointer
+      if (check(TokenType::POINTER) && check(TokenType::RIGHT_BRACKET, {1})) {
+        advance();
+        advance();
+
+        NodeIndex elementType = expression();
+        return addNode(Encodings::ArrayType{.storageType = Encodings::ArrayType::MultiPointer{}, .elementType = elementType}, startToken);
+      }
+
+      // Slice
+      if (check(TokenType::RIGHT_BRACKET)) {
+        advance();
+        NodeIndex elementType = expression();
+        return addNode(Encodings::ArrayType{.storageType = Encodings::ArrayType::Slice{}, .elementType = expression()}, startToken);
+      }
+      
       std::vector<NodeIndex> items;
 
       // Array literal
@@ -754,6 +834,21 @@ public:
         }
 
         items.push_back(expression());
+
+        // TODO: update this as new closing tokens get added
+        std::vector<TokenType> closingTokens = {
+          TokenType::STATEMENT_BREAK,
+          TokenType::COMMA,
+          TokenType::RIGHT_CURLY_BRACE,
+          TokenType::RIGHT_BRACKET
+        };
+        // Sized array
+        if (items.size() == 1 && check(TokenType::RIGHT_BRACKET) && !check(std::span(closingTokens), {1})) {
+          // Closing
+          advance();
+          NodeIndex elementType = expression();
+          return addNode(Encodings::ArrayType{.storageType = Encodings::ArrayType::SizedArray{items[0]}}, startToken);
+        }
       }
 
       consume(TokenType::RIGHT_BRACKET, "Unclosed array literal; Expected ']'");

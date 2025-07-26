@@ -1,5 +1,6 @@
 #pragma once
 #include <functional>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 #include "types.h"
@@ -206,6 +207,11 @@ struct Reference {
 
     bool isType() {
         return type == Types::indexOf(Types::Intrinsic::TYPE);
+    }
+
+    Types::OptionalType unboxType() {
+        if (isType()) return std::get<Types::TypeIndex>(value);
+        return std::nullopt;
     }
 
     bool isFunction() {
