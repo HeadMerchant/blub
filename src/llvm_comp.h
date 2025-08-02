@@ -153,7 +153,7 @@ class LLVMCompiler {
                 assignee->assign(value);
                 std::string_view type = Types::Pool().getLLVMType(value->type);
                 std::string valueName = toLiteral(value, outputFile, environment);
-                outputFile << "store " << type << " " << valueName << ", ptr " << assignee->llvmName() << "\n";
+                outputFile << fmt::format("store {} {}, ptr {}\n", type, valueName, assignee->llvmName());
               
                 // TODO: consider value
                 return Reference::Void();
@@ -172,14 +172,18 @@ class LLVMCompiler {
                 if (function->type == Types::indexOf(Types::Intrinsic::LLVM_FUNCTION)) {
                     // TODO: return value
                     auto nativeCall = std::get<LLVMFunction>(function->value);
+                    std::vector<std::string> args(arguments.size());
+                    for (Reference* arg : arguments) {
+                        args.push_back(toLiteral(arg, outputFile, environment));
+                    }
+
                     outputFile << "call " << nativeCall.usage << "(";
                     bool hasMultipleArgs = false;
-                    for (Reference* arg : arguments) {
-                        // TODO: different arg types
+                    for (int i; i < args.size(); i++) {
                         if (hasMultipleArgs) {
                             outputFile << ", ";
                         }
-                        outputFile << Types::Pool().getLLVMType(arg->type) << " " << std::get<LLVMName>(arg->value);
+                        outputFile << Types::Pool().getLLVMType(arguments[i]->type) << " " << args[i];
                     }
                     outputFile << ")\n";
 

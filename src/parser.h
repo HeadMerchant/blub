@@ -20,9 +20,8 @@ enum class NodeType {
   FUNCTION_LITERAL,
   FUNCTION_CALL,
   BLOCK,
-  PARAMETER_LIST,
   CALL,
-  ARGS_LIST,
+  INPUT_LIST,
   ARRAY_LITERAL,
   BINARY_OP,
   POINTER_OP,
@@ -33,7 +32,13 @@ enum class NodeType {
   STRUCT,
   DOT_ACCESS,
   WHILE,
-  ARRAY_TYPE
+  ARRAY_TYPE,
+  IMPORT,
+  // UNION,
+  // ENUM,
+  // TRAIT,
+  // IMPL,
+  // MUT
 };
 
 enum class BinaryOps {
@@ -76,6 +81,7 @@ using TokenPointer = const Token*;
 using NodeList = std::vector<TokenIndex> ;
 using DataSpan = std::span<i32> ;
 using ChildSpan = std::span<NodeIndex> ;
+using TokenSpan = std::span<TokenPointer>;
 using OptionalNode = std::optional<NodeIndex>;
 
 namespace Encodings {
@@ -124,7 +130,7 @@ struct Identifier {
 };
 
 struct FunctionLiteral {
-  std::span<NodeIndex> parameters;
+  NodeIndex parameters;
   OptionalNode returnType;
   NodeIndex body;
 };
@@ -178,6 +184,24 @@ struct ArrayType {
   StorageType storageType;
   NodeIndex elementType;
 };
+
+struct InputList {
+  ChildSpan requiredInputs;
+  ChildSpan optionalInputs;
+  enum class InputType {
+    Parameter,
+    Argument,
+  };
+  InputType inputType;
+};
+
+struct Import {
+  TokenSpan path;
+  // TODO: import multiple from module
+};
+
+// TODO: args list node
+// TODO: params list node
 
 }; // namespace Encodings
 
@@ -249,7 +273,7 @@ public:
     return false;
   }
 
-  const TokenPointer consume(TokenType type, std::string message) {
+  TokenPointer consume(TokenType type, std::string message) {
     if (check(type))
       return advance();
     log << advance();
@@ -286,6 +310,10 @@ public:
 
   ASTNode getNode(NodeIndex index) {
     return nodes[index.value];
+  }
+
+  NodeType nodeType(NodeIndex index) {
+    return nodes[index.value].nodeType;
   }
 
   ASTNode getNode(NodeIndex index, NodeType type) {
@@ -406,28 +434,6 @@ public:
     return {.parameters = parameters.subspan(startIndex, length),
             .returnType = (returnType.value == node.value) ? std::nullopt : OptionalNode(returnType),
             .body = parameters[startIndex + length + 1]};
-  }
-
-  NodeIndex addNode(Encodings::FunctionCall node, TokenIndex token) {
-    auto index = addData(node.functionValue);
-
-    addData(node.arguments);
-
-    return addNode(ASTNode{.left = index.value,
-                           .right = (i32)node.arguments.size(),
-                           .token = token,
-                           .nodeType = NodeType::FUNCTION_CALL});
-  }
-
-  Encodings::FunctionCall getFunctionCall(NodeIndex node) {
-    auto encoded = getNode(node, NodeType::FUNCTION_CALL);
-
-    auto args = std::bit_cast<ChildSpan>(std::span<i32>(extraData));
-
-    auto startIndex = encoded.left;
-    auto length = encoded.right;
-    return {.functionValue = args[startIndex],
-            .arguments = args.subspan(startIndex + 1, length)};
   }
 
   NodeIndex addNode(Encodings::Block node, TokenIndex token) {
@@ -567,26 +573,44 @@ public:
     return Encodings::ArrayType {.storageType = storageType, .elementType = {extraData[dataIndex]}};
   }
   
+  Encodings::Import getImportStatement(NodeIndex node) {
+    auto encoded = getNode(node, NodeType::IMPORT);
+    return {.path = std::bit_cast<TokenSpan>(DataSpan(extraData).subspan(encoded.left, encoded.right))};
+  }
+  
 public:
   std::vector<NodeIndex> parse() {
     std::vector<NodeIndex> statements;
-    // try {
     while (!isAtEnd()) {
       statements.push_back(statement());
     }
     return statements;
-    // } catch (const std::exception& e) {
-    //     std::cerr << "Next token:\n";
-    //     latestToken().print();
-    //     throw e;
-    // }
   }
 
   NodeIndex statement() {
     if (check(TokenType::STATEMENT_BREAK)) {
       advance();
     }
-    NodeIndex node = assignment();
+
+    NodeIndex node;
+    if (check(TokenType::IMPORT)) {
+      auto token = advance();
+
+      std::vector<TokenIndex> packagePath;
+      auto packageName = consume(TokenType::IDENTIFIER, "Expected package name after 'import'");
+      auto dataIndex = addData(toIndex(packageName).value);
+      i32 dataLength = 1;
+      while(!check(TokenType::STATEMENT_BREAK)) {
+        consume(TokenType::DOT, "Imports require dots between subpackage names");
+        auto package = consume(TokenType::IDENTIFIER, "Expected package name after 'import'");
+        addData(toIndex(package).value);
+        dataLength += 1;
+      }
+      node = addNode(ASTNode{.left = dataIndex.value, .right = dataLength, .token = toIndex(token), .nodeType = NodeType::IMPORT});
+    } else {
+      node = assignment();
+    }
+
     if (!isAtEnd()) {
       consumeAtLeast1(TokenType::STATEMENT_BREAK, "Expected a breaking statement");
     }
@@ -711,24 +735,88 @@ public:
 
   NodeIndex call() {
     NodeIndex expr = access();
-    static std::vector<TokenType> open = {TokenType::LEFT_PAREN};
-    if (match(open)) {
+    if (check(TokenType::LEFT_PAREN)) {
       log << "Looking in here\n";
-      auto token = previous();
-      std::vector<NodeIndex> args;
-      while (!check(TokenType::RIGHT_PAREN)) {
-        log << "finding arg\n";
-        args.push_back(expression());
-      }
+      auto token = advance();
 
       consume(TokenType::RIGHT_PAREN,
               "Expected a closing ')' after arguments for function call");
-      auto node = Encodings::FunctionCall{.functionValue = expr,
-                                          .arguments = ChildSpan(args)};
-      return addNode(node, toIndex(token));
+      auto node = Encodings::BinaryOp{.token = token, .left = expr, .right = inputList(Encodings::InputList::InputType::Argument)};
+      return addNode(node);
     }
 
     return expr;
+  }
+  
+  NodeIndex inputList(Encodings::InputList::InputType definitionOrUsage) {
+    // std::vector<NodeIndex> args;
+    // while (!check(TokenType::RIGHT_PAREN)) {
+    //   log << "finding arg\n";
+    //   args.push_back(expression());
+    // }
+    bool hasMultiple = false;
+    std::vector<NodeIndex> requiredInputs;
+    std::vector<NodeIndex> optionalInputs;
+    i32 listLength = 0;
+    
+    // allow combined length to fit in signed 8
+    static const i32 MAX_ARGUMENTS = 127;
+    while (!check(TokenType::RIGHT_PAREN)) {
+      if (hasMultiple) {
+        consume(TokenType::COMMA,
+                "Expected separating comma between parameters");
+      }
+
+      // Allow trailing comma
+      if (check(TokenType::RIGHT_PAREN)) {
+        break;
+      }
+
+      // TODO: consider how to clean up this code
+      if (definitionOrUsage == Encodings::InputList::InputType::Argument) {
+        if ((requiredInputs.size() + optionalInputs.size()) > MAX_ARGUMENTS) {
+          throw std::invalid_argument("Maximum arguments exceeded");
+        }
+        if (check(TokenType::IDENTIFIER) && check(TokenType::ASSIGNMENT, {1})) {
+          optionalInputs.push_back(assignment());
+        } else if (!optionalInputs.empty()) {
+          throw std::invalid_argument("All arguments following a named argument must be named");
+        } else {
+          requiredInputs.push_back(expression());
+        }
+      } else if (definitionOrUsage == Encodings::InputList::InputType::Parameter) {
+        if ((requiredInputs.size() + optionalInputs.size()) > MAX_ARGUMENTS) {
+          throw std::invalid_argument("Maximum arguments exceeded");
+        }
+        NodeIndex parameter = declaration();
+        NodeType parameterType = nodeType(parameter);
+
+        bool isOptional = parameterType == NodeType::DECLARATION;
+        if (isOptional) {
+          optionalInputs.push_back(parameter);
+        } else if (!optionalInputs.empty()) {
+          throw std::invalid_argument("All arguments following a named argument must be named");
+        } else {
+          requiredInputs.push_back(parameter);
+        }
+      } else {
+        assert(false);
+      }
+    }
+
+    consume(TokenType::RIGHT_PAREN, "Expected ')' for declaration");
+
+    auto dataIndex = addData(requiredInputs);
+    addData(optionalInputs);
+    i32 packedInputLength = packInt(requiredInputs.size(), optionalInputs.size(), static_cast<i8>(definitionOrUsage), 0);
+    return addNode(ASTNode {.left = dataIndex.value, .right = packedInputLength, .nodeType = NodeType::INPUT_LIST});
+  }
+
+  Encodings::InputList getInputList(NodeIndex node) {
+    auto encoded = getNode(node, NodeType::INPUT_LIST);
+    auto [requiredLength, optionalLength, inputType, _] = unpackInt(encoded.right);
+    auto children = getChildren().subspan(encoded.right);
+    return {.requiredInputs = children.subspan(0, requiredLength), .optionalInputs = children.subspan(requiredLength, optionalLength), .inputType = static_cast<Encodings::InputList::InputType>(inputType)};
   }
 
   NodeIndex access() {

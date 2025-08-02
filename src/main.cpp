@@ -7,6 +7,7 @@
 #include "parser.h"
 #include "llvm_comp.h"
 #include "logging.h"
+#include "unistd.h"
 
 namespace fs = std::filesystem;
 
@@ -44,4 +45,5 @@ int main(int argc, char *argv[]) {
     LLVMCompiler interpreter(parser, program);
     interpreter.run(outFile);
     outFile.close();
+    execl("clang", outFilename.c_str());
 }

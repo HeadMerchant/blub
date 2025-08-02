@@ -198,7 +198,7 @@ namespace Types {
     TypePool(): types() {
       types.reserve(NUM_INTRINSICS + NUM_BUILTINS);
       for (i32 i = 0; i < NUM_INTRINSICS; i++) {
-        types.emplace_back(static_cast<Intrinsic>(i));
+        types.push_back({.type = static_cast<Intrinsic>(i), .llvmName = "void"});
       }
 
       u8 = addLLVMType("i8", "u8");
@@ -213,9 +213,9 @@ namespace Types {
       usize = addLLVMType("i64", "usize");
       isize = addLLVMType("i64", "isize");
 
-      f16 = addLLVMType("f16", "f16");
-      f32 = addLLVMType("f32", "f32");
-      f64 = addLLVMType("f64", "f64");
+      f16 = addLLVMType("half", "f16");
+      f32 = addLLVMType("float", "f32");
+      f64 = addLLVMType("double", "f64");
       boolean = addLLVMType("i1", "boolean");
     }
 

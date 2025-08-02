@@ -110,6 +110,12 @@ class Environment {
       {"printf", new Reference(
         std::move(LLVMFunction{.definition = "declare i32 @printf(ptr noalias nocapture, ...)", .usage = "i32 (i8*, ...) @printf"})
       )},
+      {"malloc", new Reference(
+        std::move(LLVMFunction{.definition = "declare ptr @malloc(i64)", .usage = "ptr (i64) @malloc"})
+      )},
+      {"free", new Reference(
+        std::move(LLVMFunction{.definition = "declare void @free(ptr)", .usage = "void (ptr) @free"})
+      )},
       {"bool", Reference::typeReference(Types::Pool().boolean)},
       {"s8", Reference::typeReference(Types::Pool().s8)},
       {"s16", Reference::typeReference(Types::Pool().s16)},

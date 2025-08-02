@@ -57,6 +57,12 @@ enum class TokenType {
     // Keywords
     FUNCTION,
     STRUCT,
+    IMPORT,
+    UNION,
+    ENUM,
+    TRAIT,
+    IMPL,
+    MUT,
 
     // Literal
     IDENTIFIER,

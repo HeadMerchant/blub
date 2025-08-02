@@ -27,8 +27,12 @@ std::unordered_map<std::string_view, TokenType> keywords = {
     {"for", TokenType::FOR},
     {"while", TokenType::WHILE},
     {"xor", TokenType::XOR},
-    // use
-    // todo: union, enum, trait, import, impl, loop, match, if/else, mut, pointer
+    {"import", TokenType::IMPORT},
+    {"union", TokenType::UNION},
+    {"enum", TokenType::ENUM},
+    {"trait", TokenType::TRAIT},
+    {"impl", TokenType::IMPL},
+    {"mut", TokenType::MUT},
 };
 
 class Tokenizer {
