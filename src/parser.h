@@ -1,4 +1,3 @@
-// TODO: function calls
 #pragma once
 #include "tokenizer.h"
 #include <bit>
@@ -133,11 +132,6 @@ struct FunctionLiteral {
   NodeIndex parameters;
   OptionalNode returnType;
   NodeIndex body;
-};
-
-struct FunctionCall {
-  NodeIndex functionValue;
-  std::span<NodeIndex> arguments;
 };
 
 struct Block {
@@ -415,11 +409,10 @@ public:
   NodeIndex addNode(Encodings::FunctionLiteral node, TokenIndex token) {
     // Block stored directed after args
     i32 nextIndex = nodes.size();
-    auto dataIndex = addData(node.parameters);
-    addData(node.returnType.value_or({nextIndex}));
+    auto dataIndex = addData(node.returnType.value_or({nextIndex}));
     addData(node.body);
     return addNode(ASTNode{.left = dataIndex.value,
-                           .right = (i32)node.parameters.size(),
+                           .right = node.parameters.value,
                            .token = token,
                            .nodeType = NodeType::FUNCTION_LITERAL});
   }
@@ -429,11 +422,10 @@ public:
     auto parameters = getChildren();
 
     auto startIndex = encoded.left;
-    auto length = encoded.right;
-    NodeIndex returnType = parameters[startIndex + length];
-    return {.parameters = parameters.subspan(startIndex, length),
+    NodeIndex returnType = parameters[startIndex];
+    return {.parameters = encoded.right,
             .returnType = (returnType.value == node.value) ? std::nullopt : OptionalNode(returnType),
-            .body = parameters[startIndex + length + 1]};
+            .body = parameters[startIndex + 1]};
   }
 
   NodeIndex addNode(Encodings::Block node, TokenIndex token) {
@@ -959,21 +951,7 @@ public:
     // Params
     consume(TokenType::LEFT_PAREN, "Expected '(' for parameter declaration");
 
-    std::vector<NodeIndex> parameters;
-    while (!check(TokenType::RIGHT_PAREN)) {
-      if (parameters.size() > 0) {
-        consume(TokenType::COMMA,
-                "Expected separating comma between parameters");
-      }
-
-      // Allow trailing comma
-      if (check(TokenType::RIGHT_PAREN)) {
-        break;
-      }
-
-      parameters.push_back(definition());
-    }
-    consume(TokenType::RIGHT_PAREN, "Expected ')' for declaration");
+    NodeIndex parameters = inputList(Encodings::InputList::InputType::Parameter);
 
     std::optional<NodeIndex> returnType = std::nullopt;
     if (check(TokenType::COMMA)) {
@@ -984,7 +962,7 @@ public:
     
     // Block
     auto body = block();
-    auto node = Encodings::FunctionLiteral {.parameters = ChildSpan(parameters), .returnType = returnType, .body = body};
+    auto node = Encodings::FunctionLiteral {.parameters = parameters, .returnType = returnType, .body = body};
     return addNode(node, toIndex(keyword));
   }
 

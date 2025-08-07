@@ -159,45 +159,6 @@ class LLVMCompiler {
                 return Reference::Void();
             }
             case NodeType::FUNCTION_CALL: {
-                auto node = parser.getFunctionCall(nodeIndex);
-                auto function = interpret(node.functionValue, environment, outputFile, context);
-                
-                std::vector<Reference*> arguments;
-                for (auto arg : node.arguments) {
-                    arguments.push_back(interpret(arg, environment, outputFile, context));
-                }
-                if (function->type == Types::indexOf(Types::Intrinsic::FUNCTION)) {
-                    TODO("Calling for user functions");
-                }
-                if (function->type == Types::indexOf(Types::Intrinsic::LLVM_FUNCTION)) {
-                    // TODO: return value
-                    auto nativeCall = std::get<LLVMFunction>(function->value);
-                    std::vector<std::string> args(arguments.size());
-                    for (Reference* arg : arguments) {
-                        args.push_back(toLiteral(arg, outputFile, environment));
-                    }
-
-                    outputFile << "call " << nativeCall.usage << "(";
-                    bool hasMultipleArgs = false;
-                    for (int i; i < args.size(); i++) {
-                        if (hasMultipleArgs) {
-                            outputFile << ", ";
-                        }
-                        outputFile << Types::Pool().getLLVMType(arguments[i]->type) << " " << args[i];
-                    }
-                    outputFile << ")\n";
-
-                    if (!function->isInitialized) {
-                        function->isInitialized = true;
-                        std::stringstream ss;
-                        ss << nativeCall.definition << "\n";
-                        globalsStack.push(std::move(ss));
-                    }
-                    
-                    return Reference::Void();
-                }
-                std::cout << "Unknown function type: " << Types::Pool().typeName(function->type) << "\n";
-                throw std::invalid_argument("Unknown function type");
             }
             case NodeType::LITERAL: {
                 auto node = parser.getLiteral(nodeIndex);
@@ -310,6 +271,47 @@ class LLVMCompiler {
                             return Reference::variable(elementType, std::move(resultName));
                         } else crashBinOp(node.token, leftVal, rightVal);
                         break;
+                    }
+                    case TokenType::LEFT_PAREN: {
+                        auto function = interpret(node.left, environment, outputFile, context);
+                        auto argsNode = parser
+                
+                        std::vector<Reference*> arguments;
+                        for (auto arg : node.arguments) {
+                            arguments.push_back(interpret(arg, environment, outputFile, context));
+                        }
+                        if (function->type == Types::indexOf(Types::Intrinsic::FUNCTION)) {
+                            TODO("Calling for user functions");
+                        }
+                        if (function->type == Types::indexOf(Types::Intrinsic::LLVM_FUNCTION)) {
+                            // TODO: return value
+                            auto nativeCall = std::get<LLVMFunction>(function->value);
+                            std::vector<std::string> args(arguments.size());
+                            for (Reference* arg : arguments) {
+                                args.push_back(toLiteral(arg, outputFile, environment));
+                            }
+
+                            outputFile << "call " << nativeCall.usage << "(";
+                            bool hasMultipleArgs = false;
+                            for (int i; i < args.size(); i++) {
+                                if (hasMultipleArgs) {
+                                    outputFile << ", ";
+                                }
+                                outputFile << Types::Pool().getLLVMType(arguments[i]->type) << " " << args[i];
+                            }
+                            outputFile << ")\n";
+
+                            if (!function->isInitialized) {
+                                function->isInitialized = true;
+                                std::stringstream ss;
+                                ss << nativeCall.definition << "\n";
+                                globalsStack.push(std::move(ss));
+                            }
+                    
+                            return Reference::Void();
+                        }
+                        std::cout << "Unknown function type: " << Types::Pool().typeName(function->type) << "\n";
+                        throw std::invalid_argument("Unknown function type");
                     }
                     default:
                         throw std::invalid_argument("Unknown binary operation");
