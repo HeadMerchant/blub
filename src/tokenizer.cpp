@@ -26,7 +26,6 @@ std::unordered_map<std::string_view, TokenType> keywords = {
     {"or", TokenType::LOGICAL_OR},
     {"for", TokenType::FOR},
     {"while", TokenType::WHILE},
-    {"xor", TokenType::XOR},
     {"import", TokenType::IMPORT},
     {"union", TokenType::UNION},
     {"enum", TokenType::ENUM},
@@ -163,6 +162,9 @@ class Tokenizer {
             if (peek() == '=') {
                 advance();
                 addToken(TokenType::LEQ);
+            } else if (peek() == '<') {
+                advance();
+                addToken(TokenType::SHIFT_LEFT);
             } else {
                 addToken(TokenType::LESS_THAN);
             }
@@ -172,9 +174,16 @@ class Tokenizer {
             if (peek() == '=') {
                 advance();
                 addToken(TokenType::GEQ);
+            } else if (peek() == '>') {
+                advance();
+                addToken(TokenType::SHIFT_RIGHT);
             } else {
                 addToken(TokenType::GREATER_THAN);
             }
+            break;
+        }
+        case '~': {
+            addToken(TokenType::XOR);
             break;
         }
         default:

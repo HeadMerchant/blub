@@ -52,7 +52,6 @@ enum class TokenType {
     REMAINDER,
     SHIFT_LEFT,
     SHIFT_RIGHT,
-    ARITHMETIC_SHIFT_RIGHT,
 
     // Keywords
     FUNCTION,

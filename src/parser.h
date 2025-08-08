@@ -6,7 +6,6 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
-#include <variant>
 #include <vector>
 #include "logging.h"
 #include "common.h"
@@ -15,23 +14,18 @@ enum class NodeType {
   DECLARATION,
   UNARY,
   LITERAL,
-  IDENTIFIER,
   FUNCTION_LITERAL,
-  FUNCTION_CALL,
   BLOCK,
   CALL,
   INPUT_LIST,
   ARRAY_LITERAL,
   BINARY_OP,
-  POINTER_OP,
   ASSIGNMENT,
   DEFINITION,
   IF,
-  BOOLEAN_LITERAL,
   STRUCT,
   DOT_ACCESS,
   WHILE,
-  ARRAY_TYPE,
   IMPORT,
   // UNION,
   // ENUM,
@@ -40,12 +34,12 @@ enum class NodeType {
   // MUT
 };
 
-enum class BinaryOps {
-  PLUS,
-  MINUS,
-  MUL,
-  DIVIDE,
-  BRACKET_ACCESS
+enum class UnaryOps {
+  NOT,
+  REFERENCE,
+  DEREFERENCE,
+  SLICE,
+  MUTLI_POINTER,
 };
 
 struct NodeIndex {
@@ -95,18 +89,8 @@ struct Declaration {
 };
 
 struct UnaryOp {
-  TokenPointer token;
   NodeIndex operand;
-};
-
-enum class PointerOpType {
-  REFERENCE,
-  DEREFERENCE
-};
-
-struct PointerOp {
-  NodeIndex operand;
-  PointerOpType opType;
+  UnaryOps operation;
 };
 
 struct DotAccessor {
@@ -115,9 +99,9 @@ struct DotAccessor {
 };
 
 struct BinaryOp {
-  TokenPointer token;
   NodeIndex left;
   NodeIndex right;
+  TokenPointer operation;
 };
 
 struct Literal {
@@ -131,7 +115,7 @@ struct Identifier {
 struct FunctionLiteral {
   NodeIndex parameters;
   OptionalNode returnType;
-  NodeIndex body;
+  OptionalNode body;
 };
 
 struct Block {
@@ -170,15 +154,6 @@ struct Struct {
   ChildSpan children;
 };
 
-struct ArrayType {
-  struct MultiPointer {};
-  struct SizedArray {NodeIndex length;};
-  struct Slice {};
-  using StorageType = std::variant<MultiPointer, SizedArray, Slice>;
-  StorageType storageType;
-  NodeIndex elementType;
-};
-
 struct InputList {
   ChildSpan requiredInputs;
   ChildSpan optionalInputs;
@@ -193,9 +168,6 @@ struct Import {
   TokenSpan path;
   // TODO: import multiple from module
 };
-
-// TODO: args list node
-// TODO: params list node
 
 }; // namespace Encodings
 
@@ -257,14 +229,13 @@ public:
   const TokenPointer previous() { return tokens.data() + current.value - 1; }
   Token getToken(TokenIndex token) { return tokens[token.value]; }
 
-  bool match(std::vector<TokenType> &types) {
+  TokenPointer match(std::vector<TokenType> &types) {
     for (auto type : types) {
       if (check(type)) {
-        advance();
-        return true;
+        return advance();
       }
     }
-    return false;
+    return nullptr;
   }
 
   TokenPointer consume(TokenType type, std::string message) {
@@ -295,13 +266,6 @@ public:
     return nodeIndex();
   }
 
-  NodeIndex addNode(Encodings::Identifier node) {
-    TokenIndex tokenIndex = toIndex(node.token);
-    return addNode(ASTNode{.left = tokenIndex.value,
-                           .token = tokenIndex,
-                           .nodeType = NodeType::IDENTIFIER});
-  }
-
   ASTNode getNode(NodeIndex index) {
     return nodes[index.value];
   }
@@ -318,11 +282,6 @@ public:
 
   ChildSpan getChildren() {
     return std::bit_cast<ChildSpan>(std::span<i32>(extraData));
-  }
-
-  Encodings::Identifier getIdentifier(NodeIndex index) {
-    auto encoded = getNode(index, NodeType::IDENTIFIER);
-    return Encodings::Identifier{.token = toPointer({encoded.left})};
   }
 
   DataIndex addData(NodeIndex node) {
@@ -383,17 +342,16 @@ public:
     return {.definition = {encoded.left}, .value = {encoded.right}};
   }
 
-  NodeIndex addNode(Encodings::UnaryOp node) {
-    auto token = toIndex(node.token);
-    return addNode(ASTNode{.left = token.value,
+  NodeIndex addNode(Encodings::UnaryOp node, TokenPointer token) {
+    return addNode(ASTNode{.left = static_cast<i32>(node.operation),
                            .right = node.operand.value,
-                           .token = token,
+                           .token = toIndex(token),
                            .nodeType = NodeType::UNARY});
   }
 
   Encodings::UnaryOp getUnary(NodeIndex index) {
     auto encoded = getNode(index, NodeType::UNARY);
-    return {.token = toPointer(encoded.token), .operand = {encoded.right}};
+    return {.operand = {encoded.right}, .operation = static_cast<UnaryOps>(encoded.left)};
   }
 
   NodeIndex addNode(Encodings::Literal node) {
@@ -410,7 +368,7 @@ public:
     // Block stored directed after args
     i32 nextIndex = nodes.size();
     auto dataIndex = addData(node.returnType.value_or({nextIndex}));
-    addData(node.body);
+    addData(node.body.value_or({nextIndex}));
     return addNode(ASTNode{.left = dataIndex.value,
                            .right = node.parameters.value,
                            .token = token,
@@ -423,9 +381,10 @@ public:
 
     auto startIndex = encoded.left;
     NodeIndex returnType = parameters[startIndex];
-    return {.parameters = encoded.right,
+    NodeIndex body = parameters[startIndex + 1];
+    return {.parameters = {encoded.right},
             .returnType = (returnType.value == node.value) ? std::nullopt : OptionalNode(returnType),
-            .body = parameters[startIndex + 1]};
+            .body = (body.value == node.value) ? std::nullopt : OptionalNode(body)};
   }
 
   NodeIndex addNode(Encodings::Block node, TokenIndex token) {
@@ -445,16 +404,15 @@ public:
   }
 
   NodeIndex addNode(Encodings::BinaryOp node) {
-    auto token = toIndex(node.token);
     return addNode(ASTNode{.left = node.left.value,
                            .right = node.right.value,
-                           .token = token,
+                           .token = toIndex(node.operation),
                            .nodeType = NodeType::BINARY_OP});
   }
 
   Encodings::BinaryOp getBinaryOp(NodeIndex node) {
     auto encoded = getNode(node, NodeType::BINARY_OP);
-    return {.token = toPointer(encoded.token), .left = {encoded.left}, .right = {encoded.right} };
+    return {.left = {encoded.left}, .right = {encoded.right}, .operation = toPointer(encoded.token)};
   }
 
   NodeIndex addNode(Encodings::Assignment node, TokenPointer token) {
@@ -479,14 +437,6 @@ public:
     return {.name = toPointer({encoded.left}), .type = inferType ? std::nullopt : OptionalNode(encoded.right)};
   }
 
-  NodeIndex addNode(Encodings::PointerOp node, TokenPointer token) {
-    return addNode(ASTNode {.left = node.operand.value, .right = (i32) node.opType, .token = toIndex(token), .nodeType = NodeType::POINTER_OP});
-  }
-
-  Encodings::PointerOp getPointerOp(NodeIndex node) {
-    auto encoded = getNode(node, NodeType::POINTER_OP);
-    return {.operand = {encoded.left}, .opType = (Encodings::PointerOpType) encoded.right};
-  }
 
   NodeIndex addNode(Encodings::If node, TokenPointer token) {
     std::vector<NodeIndex> children = {node.condition, node.value};
@@ -499,14 +449,6 @@ public:
   Encodings::If getIf(NodeIndex node) {
     auto encoded = getNode(node, NodeType::IF);
     return {.condition = {extraData[encoded.left]}, .value = {extraData[encoded.left + 1]}, .elseValue = (encoded.right != node.value) ? OptionalNode(encoded.right) : std::nullopt };
-  }
-
-  NodeIndex addNode(bool value, TokenPointer token) {
-    return addNode(ASTNode{.left = value, .token = toIndex(token), .nodeType = NodeType::BOOLEAN_LITERAL});
-  }
-
-  bool getBooleanLiteral(NodeIndex node) {
-    return getNode(node, NodeType::BOOLEAN_LITERAL).left;
   }
 
   NodeIndex addNode(Encodings::Struct node, TokenPointer token) {
@@ -538,33 +480,7 @@ public:
     return {.condition = {encoded.left}, .loopBody = {encoded.right}};
   }
 
-  NodeIndex addNode(Encodings::ArrayType node, TokenPointer token) {
-    auto dataIndex = addData(node.elementType);
-    if (Encodings::ArrayType::SizedArray* sizedArray = std::get_if<Encodings::ArrayType::SizedArray>(&node.storageType)) {
-      addData(sizedArray->length);
-    }
-    return addNode(ASTNode {.left = dataIndex.value, .right = (i32) node.storageType.index(), .token = toIndex(token), .nodeType = NodeType::ARRAY_TYPE});
-  }
-
-  Encodings::ArrayType getArrayType(NodeIndex node) {
-    auto encoded = getNode(node, NodeType::ARRAY_TYPE);
-    
-    auto dataIndex = encoded.left;
-    auto variantIndex = encoded.right;
-
-    Encodings::ArrayType::StorageType storageType;
-    // TODO: figure out type-safe variant index
-    if (variantIndex == 1) {
-      storageType = Encodings::ArrayType::SizedArray{.length = {extraData[dataIndex + 1]}};
-    } else if (variantIndex == 2) {
-      storageType = Encodings::ArrayType::Slice{};
-    } else {
-      storageType = Encodings::ArrayType::MultiPointer{};
-    }
-
-    return Encodings::ArrayType {.storageType = storageType, .elementType = {extraData[dataIndex]}};
-  }
-  
+ 
   Encodings::Import getImportStatement(NodeIndex node) {
     auto encoded = getNode(node, NodeType::IMPORT);
     return {.path = std::bit_cast<TokenSpan>(DataSpan(extraData).subspan(encoded.left, encoded.right))};
@@ -662,7 +578,7 @@ public:
     while (match(types)) {
       TokenPointer op = previous();
       auto node =
-          Encodings::BinaryOp{.token = op, .left = expr, .right = comparison()};
+          Encodings::BinaryOp{.left = expr, .right = comparison(), .operation = op};
       expr = addNode(node);
     }
     return expr;
@@ -679,41 +595,40 @@ public:
     while (match(types)) {
       TokenPointer op = previous();
       auto node =
-          Encodings::BinaryOp{.token = op, .left = expr, .right = factor()};
+          Encodings::BinaryOp{.left = expr, .right = factor(), .operation = op};
       expr = addNode(node);
     }
     return expr;
   }
 
   NodeIndex factor() {
-    static std::vector<TokenType> types = {TokenType::MULT, TokenType::DIV};
+    static std::vector<TokenType> types = {TokenType::MULT, TokenType::DIV, TokenType::SHIFT_RIGHT};
     auto expr = unary();
     while (match(types)) {
       TokenPointer op = previous();
       auto node =
-          Encodings::BinaryOp{.token = op, .left = expr, .right = unary()};
+          Encodings::BinaryOp{.left = expr, .right = unary(), .operation = op};
       expr = addNode(node);
     }
     return expr;
   }
 
   NodeIndex unary() {
-    static std::vector<TokenType> ops = {TokenType::NOT};
     NodeIndex expr;
-    if (match(ops)) {
+    if (check(TokenType::NOT)) {
       TokenPointer op = previous();
-      auto node = Encodings::UnaryOp{.token = op, .operand = call()};
-      expr = addNode(node);
+      auto node = Encodings::UnaryOp{.operand = call(), .operation = UnaryOps::NOT};
+      expr = addNode(node, op);
     } else if (check(TokenType::POINTER)) {
       TokenPointer op = advance();
-      auto node = Encodings::PointerOp{.operand = call(), .opType = Encodings::PointerOpType::REFERENCE};
+      auto node = Encodings::UnaryOp{.operand = call(), .operation = UnaryOps::REFERENCE};
       expr = addNode(node, op);
     } else {
       expr = call();
     }
 
     if (check(TokenType::POINTER)) {
-      auto node = Encodings::PointerOp({.operand = expr, .opType = Encodings::PointerOpType::DEREFERENCE});
+      auto node = Encodings::UnaryOp{.operand = call(), .operation = UnaryOps::REFERENCE};
       expr = addNode(node, advance());
     }
 
@@ -728,12 +643,11 @@ public:
   NodeIndex call() {
     NodeIndex expr = access();
     if (check(TokenType::LEFT_PAREN)) {
-      log << "Looking in here\n";
       auto token = advance();
 
       consume(TokenType::RIGHT_PAREN,
               "Expected a closing ')' after arguments for function call");
-      auto node = Encodings::BinaryOp{.token = token, .left = expr, .right = inputList(Encodings::InputList::InputType::Argument)};
+      auto node = Encodings::BinaryOp{.left = expr, .right = inputList(Encodings::InputList::InputType::Argument), .operation = token};
       return addNode(node);
     }
 
@@ -816,11 +730,11 @@ public:
     if (check(TokenType::LEFT_BRACKET)) {
       auto token = advance();
       if (check(TokenType::RIGHT_BRACKET)) {
-        return addNode(Encodings::UnaryOp {.token = token, .operand = expr});
+        return addNode(Encodings::UnaryOp {.operand = expr, .operation = UnaryOps::SLICE}, token);
       }
       auto index = expression();
       consume(TokenType::RIGHT_BRACKET, "Expected a closing ']' after indexing or slicing operation");
-      expr = addNode(Encodings::BinaryOp {.token = token, .left = expr, .right = index});
+      expr = addNode(Encodings::BinaryOp {.left = expr, .right = index, .operation = token});
     }
     
     return expr;
@@ -828,9 +742,10 @@ public:
 
   NodeIndex primary() {
     static std::vector<TokenType> types = {TokenType::STRING,
-                                           TokenType::DECIMAL, TokenType::INT, TokenType::NULL_TERMINATED_STRING};
-    if (match(types)) {
-      auto node = Encodings::Literal{.token = previous()};
+                                           TokenType::DECIMAL, TokenType::INT, TokenType::NULL_TERMINATED_STRING,
+                                           TokenType::TRUE, TokenType::FALSE, TokenType::IDENTIFIER};
+    if (auto token = match(types)) {
+      auto node = Encodings::Literal{.token = token};
       return addNode(node);
     }
 
@@ -840,11 +755,6 @@ public:
 
     if (check(TokenType::STRUCT)) {
       return structDefinition();
-    }
-
-    if (check(TokenType::IDENTIFIER)) {
-      auto node = Encodings::Identifier{.token = advance()};
-      return addNode(node);
     }
 
     if (check(TokenType::IF)) {
@@ -864,14 +774,6 @@ public:
       return addNode(ifNode, ifToken);
     }
 
-    if (check(TokenType::TRUE)) {
-      return addNode(true, advance());
-    }
-
-    if (check(TokenType::FALSE)) {
-      return addNode(false, advance());
-    }
-
     if (check(TokenType::LEFT_PAREN)) {
       advance();
       NodeIndex grouping = expression();
@@ -888,14 +790,14 @@ public:
         advance();
 
         NodeIndex elementType = expression();
-        return addNode(Encodings::ArrayType{.storageType = Encodings::ArrayType::MultiPointer{}, .elementType = elementType}, startToken);
+        return addNode(Encodings::UnaryOp{.operand = elementType, .operation = UnaryOps::MUTLI_POINTER}, startToken);
       }
 
       // Slice
       if (check(TokenType::RIGHT_BRACKET)) {
         advance();
         NodeIndex elementType = expression();
-        return addNode(Encodings::ArrayType{.storageType = Encodings::ArrayType::Slice{}, .elementType = expression()}, startToken);
+        return addNode(Encodings::UnaryOp{.operand = elementType, .operation = UnaryOps::SLICE}, startToken);
       }
       
       std::vector<NodeIndex> items;
@@ -920,14 +822,14 @@ public:
           TokenType::STATEMENT_BREAK,
           TokenType::COMMA,
           TokenType::RIGHT_CURLY_BRACE,
-          TokenType::RIGHT_BRACKET
+          TokenType::RIGHT_BRACKET,
+          TokenType::RIGHT_PAREN,
         };
         // Sized array
         if (items.size() == 1 && check(TokenType::RIGHT_BRACKET) && !check(std::span(closingTokens), {1})) {
-          // Closing
           advance();
           NodeIndex elementType = expression();
-          return addNode(Encodings::ArrayType{.storageType = Encodings::ArrayType::SizedArray{items[0]}}, startToken);
+          return addNode(Encodings::BinaryOp{.left=items[0], .right=elementType, .operation=startToken});
         }
       }
 
