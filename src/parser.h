@@ -487,6 +487,10 @@ public:
   }
   
 public:
+  bool nodeTokenPrecedes(NodeIndex a, NodeIndex b) {
+    return getNode(a).token.value < getNode(b).token.value;
+  }
+  
   std::vector<NodeIndex> parse() {
     std::vector<NodeIndex> statements;
     while (!isAtEnd()) {

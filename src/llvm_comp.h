@@ -98,9 +98,8 @@ class LLVMCompiler {
                 reference->assign(value);
                 reference->isMutable = !compileTime;
                 if (!compileTime) {
-                    outputFile
-                        << reference->llvmName() << " = alloca " << Types::Pool().getLLVMType(reference->type) << "\n"
-                        << "store " << Types::Pool().getLLVMType(value->type) << ' ' << toLiteral(value, outputFile, environment) << ", ptr " << reference->llvmName() << '\n';
+                    outputFile << fmt::format("{} = alloca {}\n", reference->llvmName(), Types::Pool().getLLVMType(reference->type));
+                    outputFile << fmt::format("store {} {}, ptr {}\n", Types::Pool().getLLVMType(value->type), toLiteral(value, outputFile, environment), ", ptr ", reference->llvmName());
                 }
 
                 // TODO: support assignment as expression???
@@ -222,9 +221,9 @@ class LLVMCompiler {
                 auto rightVal = interpret(node.right, environment, outputFile, context);
                 auto leftLiteral = toLiteral(leftVal, outputFile, environment);
                 auto rightLiteral = toLiteral(rightVal, outputFile, environment);
-                auto resultName = environment.addTemporary();
 
                 if (bool isArithmetic = (opType == TokenType::PLUS || opType == TokenType::MINUS || opType == TokenType::MULT || opType == TokenType::DIV)) {
+                    auto resultName = environment.addTemporary();
                     auto resultType = Types::Pool().coerce(leftVal->type, rightVal->type);
                     if (!resultType.has_value()) {
                         throw std::invalid_argument("Unable to perform binary operation on incompatible types");
@@ -261,7 +260,7 @@ class LLVMCompiler {
                             throw std::invalid_argument("Unknown binary operation");
                     }
                     auto llvmTypeName = Types::Pool().getLLVMType(type);
-                    outputFile << fmt::format("{} = {} {} {}, {}", resultName, binaryOperator, llvmTypeName, leftLiteral, rightLiteral) << "\n";
+                    outputFile << fmt::format("{} = {} {} {}, {}\n", resultName, binaryOperator, llvmTypeName, leftLiteral, rightLiteral);
                     return Reference::literal(type, std::move(resultName));
                 }
 
@@ -271,10 +270,20 @@ class LLVMCompiler {
                 switch(opType) {
                     // TODO: slicing operations
                     case TokenType::LEFT_BRACKET: {
+                        // [left]right
+                        // ^
+                        if (parser.nodeTokenPrecedes(nodeIndex, node.left)) {
+                            // TODO: comptime evaluation
+                            return ;
+                        }
+
+                        // left[right]
+                        //     ^
                         if (auto sliceElement = Types::Pool().sliceType(leftType)) {
                             Types::TypeIndex elementType = *sliceElement;
                             TODO("Indices for slices");
                         } else if (auto arrayElement = Types::Pool().arrayType(rightType)) {
+                            auto resultName = environment.addTemporary();
                             Types::TypeIndex elementType = *arrayElement;
                             if (!Types::Pool().isInt(rightType)) {
                                 throw std::invalid_argument("Index must be an integer");
@@ -444,7 +453,8 @@ class LLVMCompiler {
                             throw std::invalid_argument("Unary not operator '!' can only be used on integer and boolean types");
                         }
                         auto valueName = toLiteral(value, outputFile, environment);
-                        auto temporary = environment.addTemporary();
+                        auto resultName = environment.addTemporary();
+                        outputFile << fmt::format("{} = not {} {}\n", resultName, Types::Pool().getLLVMType(type), valueName);
                         return Reference::literal(type, valueName);
                     }
                     case UnaryOps::SLICE: {
@@ -535,18 +545,22 @@ class LLVMCompiler {
                 std::string llvmName = context.name.has_value() ? environment.addGlobal(context.name.value()) : environment.addGlobal();
                 ss << llvmName << " = type {";
                 i32 fieldIndexNumber = 0;
+                bool hasFields = false;
                 for (auto fieldIndex : node.children) {
                     auto fieldNode = parser.getNode(fieldIndex);
                     auto nodeType = fieldNode.nodeType;
                     switch (nodeType) {
                         case NodeType::DEFINITION: {
+                            if (hasFields) ss << ", ";
                             auto definitionNode = parser.getDefinition(fieldIndex);
                             Reference* boxedType = interpret(definitionNode.type.value(), environment, outputFile, context);
                             Types::TypeIndex type = std::get<Types::TypeIndex>(boxedType->value);
 
                             // TODO: default values
                             structDefinition.fields.define(definitionNode.name->lexeme, Reference::structField(type, fieldIndexNumber));
-                            ss << Types::Pool().getLLVMType(type) << ", ";
+                            ss << Types::Pool().getLLVMType(type);
+                            hasFields = true;
+                            fieldIndexNumber++;
                             break;
                         }
                         default: throw std::invalid_argument("TODO: implement struct fields");

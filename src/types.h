@@ -136,6 +136,8 @@ namespace Types {
     Intrinsic type;
     std::string llvmName;
     i32 definition;
+    i32 size;
+    i32 alignment;
   };
 
   struct Generic {
@@ -201,22 +203,22 @@ namespace Types {
         types.push_back({.type = static_cast<Intrinsic>(i), .llvmName = "void"});
       }
 
-      u8 = addLLVMType("i8", "u8");
-      u16 = addLLVMType("i16", "u16");
-      u32 = addLLVMType("i32", "u32");
-      u64 = addLLVMType("i64", "u64");
-      s8 = addLLVMType("i8", "s8");
-      s16 = addLLVMType("i16", "s16");
-      s32 = addLLVMType("i32", "s32");
-      s64 = addLLVMType("i64", "s64");
+      u8 = addLLVMType("i8", "u8", 1, 1);
+      u16 = addLLVMType("i16", "u16", 2, 2);
+      u32 = addLLVMType("i32", "u32", 4, 4);
+      u64 = addLLVMType("i64", "u64", 8, 8);
+      s8 = addLLVMType("i8", "s8", 1, 1);
+      s16 = addLLVMType("i16", "s16", 2, 2);
+      s32 = addLLVMType("i32", "s32", 4, 4);
+      s64 = addLLVMType("i64", "s64", 8, 8);
       // TODO: change based on target word size
-      usize = addLLVMType("i64", "usize");
-      isize = addLLVMType("i64", "isize");
+      usize = addLLVMType("i64", "usize", 8, 8);
+      isize = addLLVMType("i64", "isize", 8, 8);
 
-      f16 = addLLVMType("half", "f16");
-      f32 = addLLVMType("float", "f32");
-      f64 = addLLVMType("double", "f64");
-      boolean = addLLVMType("i1", "boolean");
+      f16 = addLLVMType("half", "f16", 2, 2);
+      f32 = addLLVMType("float", "f32", 4, 4);
+      f64 = addLLVMType("double", "f64", 8, 8);
+      boolean = addLLVMType("i1", "boolean", 1, 1);
     }
 
     TypeIndex addType(Type type, std::string name) {
@@ -246,10 +248,10 @@ namespace Types {
       }
 
       PointerType pointers = {
-        .pointer = addType(Type {.type = Intrinsic::POINTER_TO, .llvmName = "ptr", .definition = type.value}, "^"+names[type.value]),
+        .pointer = addType(Type {.type = Intrinsic::POINTER_TO, .llvmName = "ptr", .definition = type.value, .size = 8, .alignment = 8}, "^"+names[type.value]),
         // TODO: 32-bit mode
-        .slice = addType(Type {.type = Intrinsic::SLICE, .llvmName = "{ptr, i64}", .definition = type.value}, "[]"+names[type.value]),
-        .multiPointer = addType(Type {.type = Intrinsic::MULTI_POINTER, .llvmName = "ptr", .definition = type.value}, "[^]"+names[type.value]),
+        .slice = addType(Type {.type = Intrinsic::SLICE, .llvmName = "{ptr, i64}", .definition = type.value, .size = 16, .alignment = 8}, "[]"+names[type.value]),
+        .multiPointer = addType(Type {.type = Intrinsic::MULTI_POINTER, .llvmName = "ptr", .definition = type.value, .size = 8, .alignment = 8}, "[^]"+names[type.value]),
       };
       pointersTo[type] = pointers;
 
@@ -309,8 +311,8 @@ namespace Types {
     }
 
     // TODO: intrinsic llvm types
-    TypeIndex addLLVMType(std::string llvmName, std::string name) {
-      Type type = {.type = Intrinsic::LLVM_TYPE, .llvmName = std::move(llvmName)};
+    TypeIndex addLLVMType(std::string llvmName, std::string name, i32 size, i32 alignment) {
+      Type type = {.type = Intrinsic::LLVM_TYPE, .llvmName = std::move(llvmName), .size = size, .alignment = alignment};
       return addType(std::move(type), std::move(name));
     }
 
@@ -563,6 +565,10 @@ namespace Types {
         return std::nullopt;
       }
       return Types::TypeIndex{definition.definition};
+    }
+
+    OptionalType sizedArrayType(TypeIndex type) {
+      
     }
   };
 
