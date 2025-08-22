@@ -31,9 +31,10 @@ enum class TokenType {
     
     // CONSTANT_DECLARATION,
     ASSIGNMENT,
+    SUBTYPE,
+
     DOUBLE_EQUAL,
     NOT_EQUAL,
-    EQUALITY,
     LESS_THAN,
     GREATER_THAN,
     LEQ,
@@ -76,9 +77,24 @@ enum class TokenType {
 };
 
 struct Token {
+    public:
     const std::string_view lexeme;
     const int line;
     const TokenType type;
+
+    bool isArithmeticOperation() const {
+        return
+            type == TokenType::DOUBLE_EQUAL ||
+            type == TokenType::NOT_EQUAL ||
+            type == TokenType::LESS_THAN ||
+            type == TokenType::GREATER_THAN ||
+            type == TokenType::LEQ ||
+            type == TokenType::GEQ ||
+            type == TokenType::PLUS ||
+            type == TokenType::MINUS ||
+            type == TokenType::MULT ||
+            type == TokenType::DIV;
+    }
 };
 
 std::ostream& operator<<(std::ostream& os, const Token& token);

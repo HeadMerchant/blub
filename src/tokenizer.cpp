@@ -144,7 +144,7 @@ class Tokenizer {
         case '=': {
             if (peek() == '=') {
                 advance();
-                addToken(TokenType::EQUALITY);
+                addToken(TokenType::DOUBLE_EQUAL);
             } else {
                 addToken(TokenType::ASSIGNMENT);
             }
@@ -165,6 +165,9 @@ class Tokenizer {
             } else if (peek() == '<') {
                 advance();
                 addToken(TokenType::SHIFT_LEFT);
+            } else if (peek() == ':') {
+                advance();
+                addToken(TokenType::SUBTYPE);
             } else {
                 addToken(TokenType::LESS_THAN);
             }
@@ -214,9 +217,15 @@ class Tokenizer {
     }
 
     void string(TokenType tokenType = TokenType::STRING) {
-        while (peek() != '"' && !isAtEnd())
+        bool isEscaping = false;
+        while ((isEscaping || peek() != '"') && !isAtEnd())
         {
-            advance();
+            if (!isEscaping) {
+                isEscaping = advance() == '\\';
+            } else {
+                isEscaping = false;
+                advance();
+            }
         }
 
         if (isAtEnd()) {

@@ -1,5 +1,4 @@
 #pragma once
-#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <vector>
@@ -24,7 +23,6 @@ struct FunctionLiteral {
 using FunctionType = FunctionLiteral;
 
 using IntType = int;
-using NativeFunction = std::function<Reference*(std::span<Reference*>)>*;
 
 struct ParameterizedType {
     Reference* type;
@@ -46,42 +44,6 @@ enum class StorageType {
 };
 
 using LLVMName = std::string;
-
-// using FunctionSignature = std::pair<Types::TypeIndex, LLVMName>;
-// using OptionalFunctionSignature = std::optional<FunctionSignature*>;
-// struct FunctionOverloadTable {
-//     std::vector<FunctionSignature> functions;
-
-//     OptionalFunctionSignature findSignature(Types::TypeIndex arguments) {
-//         for (FunctionSignature& function : functions) {
-//             Types::TypeIndex signature = function.first;
-//             auto [parameters, returnType] = Types::Pool().functionParamsAndReturnType(signature);
-//             Types::OptionalType isAssignable = Types::Pool().isTupleAssignable(arguments, parameters);
-//             // TODO: tie-breaking
-//             if (isAssignable.has_value()) {
-//                 return &function;
-//             }
-//         }
-
-//         return std::nullopt;
-//     }
-
-//     std::string_view addSignature(Types::TypeIndex function, std::string name) {
-//         auto newParameters = Types::Pool().functionParamsAndReturnType(function).first;
-//         for (FunctionSignature& signature : functions) {
-//             auto [parameters, returnType] = Types::Pool().functionParamsAndReturnType(signature.first);
-//             Types::OptionalType isAssignable = Types::Pool().isTupleAssignable(newParameters, parameters);
-//             if (isAssignable.has_value()) {
-//                 std::stringstream message;
-//                 message << "Pre-existing function definition with signature " << Types::Pool().typeName(parameters);
-//                 throw std::invalid_argument(std::move(message.str()));
-//             }
-//         }
-        
-//         functions.emplace_back(function, std::move(name));
-//         return std::string_view(functions.back().second);
-//     }
-// };
 
 using LiteralValue = std::variant<Types::TypeIndex, UserTypeValue, LLVMName, LLVMFunction, FunctionType, i32>;
 struct Reference {
@@ -111,7 +73,6 @@ struct Reference {
     Reference(FunctionType function): type(Types::indexOf(Types::Intrinsic::FUNCTION)), value(std::move(function)) {}
     Reference(LLVMFunction function): type(Types::indexOf(Types::Intrinsic::LLVM_FUNCTION)), value(std::move(function)), storageType(StorageType::LITERAL) {}
     Reference(bool value): type(Types::Pool().boolean), isMutable(false), isInitialized(true), value(value ? "true" : "false"), storageType(StorageType::LITERAL) {}
-    // Reference(FunctionOverloadTable value): type(Types::indexOf(Types::Intrinsic::FUNCTION_TABLE)), isMutable(false), isInitialized(true), value(std::move(value)) {}
 
     public:
     static Reference* literal(Types::TypeIndex type, LLVMName llvmName) {
@@ -135,6 +96,7 @@ struct Reference {
         auto ref = new Reference(Types::Intrinsic::TYPE);
         ref->isInitialized = true;
         ref->isMutable = false;
+        ref->value = index;
         return ref;
     }
 
@@ -160,19 +122,22 @@ struct Reference {
         return Reference::typeReference(pointerType);
     }
 
-    void assign(Reference* newValue) {
+    Types::OptionalType assign(Reference* newValue) {
         if (!isMutable && isInitialized) {
             throw std::invalid_argument("Unable to assign to an initialized immutable reference");
         }
 
         auto newType = Types::Pool().isAssignable(newValue->type, type);
-        if (!newType.has_value()) {
-            std::stringstream message;
-            message << "Unable to assign value of type " << Types::Pool().typeName(newValue->type) << " to variable of type " << Types::Pool().typeName(type);
-            throw std::invalid_argument(std::move(message.str()));
+        if (newType) {
+            type = *newType;
         }
+        return newType;
+        // if (!newType.has_value()) {
+        //     std::stringstream message;
+        //     message << "Unable to assign value of type " << Types::Pool().typeName(newValue->type) << " to variable of type " << Types::Pool().typeName(type);
+        //     throw std::invalid_argument(std::move(message.str()));
+        // }
 
-        type = newType.value();
         // if (Types::Pool.isStruct(type) && newValue->type == Types::indexOf(Types::Intrinsic::ARRAY)) {
         //     ArrayType& structValue = std::get<ArrayType>(this->value);
         //     ArrayType& assignValue = std::get<ArrayType>(newValue->value);

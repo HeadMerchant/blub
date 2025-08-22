@@ -9,7 +9,7 @@ auto nullBuffer = NullBuffer();
 std::ostream nullStream(&nullBuffer);
 
 std::ostream& logger(LogLevel level) {
-  if (level > ::LogLevel::DEBUG) {
+  if (level >= LogLevel::DEBUG) {
     return std::cout;
   }
   return nullStream;

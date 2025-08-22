@@ -47,48 +47,36 @@ class Environment {
   }
 
   std::string addTemporary() {
-    return std::move(addTemporary(getNextTemporary()));
+    return addTemporary(getNextTemporary());
   }
 
   std::string addTemporary(i32 index) {
-    std::stringstream name;
-    name << "%" << parent->prefix << index;
-    return std::move(name.str());
+    return fmt::format("%{}{}", parent->prefix, index);
   }
 
   std::string addLabel(std::string name) {
-    return std::move(addLabel(std::move(name), getNextTemporary()));
+    return addLabel(std::move(name), getNextTemporary());
   }
   
   // labels only begin with "%" when used
   std::string addLabel(std::string name, i32 index) {
-    std::stringstream nameBuilder;
-    nameBuilder << parent->prefix << name << index;
-    return std::move(nameBuilder.str());
+    return fmt::format("{}{}{}", parent->prefix, name, index);
   }
 
   std::pair<i32, std::string> addConstant() {
-    std::stringstream name;
-    name << "@" << prefix << nextAnonymousConstant;
-    return {nextAnonymousConstant++, std::move(name.str())};
+    return {nextAnonymousConstant++, fmt::format("@{}{}", prefix, nextAnonymousConstant)};
   }
 
   std::string addConstant(std::string_view name) {
-    std::stringstream ss;
-    ss << "@" << prefix << name;
-    return std::move(ss.str());
+    return fmt::format("@{}{}", prefix, name);
   }
 
   std::string addGlobal(std::string_view name) {
-    std::stringstream ss;
-    ss << "%" << prefix << name;
-    return std::move(ss.str());
+    return fmt::format("%{}{}", prefix, name);
   }
 
   std::string addGlobal() {
-    std::stringstream ss;
-    ss << "%" << prefix << nextAnonymousConstant++;
-    return std::move(ss.str());
+    return fmt::format("%{}{}", prefix, nextAnonymousConstant++);
   }
 
   // bool assign(std::string_view name, Reference *value) {
@@ -105,33 +93,5 @@ class Environment {
   //   throw std::invalid_argument(ss.str());
   // }
 
-  static Environment* baseEnvironment() {
-    static Environment baseEnvironment(Map {
-      {"printf", new Reference(
-        std::move(LLVMFunction{.definition = "declare i32 @printf(ptr noalias nocapture, ...)", .usage = "i32 (i8*, ...) @printf"})
-      )},
-      {"malloc", new Reference(
-        std::move(LLVMFunction{.definition = "declare ptr @malloc(i64)", .usage = "ptr (i64) @malloc"})
-      )},
-      {"free", new Reference(
-        std::move(LLVMFunction{.definition = "declare void @free(ptr)", .usage = "void (ptr) @free"})
-      )},
-      {"bool", Reference::typeReference(Types::Pool().boolean)},
-      {"s8", Reference::typeReference(Types::Pool().s8)},
-      {"s16", Reference::typeReference(Types::Pool().s16)},
-      {"s32", Reference::typeReference(Types::Pool().s32)},
-      {"s64", Reference::typeReference(Types::Pool().s64)},
-      {"u8", Reference::typeReference(Types::Pool().u8)},
-      {"u16", Reference::typeReference(Types::Pool().u16)},
-      {"u32", Reference::typeReference(Types::Pool().u32)},
-      {"u64", Reference::typeReference(Types::Pool().u64)},
-      {"f16", Reference::typeReference(Types::Pool().f16)},
-      {"f32", Reference::typeReference(Types::Pool().f32)},
-      {"f64", Reference::typeReference(Types::Pool().f64)},
-      {"usize", Reference::typeReference(Types::Pool().usize)},
-      {"isize", Reference::typeReference(Types::Pool().isize)},
-    });
-
-    return &baseEnvironment;
-  }
+  static Environment* baseEnvironment();
 };

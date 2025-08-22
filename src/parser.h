@@ -3,6 +3,8 @@
 #include <bit>
 #include <cassert>
 #include <iostream>
+#include <fmt/core.h>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -16,16 +18,13 @@ enum class NodeType {
   LITERAL,
   FUNCTION_LITERAL,
   BLOCK,
-  CALL,
   INPUT_LIST,
   ARRAY_LITERAL,
   BINARY_OP,
-  ASSIGNMENT,
   DEFINITION,
   IF,
   STRUCT,
   DOT_ACCESS,
-  WHILE,
   IMPORT,
   // UNION,
   // ENUM,
@@ -76,13 +75,9 @@ using DataSpan = std::span<i32> ;
 using ChildSpan = std::span<NodeIndex> ;
 using TokenSpan = std::span<TokenPointer>;
 using OptionalNode = std::optional<NodeIndex>;
+static i32 MAX_NODE = std::numeric_limits<i32>::max();
 
 namespace Encodings {
-struct WhileLoop {
-  NodeIndex condition;
-  NodeIndex loopBody;
-};
-
 struct Declaration {
   NodeIndex definition;
   NodeIndex value;
@@ -129,17 +124,6 @@ struct ArrayLiteral {
 struct Definition {
   TokenPointer name;
   OptionalNode type;
-};
-
-enum class AssignmentType {
-  NAME,
-  DOT,
-  BRACKET
-};
-
-struct Assignment {
-  NodeIndex assignee;
-  NodeIndex value;
 };
 
 struct If {
@@ -227,7 +211,7 @@ public:
   }
 
   const TokenPointer previous() { return tokens.data() + current.value - 1; }
-  Token getToken(TokenIndex token) { return tokens[token.value]; }
+  TokenPointer getToken(TokenIndex token) { return &tokens[token.value]; }
 
   TokenPointer match(std::vector<TokenType> &types) {
     for (auto type : types) {
@@ -251,7 +235,7 @@ public:
   }
 
   const Token &latestToken() {
-    auto last = static_cast<i32>(tokens.size() - 1);
+    auto last = tokens.size() - 1;
     return tokens[last > current.value ? current.value : last];
   }
 
@@ -363,12 +347,22 @@ public:
     auto encoded = getNode(node, NodeType::LITERAL);
     return {.token = toPointer(encoded.token)};
   }
+  
+  OptionalNode readOptional(NodeIndex node, i32 expectedIndex) {
+    if (expectedIndex >= node.value) return std::nullopt;
+    return NodeIndex {expectedIndex};
+  }
 
+  i32 encodeOptional(OptionalNode child) {
+    if (child.has_value()) return child->value;
+    return MAX_NODE;
+  }
+  
   NodeIndex addNode(Encodings::FunctionLiteral node, TokenIndex token) {
     // Block stored directed after args
     i32 nextIndex = nodes.size();
-    auto dataIndex = addData(node.returnType.value_or({nextIndex}));
-    addData(node.body.value_or({nextIndex}));
+    auto dataIndex = addData(encodeOptional(node.returnType));
+    addData(encodeOptional(node.body));
     return addNode(ASTNode{.left = dataIndex.value,
                            .right = node.parameters.value,
                            .token = token,
@@ -377,14 +371,13 @@ public:
 
   Encodings::FunctionLiteral getFunctionLiteral(NodeIndex node) {
     auto encoded = getNode(node, NodeType::FUNCTION_LITERAL);
-    auto parameters = getChildren();
+    auto& parameters = extraData;
 
     auto startIndex = encoded.left;
-    NodeIndex returnType = parameters[startIndex];
-    NodeIndex body = parameters[startIndex + 1];
     return {.parameters = {encoded.right},
-            .returnType = (returnType.value == node.value) ? std::nullopt : OptionalNode(returnType),
-            .body = (body.value == node.value) ? std::nullopt : OptionalNode(body)};
+            .returnType = readOptional(node, parameters[startIndex]),
+            .body = readOptional(node, parameters[startIndex + 1])
+          };
   }
 
   NodeIndex addNode(Encodings::Block node, TokenIndex token) {
@@ -415,26 +408,14 @@ public:
     return {.left = {encoded.left}, .right = {encoded.right}, .operation = toPointer(encoded.token)};
   }
 
-  NodeIndex addNode(Encodings::Assignment node, TokenPointer token) {
-    std::cout << "Adding assignment " << *token << "\n";
-    return addNode(ASTNode {.left = node.assignee.value, .right = node.value.value, .token = toIndex(token), .nodeType = NodeType::ASSIGNMENT});
-  }
-
-  Encodings::Assignment getAssignment(NodeIndex node) {
-    auto encoded = getNode(node);
-    return {.assignee = {encoded.left}, .value = {encoded.right}};
-  }
-
   NodeIndex addNode(Encodings::Definition node, TokenPointer token) {
     // Type is guaranteed to not have the same index as the definition
-    NodeIndex typeIndex = node.type.value_or({(i32) nodeIndex().value + 1});
-    return addNode(ASTNode {.left = toIndex(node.name).value, .right = typeIndex.value, .token = toIndex(token), .nodeType = NodeType::DEFINITION});
+    return addNode(ASTNode {.left = toIndex(node.name).value, .right = encodeOptional(node.type), .token = toIndex(token), .nodeType = NodeType::DEFINITION});
   }
 
   Encodings::Definition getDefinition(NodeIndex node) {
     auto encoded = getNode(node, NodeType::DEFINITION);
-    bool inferType = encoded.right == node.value;
-    return {.name = toPointer({encoded.left}), .type = inferType ? std::nullopt : OptionalNode(encoded.right)};
+    return {.name = toPointer({encoded.left}), .type = readOptional(node, encoded.right)};
   }
 
 
@@ -442,13 +423,12 @@ public:
     std::vector<NodeIndex> children = {node.condition, node.value};
     auto dataIndex = addData(ChildSpan(children));
 
-    NodeIndex nodeIndex = {(i32) nodes.size()};
-    return addNode(ASTNode {.left = dataIndex.value, .right = node.elseValue.value_or(nodeIndex).value, .token = toIndex(token), .nodeType = NodeType::IF});
+    return addNode(ASTNode {.left = dataIndex.value, .right = encodeOptional(node.elseValue), .token = toIndex(token), .nodeType = NodeType::IF});
   }
   
   Encodings::If getIf(NodeIndex node) {
     auto encoded = getNode(node, NodeType::IF);
-    return {.condition = {extraData[encoded.left]}, .value = {extraData[encoded.left + 1]}, .elseValue = (encoded.right != node.value) ? OptionalNode(encoded.right) : std::nullopt };
+    return {.condition = {extraData[encoded.left]}, .value = {extraData[encoded.left + 1]}, .elseValue = readOptional(node, encoded.right) };
   }
 
   NodeIndex addNode(Encodings::Struct node, TokenPointer token) {
@@ -471,16 +451,6 @@ public:
     return {.object = {encoded.left}, .fieldName = toPointer({encoded.right})};
   }
 
-  NodeIndex addNode(Encodings::WhileLoop node, TokenPointer token) {
-    return addNode(ASTNode {.left = node.condition.value, .right = node.loopBody.value, .nodeType = NodeType::WHILE});
-  }
-
-  Encodings::WhileLoop getWhileLoop(NodeIndex node) {
-    auto encoded = getNode(node,NodeType::WHILE);
-    return {.condition = {encoded.left}, .loopBody = {encoded.right}};
-  }
-
- 
   Encodings::Import getImportStatement(NodeIndex node) {
     auto encoded = getNode(node, NodeType::IMPORT);
     return {.path = std::bit_cast<TokenSpan>(DataSpan(extraData).subspan(encoded.left, encoded.right))};
@@ -540,7 +510,7 @@ public:
     if (check(TokenType::ASSIGNMENT)) {
       TokenPointer token = advance();
       auto value = expression();
-      return addNode(Encodings::Assignment {.assignee = expr, .value = value}, token);
+      return addNode(Encodings::BinaryOp {.left = expr, .right = value, .operation = token});
     }
 
     return expr;
@@ -624,6 +594,7 @@ public:
       auto node = Encodings::UnaryOp{.operand = call(), .operation = UnaryOps::NOT};
       expr = addNode(node, op);
     } else if (check(TokenType::POINTER)) {
+      fmt::println("!!Reference operation!!");
       TokenPointer op = advance();
       auto node = Encodings::UnaryOp{.operand = call(), .operation = UnaryOps::REFERENCE};
       expr = addNode(node, op);
@@ -632,7 +603,8 @@ public:
     }
 
     if (check(TokenType::POINTER)) {
-      auto node = Encodings::UnaryOp{.operand = call(), .operation = UnaryOps::REFERENCE};
+      fmt::println("!!Dereference operation!!");
+      auto node = Encodings::UnaryOp{.operand = expr, .operation = UnaryOps::DEREFERENCE};
       expr = addNode(node, advance());
     }
 
@@ -648,9 +620,6 @@ public:
     NodeIndex expr = access();
     if (check(TokenType::LEFT_PAREN)) {
       auto token = advance();
-
-      consume(TokenType::RIGHT_PAREN,
-              "Expected a closing ')' after arguments for function call");
       auto node = Encodings::BinaryOp{.left = expr, .right = inputList(Encodings::InputList::InputType::Argument), .operation = token};
       return addNode(node);
     }
@@ -712,6 +681,7 @@ public:
       } else {
         assert(false);
       }
+      hasMultiple = true;
     }
 
     consume(TokenType::RIGHT_PAREN, "Expected ')' for declaration");
@@ -725,8 +695,8 @@ public:
   Encodings::InputList getInputList(NodeIndex node) {
     auto encoded = getNode(node, NodeType::INPUT_LIST);
     auto [requiredLength, optionalLength, inputType, _] = unpackInt(encoded.right);
-    auto children = getChildren().subspan(encoded.right);
-    return {.requiredInputs = children.subspan(0, requiredLength), .optionalInputs = children.subspan(requiredLength, optionalLength), .inputType = static_cast<Encodings::InputList::InputType>(inputType)};
+    auto children = getChildren();
+    return {.requiredInputs = children.subspan(encoded.left, requiredLength), .optionalInputs = children.subspan(encoded.left+requiredLength, optionalLength), .inputType = static_cast<Encodings::InputList::InputType>(inputType)};
   }
 
   NodeIndex access() {
@@ -842,8 +812,7 @@ public:
       return addNode(node, toIndex(startToken));
     }
 
-    log << "Last token:\n";
-    log << latestToken();
+    log << fmt::format("Last token: '{}'", latestToken().lexeme) << std::endl;
     throw std::invalid_argument("Unable to parse");
   }
 
@@ -860,14 +829,19 @@ public:
     NodeIndex parameters = inputList(Encodings::InputList::InputType::Parameter);
 
     std::optional<NodeIndex> returnType = std::nullopt;
-    if (check(TokenType::COMMA)) {
+    if (check(TokenType::COLON)) {
       advance();
       // TODO: make sure this can be evaluated at comptime
       returnType = expression();
     }
     
-    // Block
-    auto body = block();
+    OptionalNode body = std::nullopt;
+    // Forward declaration
+    if (check(TokenType::STATEMENT_BREAK)) {
+      advance();
+    } else {
+      body = block();
+    }
     auto node = Encodings::FunctionLiteral {.parameters = parameters, .returnType = returnType, .body = body};
     return addNode(node, toIndex(keyword));
   }
@@ -913,8 +887,8 @@ public:
     TokenPointer token = consume(TokenType::WHILE, "'while' loop requires 'while' keyword");
     NodeIndex condition = expression();
     NodeIndex loopBody = block();
-    Encodings::WhileLoop loop = {.condition = condition, .loopBody = loopBody};
-    return addNode(loop, token);
+    Encodings::BinaryOp loop = {.left = condition, .right = loopBody, .operation = token};
+    return addNode(loop);
   }
 };
 

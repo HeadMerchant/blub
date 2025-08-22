@@ -1,9 +1,11 @@
 #pragma once
 
 #include "common.h"
+#include <fmt/format.h>
+#include <fmt/ranges.h>
 #include <iostream>
-#include <map>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string_view>
 #include <unordered_map>
@@ -84,15 +86,32 @@ namespace Types {
     struct Struct {};
   }
 
+  enum class LLVMStorage {
+    VOID,
+    LITERAL,
+    VARIABLE
+  };
+
   struct TypeIndex {
     i32 value;
     bool operator==(const TypeIndex &other) const {
       return value == other.value;
     }
+ 
+    struct Hash {
+      std::size_t operator()(const Types::TypeIndex& k) const {
+        using std::hash;
+        return hash<i32>()(k.value);
+      }
 
-    bool operator<(const TypeIndex &other) const {
-      return value < other.value;
-    }
+      std::size_t operator()(const std::vector<Types::TypeIndex>& vec) const {
+        std::size_t seed = vec.size();
+        for(auto& i : vec) {
+          seed ^= i.value + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        }
+        return seed;
+      }
+    };
   };
 
   using OptionalType = std::optional<TypeIndex>;
@@ -105,8 +124,29 @@ namespace Types {
   
   struct DataIndex {i32 value;};
   struct StructIndex {i32 value;};
-  struct GenericIndex {i32 value;};
-  struct TupleIndex {i32 value;};
+
+  struct TupleIndex {
+    i32 value;
+    bool operator==(const TupleIndex &other) const {
+      return value == other.value;
+    }
+  };
+
+  struct FunctionType {
+    TupleIndex parameters;
+    TypeIndex returnType;
+    bool operator==(const FunctionType &other) const {
+      return parameters == other.parameters && returnType == other.returnType;
+    }
+
+    struct Hash {
+      std::size_t operator()(const Types::FunctionType& k) const {
+        using std::hash;
+        return (hash<i32>()(k.parameters.value)
+                 ^ (hash<i32>()(k.returnType.value) << 1));
+      }
+    };
+  };
 
   struct Struct {
     SymbolMap fields;
@@ -137,27 +177,17 @@ namespace Types {
     std::string llvmName;
     i32 definition;
     i32 size;
+    // TODO: reduce to 4? values - 1, 2, 4, 8
     i32 alignment;
-  };
-
-  struct Generic {
-    TypeIndex type;
-    const TupleIndex parameters;
-
-    bool operator==(const Generic &other) const {
-      return (type == other.type) && (parameters.value == other.parameters.value);
-    }
-
-    bool operator<(const Generic &other) const {
-      return type < other.type || (type == other.type && parameters.value < other.parameters.value);
-    }
+    i32 length;
   };
 
   class TypePool {
     public:
+    static TypePool pool;
     std::vector<Type> types;
     std::vector<std::string> names = {
-      "VOID",
+      "void",
       "UNTYPED_INT",
       "UNTYPED_FLOAT",
       "TUPLE",
@@ -171,12 +201,16 @@ namespace Types {
       "TYPE",
       "INFER",
     };
-    std::map<TypeIndex, PointerType> pointersTo;
+    
+    std::unordered_map<TypeIndex, PointerType, TypeIndex::Hash> pointersTo;
     std::vector<Struct> structPool;
     std::vector<std::vector<TypeIndex>> tuplePool;
-    std::map<std::vector<TypeIndex>, TypeIndex> tuples;
-    std::map<Generic, TypeIndex> generics;
-    std::vector<Generic> genericPool;
+    std::vector<TypeIndex> tupleTypeIndices;
+    std::unordered_map<std::vector<TypeIndex>, TypeIndex, TypeIndex::Hash> tuples;
+    std::unordered_map<i32, std::unordered_map<TypeIndex, TypeIndex, TypeIndex::Hash>> sizedArrays;
+    // TODO: function
+    std::unordered_map<FunctionType, TypeIndex, FunctionType::Hash> functionCache;
+    std::vector<FunctionType> functionTypePool;
 
     // TODO: enum
 
@@ -219,6 +253,7 @@ namespace Types {
       f32 = addLLVMType("float", "f32", 4, 4);
       f64 = addLLVMType("double", "f64", 8, 8);
       boolean = addLLVMType("i1", "boolean", 1, 1);
+      fmt::println("Initializing s32: {}", s32.value);
     }
 
     TypeIndex addType(Type type, std::string name) {
@@ -238,6 +273,24 @@ namespace Types {
 
     TypeIndex multiPointerTo(TypeIndex type) {
       return pointerTypesFor(type).multiPointer;
+    }
+
+    TypeIndex sizedArrayOf(TypeIndex type, i32 length) {
+      // TODO: consider hash function for TypeIndex
+      if(sizedArrays[length].contains(type)) return sizedArrays[length][type];
+      
+
+      TypeIndex arrayType = addType(Type {
+          .type = Intrinsic::SIZED_ARRAY,
+          .llvmName = fmt::format("[{} x {}]", length, getLLVMType(type)),
+          .definition = type.value,
+          .size = types[type.value].size*length,
+          .alignment = types[type.value].alignment,
+        },
+        fmt::format("[{}]{}", length, typeName(type))
+      );
+      sizedArrays[length][type] = arrayType;
+      return arrayType;
     }
 
     PointerType pointerTypesFor(TypeIndex type) {
@@ -456,40 +509,6 @@ namespace Types {
       std::cout << std::endl;
     }
 
-    TypeIndex addGeneric(Generic generic) {
-      if (generics.contains(generic)) {
-        return generics.at(generic);
-      }
-
-      i32 genericIndex = genericPool.size();
-      genericPool.push_back(std::move(generic));
-      // TODO: llvm type name
-      Type typeDefinition = {.type = Intrinsic::GENERIC, .llvmName = "TODO:GENERIC", .definition = genericIndex};
-      std::stringstream prettyName;
-      
-      prettyName << typeName(generic.type) << "<";
-      bool hasMultiple = false;
-      Type tupleDefinition = types[generic.parameters.value];
-      assert(tupleDefinition.type == Intrinsic::TUPLE);
-      for (auto typeIndex : tuplePool[tupleDefinition.definition]) {
-        if (hasMultiple) {
-          prettyName << ", ";
-        }
-        prettyName << typeName(typeIndex);
-      }
-      prettyName << ">";
-      TypeIndex type = addType(typeDefinition, std::string(prettyName.str()));
-      
-      return type;
-    }
-
-    TypeIndex addGeneric(TypeIndex baseType, std::vector<TypeIndex> parameters) {
-      TypeIndex tupleType = tupleOf(std::move(parameters));
-      Type tupleDefinition = (*this)[tupleType];
-      Generic generic = {.type = baseType, .parameters = {tupleDefinition.definition}};
-      return addGeneric(std::move(generic));
-    }
-    
     TypeIndex tupleOf(std::vector<TypeIndex> types) {
       if (tuples.contains(types)) {
         return tuples[types];
@@ -498,60 +517,75 @@ namespace Types {
       i32 tupleIndex = (i32) tuplePool.size();
       tuplePool.push_back(types);
       // TODO: llvm name
-      Type typeDefinition = {.type = Intrinsic::TUPLE, .llvmName = "", .definition = tupleIndex};
+      auto llvmNames = types | std::views::transform([this](const TypeIndex x) {return getLLVMType(x);});
+      Type typeDefinition = {
+        .type = Intrinsic::TUPLE,
+        .llvmName = fmt::format("\{{}}", fmt::join(llvmNames, ", ")),
+        .definition = tupleIndex
+      };
 
-      std::stringstream prettyName;
-      prettyName << "(";
-      bool hasMultiple = false;
-      for (auto typeIndex : types) {
-        if (hasMultiple) {
-          prettyName << ", ";
-        }
-        prettyName << typeName(typeIndex);
-      }
-      prettyName << ")";
-
-      TypeIndex type = addType(typeDefinition, std::move(prettyName.str()));
+      auto typeNames = types | std::views::transform([this](const TypeIndex x) {return typeName(x);});
+      
+      TypeIndex type = addType(
+        typeDefinition,
+        fmt::format("{}", fmt::join(typeNames, ", "))
+      );
       tuples[std::move(types)] = type;
+      tupleTypeIndices.push_back(type);
 
       return type;
     }
 
-    std::span<TypeIndex> tupleElements(TypeIndex type) {
+    TupleIndex tupleIndex(TypeIndex type) {
       Type typeDefinition = getDefinition(type);
       assert(typeDefinition.type == Intrinsic::TUPLE);
       i32 tupleIndex = typeDefinition.definition;
-      return std::span(tuplePool[tupleIndex]);
+      return TupleIndex{tupleIndex};
     }
 
-    TypeIndex addFunction(std::vector<TypeIndex> parameters, TypeIndex returnType) {
-      TypeIndex paramType = tupleOf(std::move(parameters));
-      std::vector<TypeIndex> genericParameters = {paramType, returnType};
-      return addGeneric(indexOf(Intrinsic::FUNCTION), std::move(genericParameters));
+    std::span<TypeIndex> tupleElements(TypeIndex type) {
+      TupleIndex index = tupleIndex(type);
+      return tupleElements(type);
     }
 
-    Generic getGeneric(TypeIndex genericType) {
-      Type typeDefinition = types[genericType.value];
-      assert(typeDefinition.type == Intrinsic::GENERIC);
-      return genericPool[typeDefinition.definition];
+    std::span<TypeIndex> tupleElements(TupleIndex type) {
+      return std::span(tuplePool[type.value]);
     }
 
-    std::pair<TypeIndex, TypeIndex> functionParamsAndReturnType(TypeIndex functionType) {
-      Generic generic = getGeneric(functionType);
-      assert(generic.type == indexOf(Intrinsic::FUNCTION));
-      TupleIndex signature = generic.parameters;
-      std::vector<TypeIndex>& signatureTypes =  tuplePool[signature.value];
-      assert(signatureTypes.size() == 2);
-      return {signatureTypes[0], signatureTypes[1]};
+    TypeIndex addFunction(FunctionType type) {
+      if (functionCache.contains(type)) return functionCache[type];
+
+      // TODO: copy pointer sizes
+      TypeIndex typeIndex = addType(
+        {.type = Intrinsic::FUNCTION, .llvmName = "ptr", .definition = (i32) functionTypePool.size()},
+        fmt::format("({}) -> {}", typeName(tupleTypeIndices[type.parameters.value]), typeName(type.returnType))
+      );
+      functionTypePool.push_back(type);
+      functionCache[type] = typeIndex;
+
+      return typeIndex;
+    }
+
+    std::optional<FunctionType> functionType(TypeIndex type) {
+      Type typeDefinition = getDefinition(type);
+      if (typeDefinition.type == Intrinsic::FUNCTION) {
+        return functionTypePool[typeDefinition.definition];
+      }
+
+      return std::nullopt;
     }
 
     // pointers, ints, etc
     // TODO: use a more specific condition
     bool isLlvmLiteralType(TypeIndex type) {
-      return getLLVMType(type)[0] != '%';
+      return types[type.value].type != Intrinsic::VOID && getLLVMType(type)[0] != '%';
     }
 
-    OptionalType sliceType(TypeIndex type) {
+    bool isVoid(TypeIndex type) {
+      return types[type.value].type == Intrinsic::VOID;
+    }
+
+    OptionalType sliceElementType(TypeIndex type) {
       Type definition = types[type.value];
       if (definition.type != Intrinsic::SLICE) {
         return std::nullopt;
@@ -559,7 +593,7 @@ namespace Types {
       return Types::TypeIndex{definition.definition};
     }
 
-    OptionalType arrayType(TypeIndex type) {
+    OptionalType multiPointerElementType(TypeIndex type) {
       Type definition = types[type.value];
       if (definition.type != Intrinsic::MULTI_POINTER) {
         return std::nullopt;
@@ -567,8 +601,18 @@ namespace Types {
       return Types::TypeIndex{definition.definition};
     }
 
-    OptionalType sizedArrayType(TypeIndex type) {
-      
+    OptionalType sizedArrayElementType(TypeIndex type) {
+      Type definition = types[type.value];
+      if (definition.type != Intrinsic::SIZED_ARRAY) {
+        return std::nullopt;
+      }
+      return Types::TypeIndex{definition.definition};
+    }
+
+    LLVMStorage storageType(TypeIndex type) {
+      if (isVoid(type)) return LLVMStorage::VOID;
+      else if (isLlvmLiteralType(type)) return LLVMStorage::LITERAL;
+      else return LLVMStorage::VARIABLE;
     }
   };
 

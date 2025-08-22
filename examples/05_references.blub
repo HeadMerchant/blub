@@ -1,11 +1,15 @@
+printInt :: fn(x: s32) {
+	printf(c"%d\n", x)
+}
+
 main :: fn() {
 	x := 12
-	print(x)
+	printInt(x)
 	
-	# y := ^x
-	# y ^= 3
+	y := ^x
+	y ^= 3
 
-	# print(x)
+	printInt(x)
 
 	# z := y
 	# z ^= 5
