@@ -63,6 +63,7 @@ enum class TokenType {
     TRAIT,
     IMPL,
     MUT,
+    OPAQUE,
 
     // Literal
     IDENTIFIER,

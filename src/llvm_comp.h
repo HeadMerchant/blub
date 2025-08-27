@@ -152,20 +152,20 @@ class LLVMCompiler {
                 if (token.type == TokenType::STRING) {
                     TODO("Length-based strings");
                     auto [_, name] = environment.addConstant();
-                    auto stringValue = token.lexeme;
+                    auto [stringValue, length] = escapeSourceString(token.lexeme);
                     // TODO: use string types instead of C strings
                     std::stringstream instruction;
-                    instruction << fmt::format("{} = global [{} x i8] c\"{}\" align 1\n", name, stringValue.length(), stringValue);
+                    instruction << fmt::format("{} = global [{} x i8] c\"{}\" align 1\n", name, length, stringValue);
                     globalsStack.push(std::move(instruction));
                     Reference* ref = Reference::literal(Types::indexOf(Types::Intrinsic::STRING), std::move(name));
                     return ref;
                 }
                 if (token.type == TokenType::NULL_TERMINATED_STRING) {
                     auto [_, name] = environment.addConstant();
-                    auto stringValue = token.lexeme;
+                    auto [stringValue, length] = escapeSourceString(token.lexeme);
                     static std::string nullByte = "\\00";
                     std::stringstream instruction;
-                    instruction << fmt::format("{} = global [{} x i8] c\"{}{}\" align 1\n", name, stringValue.length()+1, stringValue, nullByte);
+                    instruction << fmt::format("{} = global [{} x i8] c\"{}{}\" align 1\n", name, length+1, stringValue, nullByte);
                     globalsStack.push(std::move(instruction));
                     Reference* ref = Reference::literal(Types::Pool().pointerTo(Types::Pool().u8), std::move(name));
                     return ref;
@@ -770,8 +770,34 @@ class LLVMCompiler {
         throw std::invalid_argument("Bruh im crashing tf out");
     }
 
-    std::string escapeSourceString(std::string_view str) {
+    std::pair<std::string, i32> escapeSourceString(std::string_view str) {
+        std::string escaped;
+        i32 byteLength = 0;
+        escaped.reserve(str.size());
+
+        bool isEscaping = false;
         
+        // TODO: unicode support
+        for (auto c : str) {
+            if (!isEscaping) {
+                if (c == '\\') {
+                    isEscaping = true;
+                } else {
+                    escaped.push_back(c);
+                    byteLength++;
+                }
+            } else {
+                switch(c) {
+                    case '\'': escaped.push_back('\''); break;
+                    case 't': escaped.append("\\09"); break;
+                    case '"': escaped.append("\\22"); break;
+                    case 'n': escaped.append("\\0A"); break;
+                    default: throw std::invalid_argument("Unkown escape sequence");
+                }
+                byteLength++;
+            }
+        }
+        return {escaped, byteLength};
     }
     
     void crashBinOp(TokenPointer token, Reference* leftVal, Reference* rightVal) {

@@ -11,8 +11,10 @@ main :: fn() {
 
 	printInt(x)
 
-	# z := y
-	# z ^= 5
+	z := y
+	z ^= 5
+	printInt(z^)
+	printInt(x)
 	# print("x: "+x+", y: "+y^+", z: "+z^)
 
 	# wxyz:^int

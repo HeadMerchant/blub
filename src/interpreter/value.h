@@ -114,7 +114,7 @@ struct Reference {
         }
         Types::TypeIndex pointerType = Types::Pool().pointerTo(value->type);
         assert(Types::Pool()[pointerType].definition == value->type.value);
-        return Reference::variable(pointerType, std::string(value->llvmName()));
+        return Reference::literal(pointerType, std::string(value->llvmName()));
     }
 
     static Reference* pointerTo(Types::TypeIndex type) {
