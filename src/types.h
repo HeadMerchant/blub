@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <array>
 #include <algorithm>
+#include <utility>
 #include <vector>
 #include <sstream>
 #include <string>
@@ -22,6 +23,7 @@ using Map = std::unordered_map<Identifier, Reference *>;
 struct SymbolMap {
   Map symbolValues;
   std::unordered_map<Identifier, i32> symbolIndex;
+  std::vector<Identifier> insertionOrder;
 
   void define(Identifier identifier, Reference* value) {
     if (symbolValues.contains(identifier)) {
@@ -33,6 +35,7 @@ struct SymbolMap {
     // NEXT
     symbolValues[identifier] = value;
     symbolIndex[identifier] = symbolIndex.size();
+    insertionOrder.push_back(identifier);
   }
 
   bool isDefined(Identifier identifier) {
@@ -68,6 +71,7 @@ namespace Types {
 
       // Wait until initialization to set type
       INFER,
+      OPAQUE,
 
       LAST = INFER,
       POINTER_TO,
@@ -149,19 +153,32 @@ namespace Types {
   };
 
   struct Struct {
-    SymbolMap fields;
+    struct StructField {
+      Types::TypeIndex type;
+      Identifier name;
+    };
+    
+    std::vector<StructField> fields; 
+    std::unordered_map<Identifier, i32> fieldNames;
     SymbolMap statics;
 
-    Reference* getField(std::string_view field) {
-      if (statics.isDefined(field)) {
-        return statics.symbolValues[field];
+    std::optional<std::pair<StructField*, i32>> getField(std::string_view fieldName) {
+      if (fieldNames.contains(fieldName)) {
+        i32 index = fieldNames[fieldName];
+        return std::make_pair(&fields[fieldNames[fieldName]], index);
       }
 
-      return nullptr;
+      return std::nullopt;
     }
 
-    i32 numFields() const {
-      return fields.symbolValues.size();
+    bool defineField(Identifier name, TypeIndex type) {
+      if (fieldNames.contains(name)) {
+        return false;
+      }
+
+      fields.push_back({.type = type, .name = name});
+      fieldNames[name] = fieldNames.size();
+      return true;
     }
   };
 
@@ -320,10 +337,10 @@ namespace Types {
       return TypeIndex {rawType.definition};
     }
     
-    TypeIndex addStruct(Struct structDefinition, std::string name) {
+    TypeIndex addStruct(Struct structDefinition, std::string name, std::string llvmName) {
       i32 structIndex = structPool.size();
       structPool.push_back(structDefinition);
-      Type type = {.type = Intrinsic::STRUCT, .definition = structIndex};
+      Type type = {.type = Intrinsic::STRUCT, .llvmName = llvmName, .definition = structIndex};
       return addType(type, name);
     }
 
@@ -341,10 +358,13 @@ namespace Types {
       return structPool[index.value];
     }
 
-    Struct& getStruct(TypeIndex index) {
+    std::optional<Struct*> getStruct(TypeIndex index) {
       Type definition = (*this)[index];
-      assert(definition.type == Intrinsic::STRUCT);
-      return getStruct(StructIndex{definition.definition});
+      if (definition.type == Intrinsic::STRUCT) {
+        return &getStruct(StructIndex{definition.definition});
+      }
+
+      return std::nullopt;
     }
 
     bool isPointer(TypeIndex index) {
@@ -373,9 +393,13 @@ namespace Types {
       return std::string_view(types[index.value].llvmName);
     }
 
-    std::optional<Reference*> getFieldIndex(TypeIndex typeIndex, std::string_view fieldName) {
-      Types::Struct& structDefinition = getStruct(typeIndex);
-      return structDefinition.fields.symbolValues[fieldName];
+    std::optional<std::pair<Struct::StructField*, i32>> getFieldIndex(TypeIndex typeIndex, std::string_view fieldName) {
+      auto structDefinition = getStruct(typeIndex);
+      if (structDefinition) {
+        return (*structDefinition)->getField(fieldName);
+      }
+
+      return std::nullopt;
     }
 
     // TODO: function overloading???
@@ -613,6 +637,10 @@ namespace Types {
       if (isVoid(type)) return LLVMStorage::VOID;
       else if (isLlvmLiteralType(type)) return LLVMStorage::LITERAL;
       else return LLVMStorage::VARIABLE;
+    }
+
+    TypeIndex addOpaque(std::string name, std::string llvmName) {
+      return addType({.type = Intrinsic::OPAQUE, .llvmName = llvmName}, name);
     }
   };
 

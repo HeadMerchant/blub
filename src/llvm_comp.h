@@ -21,10 +21,6 @@
 #include <fmt/format.h>
 
 struct CompilerContext {
-    // NodeIndex index;
-    // std::ostream& outputFile;
-    // Environment& environment;
-    
     std::optional<std::string_view> name;
 
     Types::OptionalType expectedType;
@@ -191,6 +187,14 @@ class LLVMCompiler {
                         throw std::invalid_argument(std::move(message));
                     }
                     return value.value();
+                }
+                if (token.type == TokenType::OPAQUE) {
+                    std::string llvmName = context.name.has_value() ? environment.addGlobal(context.name.value()) : environment.addGlobal();
+                    Types::TypeIndex type = Types::Pool().addOpaque(std::string(context.name.value_or("Anonymous Opaque")), llvmName);
+                    std::stringstream ss;
+                    ss << llvmName << " = type opaque\n";
+                    globalsStack.push(ss);
+                    return Reference::typeReference(type);
                 }
                 throw std::invalid_argument("Unable to create literal from value");
             }
@@ -391,6 +395,7 @@ class LLVMCompiler {
                         for (auto arg : args.requiredInputs) {
                             arguments.push_back(interpret(arg, environment, outputFile, context));
                         }
+
                         for (auto arg : args.optionalInputs) {
                             TODO("Passing in named arguments");
                         }
@@ -422,9 +427,7 @@ class LLVMCompiler {
                             }
                     
                             return Reference::Void();
-                        }
-
-                        if (auto functionType = Types::Pool().functionType(function->type)) {
+                        } else if (auto functionType = Types::Pool().functionType(function->type)) {
                             std::vector<std::string> parameters;
 
                             auto returnType = functionType->returnType;
@@ -468,6 +471,45 @@ class LLVMCompiler {
                             }
                             return Reference::variable(returnType, resultName);
                             // TODO: optional arguments
+                        } else if (auto structType = function->unboxType()) {
+                            auto structDefinition = Types::Pool().getStruct(*structType);
+                            if (!structDefinition.has_value()) {
+                                throw std::invalid_argument(fmt::format("Can't construct non-struct type {}", Types::Pool().typeName(*structType)));
+                            }
+                            std::string tempVar = "undef";
+                            
+                            Types::Struct& definition = **structDefinition;
+                            auto structName = Types::Pool().typeName(*structType);
+                            
+                            if (definition.fields.size() != arguments.size()) {
+                                throw std::invalid_argument(fmt::format(
+                                    "Initialization of type '{}' requires {} fields, but {} were passed in.",
+                                    structName,
+                                    definition.fields.size(),
+                                    arguments.size()
+                                ));
+                            }
+
+                            for (i32 i = 0; i < arguments.size(); i++) {
+                                auto field = definition.fields[i];
+                                if (auto argType = Types::Pool().coerce(field.type, arguments[i]->type)) {
+                                    auto fieldValue = toLiteral(arguments[i], outputFile, environment);
+                                    auto oldName = tempVar;
+                                    tempVar = environment.addTemporary();
+                                    outputFile << fmt::format("{} = insertvalue {} {}, {} {}, {}\n",
+                                      tempVar,
+                                      Types::Pool().getLLVMType(*structType),
+                                      oldName,
+                                      Types::Pool().getLLVMType(field.type),
+                                      fieldValue,
+                                      i
+                                    );
+                                } else {
+                                    throw std::invalid_argument(fmt::format("Type mismatch for field '{}.{}' of type {}. Unable to assign value of type {}", structName, field.name, Types::Pool().typeName(field.type), Types::Pool().typeName(arguments[i]->type)));
+                                }
+                            }
+
+                            return Reference::literal(*structType, tempVar);
                         }
 
                         std::cout << "Unknown function type: " << Types::Pool().typeName(function->type) << std::endl;
@@ -710,7 +752,7 @@ class LLVMCompiler {
                             Types::TypeIndex type = std::get<Types::TypeIndex>(boxedType->value);
 
                             // TODO: default values
-                            structDefinition.fields.define(definitionNode.name->lexeme, Reference::structField(type, fieldIndexNumber));
+                            structDefinition.defineField(definitionNode.name->lexeme, type);
                             ss << Types::Pool().getLLVMType(type);
                             hasFields = true;
                             fieldIndexNumber++;
@@ -720,8 +762,11 @@ class LLVMCompiler {
                     }
                     fieldIndexNumber++;
                 }
-                ss << "}\n";
-                globalsStack.push(std::move(ss));
+                ss << "}";
+                
+                globalsStack.push(ss);
+                Types::TypeIndex typeId = Types::Pool().addStruct(std::move(structDefinition), std::string(context.name.value_or("Anonymous Struct")), llvmName);
+                return Reference::typeReference(typeId);
             }
             case NodeType::DOT_ACCESS: {
                 auto node = parser.getDotAccess(nodeIndex);
@@ -738,21 +783,17 @@ class LLVMCompiler {
                     TODO("Implement automatic dereferencing for field access on pointer types");
                 }
                 std::string_view fieldName = node.fieldName->lexeme;
-                std::optional<Reference*> boxedField = Types::Pool().getFieldIndex(type, fieldName);
+                auto boxedField = Types::Pool().getFieldIndex(type, fieldName);
 
                 if (!boxedField.has_value()) {
                     throw std::invalid_argument(fmt::format("No field '{}' found in struct '{}'", fieldName, Types::Pool().typeName(type)));
                 }
                 
                 // TODO: literals
-                Reference* field = boxedField.value();
+                auto [field, fieldIndex] = boxedField.value();
                 std::string fieldPointer = environment.addTemporary();
                 Types::TypeIndex fieldType = field->type;
-                if (!field->structFieldIndex().has_value()) {
-                    throw std::invalid_argument(fmt::format("Internal: malformed field index {}. Non-integer index value", field->llvmName()));
-                }
 
-                i32 fieldIndex = *field->structFieldIndex().value();
                 if (object->storageType == StorageType::VARIABLE) {
                     outputFile << fmt::format("{} = getelementptr inbounds {}, ptr {}, i32 0, i32 {}\n", fieldPointer, objectLlvmType, object->llvmName(), fieldIndex);
                     return Reference::variable(fieldType, std::move(fieldPointer));

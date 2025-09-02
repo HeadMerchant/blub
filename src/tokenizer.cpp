@@ -32,6 +32,7 @@ std::unordered_map<std::string_view, TokenType> keywords = {
     {"trait", TokenType::TRAIT},
     {"impl", TokenType::IMPL},
     {"mut", TokenType::MUT},
+    {"opaque", TokenType::OPAQUE},
 };
 
 class Tokenizer {

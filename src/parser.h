@@ -717,7 +717,9 @@ public:
   NodeIndex primary() {
     static std::vector<TokenType> types = {TokenType::STRING,
                                            TokenType::DECIMAL, TokenType::INT, TokenType::NULL_TERMINATED_STRING,
-                                           TokenType::TRUE, TokenType::FALSE, TokenType::IDENTIFIER};
+                                           TokenType::TRUE, TokenType::FALSE, TokenType::IDENTIFIER,
+                                           TokenType::OPAQUE,
+                                         };
     if (auto token = match(types)) {
       auto node = Encodings::Literal{.token = token};
       return addNode(node);
