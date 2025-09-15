@@ -1,6 +1,7 @@
 #pragma once
 #include <cassert>
-#include "fmt/core.h"
+#include <fmt/core.h>
+#include <fmt/ostream.h>
 #include <fmt/args.h>
 #include <fmt/ranges.h>
 #include "parser.h"
@@ -40,7 +41,7 @@ class LLVMCompiler {
     
 
     std::string toLiteral(Reference* value, std::ostream& outputFile, Environment& environment) {
-        if (value->storageType == StorageType::VARIABLE) {
+        if (value->storageType == StorageType::STACK) {
             std::string valueName = environment.addTemporary();
             outputFile
                 << fmt::format("{} = load {}, ptr {}\n", valueName, Types::Pool().getLLVMType(value->type), value->llvmName());
@@ -50,11 +51,10 @@ class LLVMCompiler {
     }
 
     std::string toVariable(Reference* value, std::ostream& outputFile, Environment& environment) {
-        if (value->storageType == StorageType::LITERAL) {
+        if (value->storageType == StorageType::REGISTER) {
             auto typeName = Types::Pool().getLLVMType(value->type);
             std::string valueName = environment.addTemporary();
-            outputFile
-                << fmt::format("{} = alloca {}, align {}\nstore {} {}, ptr {}\n", valueName, typeName, Types::Pool()[value->type].alignment, typeName, value->llvmName(), valueName);
+            fmt::print(outputFile, "{} = alloca {}, align {}\nstore {} {}, ptr {}\n", valueName, typeName, Types::Pool()[value->type].alignment, typeName, value->llvmName(), valueName);
             return valueName;
         }
         return std::string(value->llvmName());
@@ -63,21 +63,18 @@ class LLVMCompiler {
     Reference* dereference(Reference* value, std::ostream& outputFile, Environment& environment) {
         Types::OptionalType dereferencedType = Types::Pool().dereference(value->type);
         if (!dereferencedType.has_value()) {
-            std::stringstream message;
-            message << "Unable to dereference non-pointer type " << Types::Pool().typeName(value->type);
-            throw std::invalid_argument(std::move(message.str()));
+            throw std::invalid_argument(fmt::format("Unable to dereference non-pointer type '{}'", Types::Pool().typeName(value->type)));
         }
         
         auto type = dereferencedType.value();
         auto llvmType = Types::Pool().getLLVMType(type);
         switch (value->storageType) {
-            case StorageType::VARIABLE: {
+            case StorageType::STACK: {
                 LLVMName dereferencedVariable = environment.addTemporary();
-                outputFile
-                    << dereferencedVariable << " = load ptr, ptr " << value->llvmName() << "\n";
+                fmt::println(outputFile, "{} = load ptr, ptr {}", dereferencedVariable, value->llvmName());
                 return Reference::variable(dereferencedType.value(), std::move(dereferencedVariable));
             }
-            case StorageType::LITERAL: {
+            case StorageType::REGISTER: {
                 return Reference::variable(dereferencedType.value(), LLVMName(value->llvmName()));
             }
         }
@@ -98,25 +95,32 @@ class LLVMCompiler {
             case NodeType::DECLARATION: {
                 auto node = parser.getDeclaration(nodeIndex);
                 // NOTE: don't support using non-identifiers
-                auto definitionName = parser.getDefinition(node.definition).name->lexeme;
+                auto definition = parser.getDefinition(node.definition);
+                auto definitionName = definition.name->lexeme;
                 auto valueContext = CompilerContext(context);
                 valueContext.name = definitionName;
                 auto value = interpret(node.value, environment, outputFile, valueContext);
 
                 bool compileTime = parser.getToken(encoded.token)->type == TokenType::COLON;
 
-                auto reference = interpret(node.definition, environment, outputFile, context);
-                Types::OptionalType valueType = reference->assign(value);
-                if (!valueType) {
-                    throw std::invalid_argument(fmt::format("Unable to assign value of type {} to declaration of type {}", Types::Pool().typeName(value->type), Types::Pool().typeName(reference->type)));
-                }
-                reference->isMutable = !compileTime;
                 if (!compileTime) {
-                    outputFile << fmt::format("{} = alloca {}\n", reference->llvmName(), Types::Pool().getLLVMType(reference->type));
-                    outputFile << fmt::format("store {} {}, ptr {}\n", Types::Pool().getLLVMType(*valueType), toLiteral(value, outputFile, environment), reference->llvmName());
+                    auto reference = interpret(node.definition, environment, outputFile, context);
+                    Types::OptionalType valueType = reference->assign(value);
+                    if (!valueType) {
+                        throw std::invalid_argument(fmt::format("Unable to assign value of type {} to declaration of type {}", Types::Pool().typeName(value->type), Types::Pool().typeName(reference->type)));
+                    }
+                    fmt::println(outputFile, "{} = alloca {}", reference->llvmName(), Types::Pool().getLLVMType(reference->type));
+                    fmt::println(outputFile, "store {} {}, ptr {}", Types::Pool().getLLVMType(*valueType), toLiteral(value, outputFile, environment), reference->llvmName());
                 } else {
-                    // TODO: figure out naming for this compile-time
-                    reference->value = std::string(value->llvmName());
+                    Types::OptionalType type = definition.type.has_value() ? interpret(definition.type.value(), environment, outputFile, context)->unboxType() : Types::indexOf(Types::Intrinsic::INFER);
+                    if (!type) {
+                        throw std::invalid_argument(fmt::format("Type provided for compile-time constant must be a compile-time known type"));
+                    }
+                    if (Types::Pool().isAssignable(value->type, *type)) {
+                        environment.define(definitionName, value);
+                        return Reference::Void();
+                    }
+                    throw std::invalid_argument(fmt::format("Unable to assign compile time value of type {} to type {}", Types::Pool().typeName(value->type), Types::Pool().typeName(*type)));
                 }
 
                 // TODO: support assignment as expression???
@@ -132,9 +136,7 @@ class LLVMCompiler {
                 } else {
                     Reference* type = interpret(node.type.value(), environment, outputFile, context);
                     if (!type->isType()) {
-                        std::stringstream message;
-                        message << "Type for identifier " << node.name->lexeme << " is not a type";
-                        throw std::invalid_argument(message.str());
+                        throw std::invalid_argument(fmt::format("Type for identifier '{}' is not a type", node.name->lexeme));
                     }
                     Types::TypeIndex typeIndex = std::get<Types::TypeIndex>(type->value);
                     ref = Reference::variable(typeIndex, std::move(llvmName.str()));
@@ -179,7 +181,7 @@ class LLVMCompiler {
                 }
                 if (token.type == TokenType::FALSE) {
                     return Reference::of(false);
-                }
+              }
                 if (token.type == TokenType::IDENTIFIER) {
                     std::optional<Reference*> value = environment.find(node.token->lexeme);
                     if (!value.has_value()) {
@@ -192,8 +194,8 @@ class LLVMCompiler {
                     std::string llvmName = context.name.has_value() ? environment.addGlobal(context.name.value()) : environment.addGlobal();
                     Types::TypeIndex type = Types::Pool().addOpaque(std::string(context.name.value_or("Anonymous Opaque")), llvmName);
                     std::stringstream ss;
-                    ss << llvmName << " = type opaque\n";
-                    globalsStack.push(ss);
+                    fmt::println("{} = type opaque", llvmName);
+                    globalsStack.push(std::move(ss));
                     return Reference::typeReference(type);
                 }
                 throw std::invalid_argument("Unable to create literal from value");
@@ -293,7 +295,7 @@ class LLVMCompiler {
                             throw std::invalid_argument("Unknown binary operation");
                     }
                     auto llvmTypeName = Types::Pool().getLLVMType(type);
-                    outputFile << fmt::format("{} = {} {} {}, {}\n", resultName, binaryOperator, llvmTypeName, leftLiteral, rightLiteral);
+                    fmt::println(outputFile, "{} = {} {} {}, {}", resultName, binaryOperator, llvmTypeName, leftLiteral, rightLiteral);
                     return Reference::literal(type, std::move(resultName));
                 }
 
@@ -309,21 +311,19 @@ class LLVMCompiler {
                         auto endLabel = loopHeader + ".break";
                         auto condition = interpret(node.left, environment, outputFile, context);
                         if (condition->type != Types::Pool().boolean) {
-                            std::stringstream ss;
-                            ss << "Condition for while loop must be of type 'bool', but was of type '" << Types::Pool().typeName(condition->type) << "'";
-                            throw std::invalid_argument(ss.str());
+                            throw std::invalid_argument(
+                                fmt::format("Condition for while loop must be of type 'bool', but was of type '{}'", Types::Pool().typeName(condition->type))
+                            );
                         }
 
-                        outputFile << fmt::format("{}:\n", loopHeader);
+                        fmt::println(outputFile, "{}", loopHeader);
                         auto conditionLiteral = toLiteral(condition, outputFile, environment);
 
-                        outputFile << fmt::format("br i1 {}, label %{}, label %{}\n", conditionLiteral, loopBody, endLabel);
-                        outputFile << loopBody << ":\n";
+                        fmt::println(outputFile, "br i1 {}, label %{}, label %{}\n{}:", conditionLiteral, loopBody, endLabel, loopBody);
 
                         interpret(node.right, environment, outputFile, context);
 
-                        outputFile << fmt::format("br label %{}\n", loopHeader);
-                        outputFile << endLabel << ":\n";
+                        fmt::println(outputFile, "br label %{}\n{}:", loopHeader, endLabel);
                         // TODO: consider value expression (see https://ziglang.org/documentation/master/#while)
                         return Reference::Void();
                     }
@@ -331,7 +331,7 @@ class LLVMCompiler {
                         auto value = interpret(node.right, environment, outputFile, context);
                         auto assignee = interpret(node.left, environment, outputFile, context);
 
-                        if (assignee->storageType != StorageType::VARIABLE) {
+                        if (assignee->storageType != StorageType::STACK) {
                             throw std::invalid_argument("Can't assign to literal");
                         }
                         Types::OptionalType valueType = assignee->assign(value);
@@ -339,7 +339,7 @@ class LLVMCompiler {
                             throw std::invalid_argument(fmt::format("Can't assign value of type {} to symbol of type {}", Types::Pool().typeName(value->type), Types::Pool().typeName(assignee->type)));
                         }
                         std::string valueName = toLiteral(value, outputFile, environment);
-                        outputFile << fmt::format("store {} {}, ptr {}\n", Types::Pool().getLLVMType(*valueType), valueName, assignee->llvmName());
+                        fmt::println(outputFile, "store {} {}, ptr {}", Types::Pool().getLLVMType(*valueType), valueName, assignee->llvmName());
           
                         // TODO: consider value
                         return Reference::Void();
@@ -382,7 +382,7 @@ class LLVMCompiler {
                             if (!Types::Pool().isInt(rightType)) {
                                 throw std::invalid_argument("Index must be an integer");
                             }
-                            outputFile << fmt::format("{} = getelementptr {}, ptr {}, {} {}\n", resultName, Types::Pool().getLLVMType(elementType), leftLiteral, Types::Pool().getLLVMType(rightType), rightLiteral);
+                            fmt::println(outputFile, "{} = getelementptr {}, ptr {}, {} {}", resultName, Types::Pool().getLLVMType(elementType), leftLiteral, Types::Pool().getLLVMType(rightType), rightLiteral);
                             return Reference::variable(elementType, std::move(resultName));
                         } else crashBinOp(node.operation, leftVal, rightVal);
                         break;
@@ -408,6 +408,9 @@ class LLVMCompiler {
                                 args.push_back(toLiteral(arg, outputFile, environment));
                             }
 
+                            if (!nativeCall.usage.starts_with("void")) {
+                                outputFile << fmt::format("{} = ", environment.addTemporary());
+                            }
                             outputFile << fmt::format("call {}(", nativeCall.usage);
                             bool hasMultipleArgs = false;
                             for (int i = 0; i < args.size(); i++) {
@@ -474,7 +477,8 @@ class LLVMCompiler {
                         } else if (auto structType = function->unboxType()) {
                             auto structDefinition = Types::Pool().getStruct(*structType);
                             if (!structDefinition.has_value()) {
-                                throw std::invalid_argument(fmt::format("Can't construct non-struct type {}", Types::Pool().typeName(*structType)));
+                                auto message = fmt::format("Can't construct non-struct type {}", Types::Pool().typeName(*structType));
+                                throw std::invalid_argument(message);
                             }
                             std::string tempVar = "undef";
                             
@@ -482,12 +486,12 @@ class LLVMCompiler {
                             auto structName = Types::Pool().typeName(*structType);
                             
                             if (definition.fields.size() != arguments.size()) {
-                                throw std::invalid_argument(fmt::format(
-                                    "Initialization of type '{}' requires {} fields, but {} were passed in.",
+                                auto message = fmt::format("Construction of type '{}' requires {} fields, but {} were passed in.",
                                     structName,
                                     definition.fields.size(),
                                     arguments.size()
-                                ));
+                                );
+                                throw std::invalid_argument(message);
                             }
 
                             for (i32 i = 0; i < arguments.size(); i++) {
@@ -512,8 +516,7 @@ class LLVMCompiler {
                             return Reference::literal(*structType, tempVar);
                         }
 
-                        std::cout << "Unknown function type: " << Types::Pool().typeName(function->type) << std::endl;
-                        throw std::invalid_argument("Unknown function type");
+                        throw std::invalid_argument(fmt::format("Unknown function type: {}", Types::Pool().typeName(function->type)));
                     }
                     default:
                         throw std::invalid_argument("Unknown binary operation");
@@ -536,11 +539,11 @@ class LLVMCompiler {
                 std::string _prefix;
                 std::string_view prefix;
                 bool forwardDeclare = !node.body.has_value();
-                if (forwardDeclare) {
-                    fmt::println("Forward declaring function {}", context.name.value_or("missing name"));
-                } else {
-                    fmt::println("Not forward declaring");
-                }
+                // if (forwardDeclare) {
+                //     fmt::println("Forward declaring function {}", context.name.value_or("missing name"));
+                // } else {
+                //     fmt::println("Not forward declaring");
+                // }
                 if(context.name.has_value()) {
                     prefix = context.name.value();
                     llvmName = forwardDeclare ? fmt::format("@{}", prefix) : environment.addConstant(prefix);
@@ -582,7 +585,7 @@ class LLVMCompiler {
                         throw std::invalid_argument("Parameter type must be a compile time-known type");
                     }
 
-                    fmt::println("Parameter type: {} ({})", Types::Pool().typeName(*parameterType), parameterType->value);
+                    // fmt::println("Parameter type: {} ({})", Types::Pool().typeName(*parameterType), parameterType->value);
                     parameterTypes.push_back(*parameterType);
                     bool isLiteralParameter = Types::Pool().isLlvmLiteralType(*parameterType);
                     
@@ -594,7 +597,7 @@ class LLVMCompiler {
                         instruction << fmt::format("{} {}", typeName, parameterLlvmName);
                     } else {
                         // TODO: type alignment; for now align to s64
-                        instruction << fmt::format("{}* byval align 8 {}", typeName, parameterLlvmName);
+                        instruction << fmt::format("ptr byval({}) {}", typeName, parameterLlvmName);
                     }
 
                     functionEnvironment.define(paramName, isLiteralParameter ? Reference::literal(*parameterType, std::move(parameterLlvmName)) : Reference::variable(*parameterType, std::move(parameterLlvmName)));
@@ -724,7 +727,7 @@ class LLVMCompiler {
                     auto phiResult = environment.addTemporary();
                     auto resultTypeName = Types::Pool().getLLVMType(resultType.value());
                     outputFile << fmt::format("{}  = phi {} [{}, %{}], [{}, %{}]\n", phiResult, resultTypeName, ifResult->llvmName(), ifLabel, elseResult->llvmName(), elseLabel);
-                    outputFile << fmt::format("store {} {}, {}* {}\n", resultTypeName, phiResult, resultTypeName, resultVariable);
+                    outputFile << fmt::format("store {} {}, ptr {}\n", resultTypeName, phiResult, resultVariable);
                     // TODO: figure out storage type and assignment based on if and else branches
                     return Reference::variable(resultType.value(), std::move(resultVariable));
                 }
@@ -764,7 +767,7 @@ class LLVMCompiler {
                 }
                 ss << "}";
                 
-                globalsStack.push(ss);
+                globalsStack.push(std::move(ss));
                 Types::TypeIndex typeId = Types::Pool().addStruct(std::move(structDefinition), std::string(context.name.value_or("Anonymous Struct")), llvmName);
                 return Reference::typeReference(typeId);
             }
@@ -794,7 +797,7 @@ class LLVMCompiler {
                 std::string fieldPointer = environment.addTemporary();
                 Types::TypeIndex fieldType = field->type;
 
-                if (object->storageType == StorageType::VARIABLE) {
+                if (object->storageType == StorageType::STACK) {
                     outputFile << fmt::format("{} = getelementptr inbounds {}, ptr {}, i32 0, i32 {}\n", fieldPointer, objectLlvmType, object->llvmName(), fieldIndex);
                     return Reference::variable(fieldType, std::move(fieldPointer));
                 } else {

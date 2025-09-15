@@ -270,7 +270,6 @@ namespace Types {
       f32 = addLLVMType("float", "f32", 4, 4);
       f64 = addLLVMType("double", "f64", 8, 8);
       boolean = addLLVMType("i1", "boolean", 1, 1);
-      fmt::println("Initializing s32: {}", s32.value);
     }
 
     TypeIndex addType(Type type, std::string name) {

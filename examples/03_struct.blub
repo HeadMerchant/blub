@@ -1,6 +1,6 @@
 vec2 :: struct {
-	x: float
-	y: float
+	x: f32
+	y: f32
 
 	# dot :: fn (self: ^vec2, other: vec2): float {
 	# 	return self.x*other.x + self.y*other.y
@@ -8,14 +8,15 @@ vec2 :: struct {
 }
 
 printFloat :: fn(x: f32) {
-	printf(c"%f\n", x)
+	printf(c"%f", x)
 }
 
 printVec2 :: fn(v: vec2) {
 	printf(c"vec2(")
 	printFloat(v.x)
+	printf(c", ")
 	printFloat(v.y)
-	printf(c")")
+	printf(c")\n")
 }
 
 main :: fn () {

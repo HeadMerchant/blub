@@ -39,8 +39,8 @@ struct LLVMFunction {
 };
 
 enum class StorageType {
-    LITERAL,
-    VARIABLE
+    REGISTER,
+    STACK
 };
 
 using LLVMName = std::string;
@@ -71,16 +71,16 @@ struct Reference {
     Reference(Types::TypeIndex type, LLVMName llvmName, StorageType storageType): type(type), value(std::move(llvmName)), storageType(storageType) {}
     Reference(Types::Intrinsic type): type(Types::indexOf(type)), isInitialized(false) {}
     Reference(FunctionType function): type(Types::indexOf(Types::Intrinsic::FUNCTION)), value(std::move(function)) {}
-    Reference(LLVMFunction function): type(Types::indexOf(Types::Intrinsic::LLVM_FUNCTION)), value(std::move(function)), storageType(StorageType::LITERAL) {}
-    Reference(bool value): type(Types::Pool().boolean), isMutable(false), isInitialized(true), value(value ? "true" : "false"), storageType(StorageType::LITERAL) {}
+    Reference(LLVMFunction function): type(Types::indexOf(Types::Intrinsic::LLVM_FUNCTION)), value(std::move(function)), storageType(StorageType::REGISTER) {}
+    Reference(bool value): type(Types::Pool().boolean), isMutable(false), isInitialized(true), value(value ? "true" : "false"), storageType(StorageType::REGISTER) {}
 
     public:
     static Reference* literal(Types::TypeIndex type, LLVMName llvmName) {
-        return new Reference(type, std::move(llvmName), StorageType::LITERAL);
+        return new Reference(type, std::move(llvmName), StorageType::REGISTER);
     }
 
     static Reference* variable(Types::TypeIndex type, LLVMName llvmName) {
-        return new Reference(type, std::move(llvmName), StorageType::VARIABLE);
+        return new Reference(type, std::move(llvmName), StorageType::STACK);
     }
     
     static Reference* of(bool boolean) {
@@ -109,7 +109,7 @@ struct Reference {
     }
 
     static Reference* pointerTo(Reference* value) {
-        if (value->storageType != StorageType::VARIABLE) {
+        if (value->storageType != StorageType::STACK) {
             throw std::invalid_argument("Unable to create reference to temporary value");
         }
         Types::TypeIndex pointerType = Types::Pool().pointerTo(value->type);
