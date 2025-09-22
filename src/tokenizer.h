@@ -1,4 +1,5 @@
 #pragma once
+#include "common.h"
 #include <vector>
 #include <string_view>
 #include <iostream>
@@ -71,6 +72,10 @@ enum class TokenType {
     NULL_TERMINATED_STRING,
     DECIMAL,
     INT,
+
+    // Builtins
+    BUILTIN_NumCast,
+    BUILTIN_RegisterType,
     
     // TODO: figure out meaningful whitespace
     STATEMENT_BREAK,
@@ -100,4 +105,4 @@ struct Token {
 
 std::ostream& operator<<(std::ostream& os, const Token& token);
 
-void tokenize(const std::string_view& srcFile, std::vector<Token>& tokensArray);
+void tokenize(const std::string_view& srcFile, std::vector<Token>& tokensArray, std::vector<i32>& linesArray);

@@ -19,11 +19,18 @@ int main(int argc, char *argv[]) {
     }
 
     std::string sourceFile(argv[1]);
+    std::string executable;
+    if (argc > 3) {
+        executable = argv[2];
+    } else {
+        executable = fs::path(sourceFile).stem().string();
+    }
 
     std::string fileContents = readFile(sourceFile);
 
     std::vector<Token> tokens;
-    tokenize(fileContents, tokens);
+    std::vector<i32> lineBreaks;
+    tokenize(fileContents, tokens, lineBreaks);
     for (auto token : tokens) {
         log << token << "\n";
     }
@@ -33,9 +40,6 @@ int main(int argc, char *argv[]) {
 
     std::vector<NodeIndex> program = parser.parse();
 
-    // for (auto ast : program) {
-    //     ast->print();
-    // }
     std::string outFilename = fs::path(sourceFile).stem().string() + ".ll";
     std::ofstream outFile(outFilename, std::ofstream::out | std::ofstream::trunc);
     if (!outFile.is_open()) {
@@ -45,5 +49,7 @@ int main(int argc, char *argv[]) {
     LLVMCompiler interpreter(parser, program);
     interpreter.run(outFile);
     outFile.close();
-    execl("clang", outFilename.c_str());
+    std::cout << "Running clang\n";
+    execl("clang", outFilename.c_str(), "-o",  executable.c_str());
+    std::cout << "clanged";
 }

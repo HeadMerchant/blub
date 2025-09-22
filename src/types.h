@@ -476,10 +476,13 @@ namespace Types {
     }
 
     bool isInt(TypeIndex type) {
+      return type == indexOf(Intrinsic::UNTYPED_INT) || isTypedInt(type);
+    }
+
+    bool isTypedInt(TypeIndex type) {
       static std::array<TypeIndex, 9> numericTypes = {
         u8, u16, u32, u64,
         s8, s16, s32, s64,
-        indexOf(Intrinsic::UNTYPED_INT)
       };
       return std::find(numericTypes.begin(), numericTypes.end(), type) != numericTypes.end();
     }

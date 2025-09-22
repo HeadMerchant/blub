@@ -3,6 +3,7 @@
 #include <iostream>
 #include <vector>
 #include "tokenizer.h"
+#include "fmt/core.h"
 #include "logging.h"
 #include <unordered_map>
 #include <string_view>
@@ -33,6 +34,11 @@ std::unordered_map<std::string_view, TokenType> keywords = {
     {"impl", TokenType::IMPL},
     {"mut", TokenType::MUT},
     {"opaque", TokenType::OPAQUE},
+};
+
+std::unordered_map<std::string_view, TokenType> builtinFunctions = {
+    {"numCast", TokenType::BUILTIN_NumCast},
+    {"registerType", TokenType::BUILTIN_RegisterType}
 };
 
 class Tokenizer {
@@ -88,10 +94,12 @@ class Tokenizer {
         }
         case '\n':{
             line++;
+            lines.push_back(current);
             addToken(TokenType::STATEMENT_BREAK);
             while (!isAtEnd() && peek() == '\n') {
                 advance();
                 line++;
+                lines.push_back(current);
             }
             break;
         }
@@ -190,6 +198,20 @@ class Tokenizer {
             addToken(TokenType::XOR);
             break;
         }
+        case '@': {
+            start++;
+            while (isAlphaUnder(peek())) {
+                advance();
+            }
+
+            if (builtinFunctions.contains(lexeme())) {
+                addToken(builtinFunctions[lexeme()]);
+            } else {
+                throw std::invalid_argument(fmt::format("Unknown builtin: {}", lexeme()));
+            }
+
+            break;
+        }
         default:
             // c-style/null terminated string
             if (c == 'c' && peek() == '"') {
@@ -261,7 +283,7 @@ class Tokenizer {
             if (!(isdigit(c) || c == '.')) break;
             if (c == '.') {
                 if (hasDecimal) {
-                   throw std::invalid_argument("Encountered second decimal when parsing number");
+                   throw std::invalid_argument("Encountered second decimal point when parsing number");
                 }
                 hasDecimal = true;
             }
@@ -283,19 +305,22 @@ class Tokenizer {
         });
     }
 
-    public: Tokenizer(const std::string_view& sourceCode, std::vector<Token>& tokens): sourceCode(sourceCode), tokens(tokens) {
+    public: Tokenizer(const std::string_view& sourceCode, std::vector<Token>& tokens, std::vector<i32>& lines): sourceCode(sourceCode), tokens(tokens), lines(lines) {
+        lines.push_back(0);
         while (!isAtEnd())
         {
             scanToken();
         }
+        lines.push_back(current);
     }
 
     std::vector<Token>& tokens;
+    std::vector<i32>& lines;
 };
 
-void tokenize(const std::string_view& srcFile, std::vector<Token>& tokensArray) {
+void tokenize(const std::string_view& srcFile, std::vector<Token>& tokensArray, std::vector<i32>& linesArray) {
     Log::log << "Source:\n" << srcFile << std::endl;
-    Tokenizer(srcFile, tokensArray);
+    Tokenizer(srcFile, tokensArray, linesArray);
 }
 
 std::ostream& operator<<(std::ostream& os, const Token& token) {

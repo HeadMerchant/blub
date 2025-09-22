@@ -39,6 +39,7 @@ enum class UnaryOps {
   DEREFERENCE,
   SLICE,
   MUTLI_POINTER,
+  COMPILER_BUILTIN,
 };
 
 struct NodeIndex {
@@ -617,6 +618,13 @@ public:
   }
 
   NodeIndex call() {
+    static std::vector<TokenType> builtinTokens = {TokenType::BUILTIN_RegisterType, TokenType::BUILTIN_NumCast};
+    if (auto builtin = match(builtinTokens)) {
+      consume(TokenType::LEFT_PAREN, "Compiler builtins must be called like functions");
+      auto args = inputList(Encodings::InputList::InputType::Argument);
+      return addNode(Encodings::UnaryOp{.operand = args, .operation = UnaryOps::COMPILER_BUILTIN}, builtin);
+    }
+    
     NodeIndex expr = access();
     if (check(TokenType::LEFT_PAREN)) {
       auto token = advance();

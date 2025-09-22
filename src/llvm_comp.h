@@ -169,8 +169,8 @@ class LLVMCompiler {
                     return ref;
                 }
                 if (token.type == TokenType::DECIMAL) {
-                    std::string name(token.lexeme);
-                    return Reference::literal(Types::indexOf(Types::Intrinsic::UNTYPED_FLOAT), std::move(name));
+                    float floatValue = std::stof(token.lexeme.data());
+                    return Reference::literal(Types::indexOf(Types::Intrinsic::UNTYPED_FLOAT), fmt::format("{}", floatValue));
                 }
                 if (token.type == TokenType::INT) {
                     std::string name(token.lexeme);
@@ -635,7 +635,7 @@ class LLVMCompiler {
             }
             case NodeType::UNARY: {
                 auto node = parser.getUnary(nodeIndex);
-                auto value = interpret(node.operand, environment, outputFile, context);
+                auto value = node.operation !=  UnaryOps::COMPILER_BUILTIN ? interpret(node.operand, environment, outputFile, context) : nullptr;
                 switch(node.operation) {
                     case UnaryOps::DEREFERENCE: return dereference(value, outputFile, environment);
                     case UnaryOps::REFERENCE: {
@@ -669,7 +669,48 @@ class LLVMCompiler {
                         }
                         return Reference::typeReference(Types::Pool().sliceOf(elementType.value()));
                     }
-                }
+                    case UnaryOps::COMPILER_BUILTIN:
+                        auto builtinToken = parser.getToken(parser.getNode(nodeIndex).token);
+                        auto arguments = parser.getInputList(node.operand).requiredInputs | std::views::transform([this, &environment, &outputFile, &context](const NodeIndex x) {return interpret(x, environment, outputFile, context);});
+                        switch (builtinToken->type) {
+                            case TokenType::BUILTIN_NumCast: {
+                                if (arguments.size() != 2) {
+                                    throw std::invalid_argument(fmt::format("Expected 2 arguments for builtin extend, but found {}", arguments.size()));
+                                }
+                                auto object = arguments[0];
+                                auto targetType = arguments[1]->unboxType();
+                                if (!targetType) {
+                                    throw std::invalid_argument("Second arguments for builtin extend needs to be a compile-time known type");
+                                }
+
+                                auto objectType = arguments[0]->type;
+                                std::string resultName = environment.addTemporary();
+                                auto instructionName = objectType.value > targetType->value ? "trunc" : "ext";
+                                std::string typePrefix;
+                                
+
+                                if (Types::Pool().isTypedFloat(objectType) && Types::Pool().isTypedFloat(*targetType)) {
+                                    typePrefix = "fp";
+                                } else if (Types::Pool().isSignedInt(objectType) && Types::Pool().isSignedInt(*targetType)) {
+                                    typePrefix = "s";
+                                // TODO bruh
+                                } else if (Types::Pool().isTypedInt(objectType) && Types::Pool().isTypedInt(*targetType)) {
+                                    typePrefix = "z";
+                                } else {
+                                    throw std::invalid_argument(fmt::format("Unable to cast from {} to {}", Types::Pool().typeName(objectType), Types::Pool().typeName(*targetType)));
+                                }
+                                auto objectLiteral = toLiteral(object, outputFile, environment);
+                                fmt::println(outputFile, "{} = {}{} {} {} to {}", resultName, typePrefix, instructionName, Types::Pool().getLLVMType(objectType), objectLiteral, Types::Pool().getLLVMType(*targetType));
+
+                                return Reference::literal(*targetType, resultName);
+                                break;
+                            }
+                            default: {
+                                throw std::invalid_argument(fmt::format("Malformed builtin {}", builtinToken->lexeme));
+                            }
+                        }
+                        break;
+                    }
             }
             case NodeType::IF: {
                 auto node = parser.getIf(nodeIndex);
