@@ -80,7 +80,8 @@ namespace Types {
       SLICE,
       MULTI_POINTER,
       STRUCT,
-      GENERIC
+      GENERIC,
+      ENVIRONMENT
   };
 
   const i32 NUM_INTRINSICS = static_cast<i32>(Intrinsic::LAST) + 1;

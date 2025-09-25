@@ -40,6 +40,7 @@ enum class UnaryOps {
   SLICE,
   MUTLI_POINTER,
   COMPILER_BUILTIN,
+  IMPORT,
 };
 
 struct NodeIndex {
@@ -899,6 +900,13 @@ public:
     NodeIndex loopBody = block();
     Encodings::BinaryOp loop = {.left = condition, .right = loopBody, .operation = token};
     return addNode(loop);
+  }
+
+  NodeIndex import() {
+    // TODO: allow chaining
+    auto token = consume(TokenType::IMPORT, "import token required for import statement");
+    auto fileNode = consume(TokenType::STRING, "import must be followed by a filename");
+    return addNode(Encodings::UnaryOp({.operand = {toIndex(fileNode).value}, .operation = UnaryOps::IMPORT}), token);
   }
 };
 

@@ -45,7 +45,7 @@ enum class StorageType {
 
 using LLVMName = std::string;
 
-using LiteralValue = std::variant<Types::TypeIndex, UserTypeValue, LLVMName, LLVMFunction, FunctionType, i32>;
+using LiteralValue = std::variant<Types::TypeIndex, UserTypeValue, LLVMName, LLVMFunction, FunctionType, i32,Environment*>;
 struct Reference {
     Types::TypeIndex type;
     LiteralValue value;

@@ -1,4 +1,5 @@
 #pragma once
+#include <filesystem>
 #include <cassert>
 #include <fmt/core.h>
 #include <fmt/ostream.h>
@@ -29,6 +30,7 @@ struct CompilerContext {
 };
 
 class LLVMCompiler {
+    static std::ofstream& outputFileStream;
     public:
     ASTNode* main;
     Environment fileEnvironment;
@@ -38,6 +40,7 @@ class LLVMCompiler {
     std::queue<std::stringstream> globalsStack;
 
     LLVMCompiler(Parser& parser, std::span<NodeIndex> program): parser(parser), fileEnvironment(), program(program), log(logger(LogLevel::DEBUG)) {}
+    
     
 
     std::string toLiteral(Reference* value, std::ostream& outputFile, Environment& environment) {
@@ -635,7 +638,51 @@ class LLVMCompiler {
             }
             case NodeType::UNARY: {
                 auto node = parser.getUnary(nodeIndex);
-                auto value = node.operation !=  UnaryOps::COMPILER_BUILTIN ? interpret(node.operand, environment, outputFile, context) : nullptr;
+                if (node.operation == UnaryOps::COMPILER_BUILTIN) {
+                    auto builtinToken = parser.getToken(parser.getNode(nodeIndex).token);
+                    auto arguments = parser.getInputList(node.operand).requiredInputs | std::views::transform([this, &environment, &outputFile, &context](const NodeIndex x) {return interpret(x, environment, outputFile, context);});
+                    switch (builtinToken->type) {
+                        case TokenType::BUILTIN_NumCast: {
+                            if (arguments.size() != 2) {
+                                throw std::invalid_argument(fmt::format("Expected 2 arguments for builtin extend, but found {}", arguments.size()));
+                            }
+                            auto object = arguments[0];
+                            auto targetType = arguments[1]->unboxType();
+                            if (!targetType) {
+                                throw std::invalid_argument("Second arguments for builtin extend needs to be a compile-time known type");
+                            }
+
+                            auto objectType = arguments[0]->type;
+                            std::string resultName = environment.addTemporary();
+                            auto instructionName = objectType.value > targetType->value ? "trunc" : "ext";
+                            std::string typePrefix;
+                            
+
+                            if (Types::Pool().isTypedFloat(objectType) && Types::Pool().isTypedFloat(*targetType)) {
+                                typePrefix = "fp";
+                            } else if (Types::Pool().isSignedInt(objectType) && Types::Pool().isSignedInt(*targetType)) {
+                                typePrefix = "s";
+                            // TODO bruh
+                            } else if (Types::Pool().isTypedInt(objectType) && Types::Pool().isTypedInt(*targetType)) {
+                                typePrefix = "z";
+                            } else {
+                                throw std::invalid_argument(fmt::format("Unable to cast from {} to {}", Types::Pool().typeName(objectType), Types::Pool().typeName(*targetType)));
+                            }
+                            auto objectLiteral = toLiteral(object, outputFile, environment);
+                            fmt::println(outputFile, "{} = {}{} {} {} to {}", resultName, typePrefix, instructionName, Types::Pool().getLLVMType(objectType), objectLiteral, Types::Pool().getLLVMType(*targetType));
+
+                            return Reference::literal(*targetType, resultName);
+                            break;
+                        }
+                        default: {
+                            throw std::invalid_argument(fmt::format("Malformed builtin {}", builtinToken->lexeme));
+                        }
+                    }
+                }
+                if (node.operation == UnaryOps::IMPORT) {
+                    
+                }
+                auto value = interpret(node.operand, environment, outputFile, context);
                 switch(node.operation) {
                     case UnaryOps::DEREFERENCE: return dereference(value, outputFile, environment);
                     case UnaryOps::REFERENCE: {
@@ -670,46 +717,8 @@ class LLVMCompiler {
                         return Reference::typeReference(Types::Pool().sliceOf(elementType.value()));
                     }
                     case UnaryOps::COMPILER_BUILTIN:
-                        auto builtinToken = parser.getToken(parser.getNode(nodeIndex).token);
-                        auto arguments = parser.getInputList(node.operand).requiredInputs | std::views::transform([this, &environment, &outputFile, &context](const NodeIndex x) {return interpret(x, environment, outputFile, context);});
-                        switch (builtinToken->type) {
-                            case TokenType::BUILTIN_NumCast: {
-                                if (arguments.size() != 2) {
-                                    throw std::invalid_argument(fmt::format("Expected 2 arguments for builtin extend, but found {}", arguments.size()));
-                                }
-                                auto object = arguments[0];
-                                auto targetType = arguments[1]->unboxType();
-                                if (!targetType) {
-                                    throw std::invalid_argument("Second arguments for builtin extend needs to be a compile-time known type");
-                                }
-
-                                auto objectType = arguments[0]->type;
-                                std::string resultName = environment.addTemporary();
-                                auto instructionName = objectType.value > targetType->value ? "trunc" : "ext";
-                                std::string typePrefix;
-                                
-
-                                if (Types::Pool().isTypedFloat(objectType) && Types::Pool().isTypedFloat(*targetType)) {
-                                    typePrefix = "fp";
-                                } else if (Types::Pool().isSignedInt(objectType) && Types::Pool().isSignedInt(*targetType)) {
-                                    typePrefix = "s";
-                                // TODO bruh
-                                } else if (Types::Pool().isTypedInt(objectType) && Types::Pool().isTypedInt(*targetType)) {
-                                    typePrefix = "z";
-                                } else {
-                                    throw std::invalid_argument(fmt::format("Unable to cast from {} to {}", Types::Pool().typeName(objectType), Types::Pool().typeName(*targetType)));
-                                }
-                                auto objectLiteral = toLiteral(object, outputFile, environment);
-                                fmt::println(outputFile, "{} = {}{} {} {} to {}", resultName, typePrefix, instructionName, Types::Pool().getLLVMType(objectType), objectLiteral, Types::Pool().getLLVMType(*targetType));
-
-                                return Reference::literal(*targetType, resultName);
-                                break;
-                            }
-                            default: {
-                                throw std::invalid_argument(fmt::format("Malformed builtin {}", builtinToken->lexeme));
-                            }
-                        }
-                        break;
+                    case UnaryOps::IMPORT:
+                      break;
                     }
             }
             case NodeType::IF: {
@@ -890,7 +899,7 @@ class LLVMCompiler {
         throw std::invalid_argument(std::move(message));
     }
     
-    void run(std::ostream& outputFile) {
+    Environment* run(std::ostream& outputFile) {
         CompilerContext context;
         for (auto node : program) {
             interpret(node, fileEnvironment, outputFile, context);
@@ -899,5 +908,42 @@ class LLVMCompiler {
                 globalsStack.pop();
             }
         }
+        return &fileEnvironment;
+    }
+
+    static std::string readFile(std::string filePath) {
+        std::ifstream inputFile(filePath);
+
+        if (!inputFile.is_open()) {
+            throw std::invalid_argument("Error: could not open the file.");
+        }
+
+        std::string fileContents = std::string(
+            std::istreambuf_iterator<char>(inputFile),
+            std::istreambuf_iterator<char>()
+        );
+
+        return fileContents;
+    }
+
+    static Environment* compile(std::string fileName, std::ofstream& outFile) {
+        namespace fs = std::filesystem;
+        static std::unordered_map<std::string, Environment*> compiledFiles;
+        fileName = fs::absolute(fileName);
+
+        if (compiledFiles.contains(fileName)) {
+            return compiledFiles[fileName];
+        }
+
+        std::string fileContents = readFile(fileName);
+
+        std::vector<Token> tokens;
+        std::vector<i32> lineBreaks;
+        tokenize(fileContents, tokens, lineBreaks);
+        Parser parser(tokens);
+        std::vector<NodeIndex> program = parser.parse();
+
+        LLVMCompiler interpreter(parser, program);
+        return interpreter.run(outFile);
     }
 };
