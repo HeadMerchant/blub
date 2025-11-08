@@ -1,0 +1,32 @@
+BasedOnStyle: LLVM
+UseTab: Never
+
+BreakBeforeBraces: Attach
+
+AllowShortFunctionsOnASingleLine: Empty
+SpaceBeforeParens: ControlStatements
+PointerAlignment: Left
+AlignAfterOpenBracket: AlwaysBreak
+IndentWidth: 2
+ContinuationIndentWidth: 2
+ColumnLimit: 170 # ~how many columns show up in split view for helix on my 21:9
+
+# Force argument/parameter wrapping
+BinPackArguments: false
+BinPackParameters: OnePerLine
+
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
+
+AllowShortLambdasOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AlignConsecutiveShortCaseStatements:
+  Enabled: true
+  AcrossEmptyLines: true
+  AcrossComments: true
+  AlignCaseColons: false
+
+IndentAccessModifiers: false
+AlignArrayOfStructures: Left
+InsertTrailingCommas: Wrapped
+

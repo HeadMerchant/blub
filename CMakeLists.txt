@@ -21,7 +21,15 @@ include(FetchContent)
 FetchContent_Declare(
   fmt
   GIT_REPOSITORY https://github.com/fmtlib/fmt
-  GIT_TAG        e69e5f977d458f2650bb346dadf2ad30c5320281) # 10.2.1
+  GIT_TAG        12.0.0)
 FetchContent_MakeAvailable(fmt)
-
 target_link_libraries(blub fmt::fmt)
+
+FetchContent_Declare(
+  simdjson
+  GIT_REPOSITORY https://github.com/simdjson/simdjson.git
+  GIT_TAG  tags/v4.0.7
+  GIT_SHALLOW TRUE)
+ 
+FetchContent_MakeAvailable(simdjson)
+target_link_libraries(blub simdjson)

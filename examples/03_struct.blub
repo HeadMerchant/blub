@@ -12,35 +12,35 @@ vec2 :: struct {
 	# }
 }
 
-printInt :: fn(x: s32) {
-	printf(c"%d", x)
-}
+# printInt :: fn(x: s32) {
+# 	printf(c"%d", x)
+# }
 
-printFloat :: fn(x: f32) {
-	y := @numCast(x, f64)
-	printf(c"%f", x)
-}
+# printFloat :: fn(x: f32) {
+# 	y := @numCast(x, f64)
+# 	printf(c"%f", x)
+# }
 
-printVec2 :: fn(v: ^vec2) {
-	printf(c"vec2(")
-	printFloat(v^.x)
-	printf(c", ")
-	printFloat(v^.y)
-	printf(c")\n")
-}
+# printVec2 :: fn(v: ^vec2) {
+# 	printf(c"vec2(")
+# 	printFloat(v^.x)
+# 	printf(c", ")
+# 	printFloat(v^.y)
+# 	printf(c")\n")
+# }
 
-printVec2I :: fn(v: ^vec2i) {
-	printf(c"vec2(")
-	printInt(v^.x)
-	printf(c", ")
-	printInt(v^.y)
-	printf(c")\n")
-}
+# printVec2I :: fn(v: ^vec2i) {
+# 	printf(c"vec2(")
+# 	printInt(v^.x)
+# 	printf(c", ")
+# 	printInt(v^.y)
+# 	printf(c")\n")
+# }
 
 main :: fn () {
 	v := vec2i(5, 4)
-	printVec2I(^v)
+	# printVec2I(^v)
 
 	v2 := vec2(5, 4)
-	printVec2(^v2)
+	# printVec2(^v2)
 } 

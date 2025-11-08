@@ -1,8 +1,10 @@
 #include "logging.h"
 
 class NullBuffer : public std::streambuf {
-  public:
-  int overflow(int c) { return c; }
+public:
+  int overflow(int c) {
+    return c;
+  }
 };
 
 auto nullBuffer = NullBuffer();
