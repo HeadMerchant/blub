@@ -576,29 +576,32 @@ public:
         break;
       }
       case TokenType::LeftParen: {
-
         auto getArguments = [this, &environment, &outputFile](Types::TypeSpan paramTypes, Encodings::InputList argsNode) {
-          std::vector<Reference> arguments(argsNode.requiredInputs.size());
+          std::vector<Reference> arguments;
           i32 i = 0;
           for (auto arg : argsNode.requiredInputs) {
             auto paramType = paramTypes[i++];
+            fmt::println("{}", TypeName(paramType));
             StatementContext context{.expectedType = paramType};
             auto argument = interpret(arg, environment, outputFile, context);
             auto targetType = argument.isAssignableTo(paramType);
             if (!targetType) {
               crash(arg, fmt::runtime("Unable to assign argument of type '{}' to parameter of type '{}'"), TypeName(argument.getType()), TypeName(paramType));
             }
-            // if (!) arguments.push_back();
-            for (auto arg : argsNode.optionalInputs) {
-              TODO("Passing in named arguments");
+            if (Types::Pool().isFloat(paramType)) {
+              arguments.push_back(argument.coerceFloat());
+            } else {
+              arguments.push_back(argument);
             }
           }
+          for (auto arg : argsNode.optionalInputs) {
+            TODO("Passing in named arguments");
+          }
+          return arguments;
         };
         auto function = interpret(node.left, environment, outputFile, context);
         auto args = parser.getInputList(node.right);
         std::span<TypeIndex> expectedTypes;
-
-        std::vector<Reference> arguments;
 
         if (auto func = function.unboxFunction()) {
           std::vector<std::string> parameters;
@@ -620,6 +623,7 @@ public:
             }
           }
 
+          auto arguments = getArguments(parameterTypes, args);
           for (i32 i = 0; i < arguments.size(); i++) {
             if (auto argType = arguments[i].isAssignableTo(parameterTypes[i])) {
               if (Types::Pool().isLlvmLiteralType(*argType)) {
@@ -668,40 +672,29 @@ public:
           RegisterValue structVal(environment.addTemporary(), *type);
 
           Types::Struct& definition = **structDefinition;
-          if (definition.fields.size() != arguments.size()) {
-            crash(
-              nodeIndex,
-              "Construction of type '{}' requires {} fields, but "
-              "{} were passed in.",
-              TypeName(*type),
-              definition.fields.size(),
-              arguments.size());
+          std::vector<TypeIndex> fieldTypes;
+          for (auto field: definition.fields) {
+            fieldTypes.push_back(field.type);
+            fmt::println("Struct field: {}: {}", field.name, TypeName(fieldTypes.back()));
           }
+          auto fieldSpan = Types::TypeSpan(fieldTypes);
+          auto debugTypes = fieldSpan | std::views::transform([](auto& x){return TypeName(x);});
+          fmt::println("Struct fields: {}", fmt::join(debugTypes, ", "));
+          auto arguments = getArguments(fieldSpan, args);
 
           for (i32 i = 0; i < arguments.size(); i++) {
             auto field = definition.fields[i];
-            if (auto argType = arguments[i].isAssignableTo(field.type)) {
-              auto fieldValue = toRegister(&arguments[i], outputFile, environment);
-              auto fieldValueName = fieldValue;
-              auto fieldTypeLlvmName = LlvmName(field.type);
-              if (i == 0) {
-                Reference ref(structVal);
-                fmt::println(outputFile, "{} = insertvalue {} zeroinitializer, {} {}, 0", ref, structLlvmName, fieldTypeLlvmName, fieldValueName);
-              } else {
-                Reference prevStruct(RegisterValue(structVal.name));
-                structVal.name = environment.addTemporary();
-                Reference ref(structVal);
-                fmt::println(outputFile, "{} = insertvalue {} {}, {} {}, {}", ref, structLlvmName, prevStruct, fieldTypeLlvmName, fieldValueName, i);
-              }
+            auto fieldValue = toRegister(&arguments[i], outputFile, environment);
+            auto fieldValueName = fieldValue;
+            auto fieldTypeLlvmName = LlvmName(field.type);
+            if (i == 0) {
+              Reference ref(structVal);
+              fmt::println(outputFile, "{} = insertvalue {} zeroinitializer, {} {}, 0", ref, structLlvmName, fieldTypeLlvmName, fieldValueName);
             } else {
-              crash(
-                args.requiredInputs[i],
-                "Type mismatch for field '{}.{}' of type '{}'. Unable "
-                "to assign value of type {}",
-                structName,
-                field.name,
-                TypeName(field.type),
-                TypeName(arguments[i].getType()));
+              Reference prevStruct(RegisterValue(structVal.name));
+              structVal.name = environment.addTemporary();
+              Reference ref(structVal);
+              fmt::println(outputFile, "{} = insertvalue {} {}, {} {}, {}", ref, structLlvmName, prevStruct, fieldTypeLlvmName, fieldValueName, i);
             }
           }
           return Reference(structVal);
