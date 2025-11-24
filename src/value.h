@@ -4,6 +4,7 @@
 #include "parser.h"
 #include "types.h"
 #include <cassert>
+#include <cstdint>
 #include <optional>
 #include <variant>
 #include <vector>
@@ -40,10 +41,6 @@ public:
   std::vector<std::string_view> parameterNames;
   std::unordered_map<Types::TupleIndex, Reference*, Types::TupleIndex::Hash> cache;
   std::string_view name;
-
-  // Generic(Generic&& x): translationUnit(x.translationUnit),
-  // definitionEnvironment(x.definitionEnvironment), astNode(x.astNode),
-  // parameterNames(x.parameterNames), cache(x.cache), name(x.name) {}
 };
 
 struct IntLiteral {
@@ -51,6 +48,11 @@ struct IntLiteral {
   TypeIndex type;
 };
 
+template <> struct fmt::formatter<IntLiteral> : fmt::formatter<int64_t> {
+  template <typename FormatContext> auto format(const IntLiteral& obj, FormatContext& ctx) const {
+    return fmt::formatter<int64_t>::format(obj.value, ctx);
+  }
+};
 struct FloatLiteral {
   double value;
 };
@@ -63,18 +65,25 @@ using RegisterName = std::variant<std::string_view, i32>;
 struct RegisterValue {
   RegisterName name;
   TypeIndex type;
+
+  friend std::ostream& operator<<(std::ostream& o, const RegisterValue& x) {
+    fmt::print(o, "%{}", x.name);
+    return o;
+  }
 };
+template <> struct fmt::formatter<RegisterValue> : ostream_formatter {};
 
 class StackValue {
 public:
   RegisterName name;
   TypeIndex type;
-};
 
-// struct StubValue {
-//     TypeIndex type;
-//     std::string_view name;
-// };
+  friend std::ostream& operator<<(std::ostream& o, const StackValue& x) {
+    fmt::print(o, "%{}", x.name);
+    return o;
+  }
+};
+template <> struct fmt::formatter<StackValue> : ostream_formatter {};
 
 class Function {
 public:
@@ -90,9 +99,6 @@ public:
       assert(paramNames->size() == paramTypes.size());
     }
     fmt::print(o, "{} ", (forwardDeclare ? "declare" : "define"));
-
-    // TODO
-    // o <<
   }
 };
 
@@ -110,9 +116,35 @@ public:
 
 struct Never {};
 
+using RangeBound = std::variant<IntLiteral, RegisterValue>;
+struct Range {
+  RangeBound lower;
+  std::optional<RangeBound> upper;
+
+  bool hasUpper() {
+    return upper.has_value();
+  }
+
+  TypeIndex getType() {
+    TypeIndex lowerType = Types::Pool().intLiteral;
+    TypeIndex upperType = Types::Pool().intLiteral;
+
+    if (auto regVal = std::get_if<RegisterValue>(&lower)) {
+      lowerType = regVal->type;
+    }
+    if (upper) {
+      if (auto regVal = std::get_if<RegisterValue>(&upper.value())) {
+        upperType = regVal->type;
+      }
+    }
+
+    return Types::Pool().coerce(lowerType, upperType).value();
+  }
+};
+
 struct Reference;
 using UnderlyingValue =
-  std::variant<TypeIndex, Environment*, Generic, bool, StackValue, FloatLiteral, RegisterValue, IntLiteral, Function, BoundFunction, Reference*, Global, Never>;
+  std::variant<TypeIndex, Environment*, Generic, bool, StackValue, FloatLiteral, RegisterValue, IntLiteral, Function, BoundFunction, Reference*, Global, Never, Range>;
 
 struct Reference {
   using Opt = Types::OptionalType;
@@ -132,16 +164,6 @@ struct Reference {
   static Reference Void() {
     return Reference(Types::Pool()._void);
   }
-
-  // Reference(TypeIndex type): type(type), isInitialized(false) {}
-  // Reference(TypeIndex type, LiteralValue value): type(type),
-  // value(std::move(value)) {} Reference(Types::Intrinsic type):
-  // type(Types::indexOf(type)), isInitialized(false) {} Reference(LLVMFunction
-  // function): type(Types::indexOf(Types::Intrinsic::LLVM_FUNCTION)),
-  // value(std::move(function)), storageType(StorageType::REGISTER) {}
-  // Reference(Environment* value):
-  // type(Types::indexOf(Types::Intrinsic::ENVIRONMENT)), value(value),
-  // isMutable(false), isInitialized(true) {}
 
   Opt unboxType() {
     if (auto type = std::get_if<TypeIndex>(&value)) return *type;
@@ -187,12 +209,12 @@ struct Reference {
     auto type = *targetType;
     if (type != Types::Pool().floatLiteral) {
       if (typeA == Types::Pool().intLiteral) {
-        auto value = a->unbox<IntLiteral>().value()->value;
+        auto value = a->unbox<IntLiteral>()->value;
         return std::make_tuple(type, Reference(FloatLiteral(value)), Reference(b));
       }
 
       if (typeB == Types::Pool().intLiteral) {
-        auto value = b->unbox<IntLiteral>().value()->value;
+        auto value = b->unbox<IntLiteral>()->value;
         return std::make_tuple(type, Reference(a), Reference(FloatLiteral(value)));
       }
     }
@@ -216,6 +238,7 @@ struct Reference {
         [](Function x) { return Types::Pool().addFunction(x.type); },
         [](BoundFunction x) { return Types::Pool().addFunction(x.method.type); },
         [](Global x) { return x.type; },
+        [](Range x) { return Types::Pool().rangeLiteral; },
       },
       value);
   }
@@ -246,7 +269,7 @@ struct Reference {
   }
 
   bool isComptime() {
-    auto comptime = isAny<TypeIndex, IntLiteral, FloatLiteral, bool, Function, Generic>(value);
+    auto comptime = isAny<TypeIndex, IntLiteral, FloatLiteral, bool, Function, Generic, Environment*>(value);
     if (comptime) {
       return true;
     } else if (auto ref = std::get_if<Reference*>(&value)) {
@@ -280,18 +303,18 @@ struct Reference {
     return std::nullopt;
   }
 
-  template <typename T> std::optional<T*> unbox() {
+  template <typename T> T* unbox() {
     if (auto x = std::get_if<T>(&value)) return x;
     if (auto x = std::get_if<Reference*>(&value)) return (*x)->unbox<T>();
-    return std::nullopt;
+    return nullptr;
   }
 
   friend std::ostream& operator<<(std::ostream& o, const Reference& x) {
     std::visit(
       Types::overloaded{
         [&o](TypeIndex x) { o << LlvmName(x); },
-        [&o](bool x) { o << (x ? "true" : "false"); },
-        [&o](StackValue x) { fmt::print(o, "%{}", x.name); },
+        [&o](bool x) { o << x; },
+        [&o](StackValue x) { o << x; },
         [&o](FloatLiteral x) { fmt::print(o, "{:#f}", x.value); },
         [&o](RegisterValue x) { fmt::print(o, "%{}", x.name); },
         [&o](IntLiteral x) { o << x.value; },
@@ -301,9 +324,32 @@ struct Reference {
         [&o](Global x) { fmt::print(o, "@{}", x.name); },
         [&o](Environment* x) { TODO("Can't convert environments into llvm names"); },
         [&o](Generic x) { TODO("Can't convert environments into llvm names"); },
-        [&o](Never x) { TODO("Can't convert environments into llvm names"); }},
+        [&o](Never x) { TODO("Can't convert environments into llvm names"); },
+        [&o](Range x) { TODO("Can't convert ranges into llvm names"); },
+      },
       x.value);
     return o;
+  }
+
+  RangeBound rangeBound() {
+    return std::visit(
+      overloaded{
+        [](IntLiteral x) -> RangeBound { return x; },
+        [](RegisterValue x) -> RangeBound {
+          if (Types::Pool().isInt(x.type)) return x;
+          TODO("Error for value that can't be used as a range bound");
+          return IntLiteral(0);
+        },
+        [](Reference* x) -> RangeBound { return x->rangeBound(); },
+        [](auto& x) -> RangeBound {
+          TODO("Error for value that can't be used as a range bound");
+          return IntLiteral(0);
+        }},
+      value);
+  }
+
+  static Reference unboxBound(RangeBound& bound) {
+    return std::visit(overloaded{[](auto x) { return Reference(x); }}, bound);
   }
 };
 template <> struct fmt::formatter<Reference> : ostream_formatter {};

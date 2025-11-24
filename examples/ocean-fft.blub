@@ -1,0 +1,37 @@
+@cIncludeDir("sokol")
+# @cInclude("sokol/sokol_app.h")
+# @cInclude("sokol/sokol_gfx.h")
+@cLink("GL")
+@cLink("X11")
+@cLink("Xi")
+@cLink("Xcursor")
+@cLink("dl")
+@cLink("pthread")
+@cLink("m")
+@cDefine("SOKOL_IMPL")
+@cDefine("SOKOL_GLCORE")
+
+sg :: @cImport("sokol/sokol_gfx.h", "sg_")
+app :: @cImport("sokol/sokol_app.h", "sapp_")
+glue :: @cImport("sokol/sokol_glue.h", "sglue_")
+
+State :: struct {
+    pip: sg.pipeline
+    bind: sg.bindings
+    passAction: sg.pass_action
+}
+
+cleanup :: fn() {
+	sg.shutdown()
+}
+
+sokol_main :: fn(argc: s32, argv: [^][^]u8) -> app.desc {
+	return app.desc(
+		init_cb = init,
+		frame_cb = frame,
+		cleanup_cb = cleanup,
+		width = 640,
+		height = 480,
+		window_title = c"Triangle",
+	)
+}

@@ -28,6 +28,8 @@ int main(int argc, char* argv[]) {
     throw std::invalid_argument("Unable to write llvm bytecode to " + outFilename);
   }
   fmt::println("Writing to file {}", outFilename);
+  outFile << "%.slice = type {ptr, i64}\n";
+  fmt::println(outFile, "declare void @llvm.trap() nounwind");
   TranslationUnit::compile(sourceFile, outFile);
   outFile.close();
   fmt::println("Generating object file");

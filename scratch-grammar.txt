@@ -9,6 +9,19 @@ unary := ("!" | "-") unary | primary
 primary := number | string | "true" | "false" | "(" expression ")"
 functionDeclaration := keyword_fun identifier "(" (param ",")* ")" "{" statement* "}"
 
+precedence: # tightest binding at top
+x() x[] x.y .x
+x^ x[^]
+!x -x ~x ^x [^]x
+* / %
++ -
+<< >>
+< > <= >=
+== !=
+and ..
+or
+=
+
 main::fun() {
     print("hello world")
 }

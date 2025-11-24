@@ -1,6 +1,6 @@
 #pragma once
 #include "common.h"
-#include "fmt/format.h"
+#include "fmt/base.h"
 #include "fmt/ostream.h"
 #include <iostream>
 #include <string_view>
@@ -22,6 +22,7 @@ enum class TokenType {
 
   // Unary ops
   Pointer,
+  MultiPointer,
   Dot,
   Not,
 
@@ -30,6 +31,7 @@ enum class TokenType {
   Else,
   For,
   While,
+  Return,
 
   // Literals
   True,
@@ -61,6 +63,8 @@ enum class TokenType {
   ShiftLeft,
   ShiftRight,
   ThinArrow,
+  FatArrow,
+  ExclusiveRange,
 
   // Keywords
   Function,
@@ -81,6 +85,9 @@ enum class TokenType {
   Decimal,
   Integer,
   MultiLineString,
+  Char,
+  UnsignedIntType,
+  SignedIntType,
 
   // Builtins
   BUILTIN_NumCast,
@@ -149,8 +156,32 @@ struct Tokenizer {
       break;
     }
     case '.': {
-      addToken(TokenType::Dot);
+      // TODO: inclusive range
+      if (peek() == '<') {
+        advance();
+        addToken(TokenType::ExclusiveRange);
+      } else {
+        addToken(TokenType::Dot);
+      }
       break;
+    }
+    case '\'': {
+      start++;
+      if (peek() == '\\') {
+        advance();
+        if (peek() == '\\') {
+          advance();
+        } else {
+          TODO("Char escape codes");
+        }
+      } else {
+        advance();
+      }
+      if (peek() != '\'') {
+        crash("Expected terminating ' for character token, but found '{}'", peek());
+      }
+      addToken(TokenType::Char);
+      advance();
     }
     case '(': {
       addToken(TokenType::LeftParen);
@@ -208,7 +239,13 @@ struct Tokenizer {
       break;
     }
     case '[': {
-      addToken(TokenType::LeftSquareBracket);
+      if (peek() == '^' && peek(1) && ']') {
+        advance();
+        advance();
+        addToken(TokenType::MultiPointer);
+      } else {
+        addToken(TokenType::LeftSquareBracket);
+      }
       break;
     }
     case ']': {
@@ -335,8 +372,8 @@ struct Tokenizer {
     return sourceCode[current++];
   }
 
-  char peek() {
-    return sourceCode[current];
+  char peek(i32 ahead = 0) {
+    return sourceCode[current + ahead];
   }
 
   void string(TokenType tokenType = TokenType::String, char endChar = '"') {
@@ -417,9 +454,14 @@ public:
     std::string_view lexeme;
 
     void underline(std::ostream& out) {
+      i32 tabCount = 0;
+      for (auto c : lineContents.substr(0, column)) {
+        if (c == '\t') tabCount++;
+      }
       fmt::println(out, "{: >8}| {}", column, lineContents);
-      // fmt::println(out, "{: >8}| {: >{}}{:^{}}", "", "", column, "", lexeme.size());
-      fmt::println(out, "{: >8}| {: >{}}^^^^^", "", "", column);
+      fmt::print(out, "{: >8}| ", "");
+      fmt::print(out, "{:\t>{}}", "", tabCount);
+      fmt::println(out, "{: >{}}{: >{}}", "", column - tabCount, "^", lexeme.size());
     }
   };
 
@@ -438,7 +480,7 @@ public:
     fmt::println(out, "Tokenizer error in file {} at line {}:{}", inputFilePath.string(), location.line, location.column);
     location.underline(out);
     fmt::println(out, fmt, std::forward<Args>(args)...);
-    exit(1);
+    abort();
   }
 };
 }; // namespace Tokenization

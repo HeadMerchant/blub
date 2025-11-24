@@ -6,7 +6,10 @@ std::unordered_map<std::string_view, TokenType> Tokenizer::builtinFunctions = {
   {"cDefine",      TokenType::BUILTIN_CDefine     },
   {"cInclude",     TokenType::BUILTIN_CInclude    },
   {"cIncludeDir",  TokenType::BUILTIN_CIncludeDir },
+  {"cLink",        TokenType::BUILTIN_CLink       },
+  {"cImport",      TokenType::BUILTIN_CImport     },
 };
+
 std::unordered_map<std::string_view, TokenType> Tokenizer::keywords = {
   {"fn",     TokenType::Function},
   {"struct", TokenType::Struct  },
@@ -26,4 +29,5 @@ std::unordered_map<std::string_view, TokenType> Tokenizer::keywords = {
   {"mut",    TokenType::Mut     },
   {"opaque", TokenType::Opaque  },
   {"gn",     TokenType::Generic },
+  {"return", TokenType::Return  },
 };

@@ -32,4 +32,5 @@ template <typename... Ts> struct fmt::formatter<std::variant<Ts...>> {
 
 using std::optional;
 using std::pair;
+using Identifier = std::string_view;
 namespace fs = std::filesystem;

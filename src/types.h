@@ -9,9 +9,9 @@
 #include <fmt/ostream.h>
 #include <fmt/ranges.h>
 #include <iostream>
-#include <iterator>
 #include <limits>
 #include <optional>
+#include <queue>
 #include <span>
 #include <string>
 #include <string_view>
@@ -21,8 +21,6 @@
 #include <vector>
 
 struct Reference;
-
-using Identifier = std::string_view;
 
 struct TypeIndex {
   i32 value;
@@ -56,11 +54,10 @@ enum class LLVMStorage { VOID, LITERAL, VARIABLE };
 using OptionalType = std::optional<TypeIndex>;
 using TypeSpan = std::span<TypeIndex>;
 
-// constexpr TypeIndex indexOf(Intrinsic type) {
-//   i32 value = static_cast<i32>(type);
-//   assert (type <= Intrinsic::LAST);
-//   return {value};
-// }
+struct TypeField {
+  TypeIndex type;
+  i32 index;
+};
 
 struct DataIndex {
   i32 value;
@@ -153,37 +150,30 @@ struct Sizing {
 };
 
 struct Struct {
-  struct StructField {
-    TypeIndex type;
-    Identifier name;
-  };
-
-  std::vector<StructField> fields;
-  std::unordered_map<Identifier, i32> fieldNames;
+  std::unordered_map<Identifier, TypeField> fields;
   // SymbolMap statics;
   std::string name;
   std::string llvmName;
   Sizing sizing;
+  std::vector<TypeIndex> fieldTypes;
 
   Struct(std::string name, std::string llvmName) : name(name), llvmName(llvmName) {}
 
-  std::optional<std::pair<StructField*, i32>> getField(std::string_view fieldName) {
-    if (fieldNames.contains(fieldName)) {
-      i32 index = fieldNames[fieldName];
-      return std::make_pair(&fields[fieldNames[fieldName]], index);
+  std::optional<TypeField> getField(std::string_view fieldName) {
+    if (fields.contains(fieldName)) {
+      return fields[fieldName];
     }
 
     return std::nullopt;
   }
 
   bool defineField(Identifier name, TypeIndex type) {
-    if (fieldNames.contains(name)) {
-      return false;
-    }
+    auto [_, success] = fields.insert({
+      name, TypeField{.type = type, .index = (i32)fields.size()}
+    });
+    fieldTypes.push_back(type);
 
-    fields.push_back({.type = type, .name = name});
-    fieldNames[name] = fieldNames.size();
-    return true;
+    return success;
   }
 };
 
@@ -193,7 +183,7 @@ struct Enum {
   TypeIndex rawType;
   TypeIndex enumType;
 
-  Enum(std::string name, TypeIndex rawType) : values() {}
+  Enum(std::string name, TypeIndex rawType) : name(name), rawType(rawType), values() {}
 
   bool define(Identifier valueName, uint64_t value) {
     bool succeeded = values.emplace(valueName, value).second;
@@ -256,6 +246,7 @@ struct Type {};
 struct Environment {};
 // TODO: implement params and return type
 struct Generic {};
+struct RangeLiteral {};
 using UnderlyingType = std::variant<
   Void,
   SignedInt,
@@ -276,7 +267,8 @@ using UnderlyingType = std::variant<
   FloatLiteral,
   Type,
   Environment,
-  Generic>;
+  Generic,
+  RangeLiteral>;
 template <class... Ts> struct overloaded : Ts... {
   using Ts::operator()...;
 };
@@ -288,6 +280,9 @@ struct Tuple {
 };
 
 class TypePool {
+private:
+  bool testFlag;
+
 public:
   static TypePool pool;
   std::vector<UnderlyingType> underlyingTypes;
@@ -330,19 +325,18 @@ public:
   TypeIndex type;
   TypeIndex environment;
   TypeIndex generic;
+  TypeIndex rangeLiteral;
 
   TypeIndex addType(UnderlyingType type) {
+    i32 index = underlyingTypes.size();
     underlyingTypes.push_back(type);
-    return {(i32)underlyingTypes.size() - 1};
+    return {index};
   }
 
-  TypePool() : underlyingTypes() {
-    // types.reserve(NUM_INTRINSICS + NUM_BUILTINS);
-    // for (i32 i = 0; i < NUM_INTRINSICS; i++) {
-    //   types.push_back({.type = static_cast<Intrinsic>(i), .llvmName =
-    //   "void"});
-    // }
-    // u8 = addType(UnsignedInt(8));
+  TypePool() {
+    // 23 builtins initialized
+    underlyingTypes.reserve(256);
+
     _void = addType(Void{});
     u8 = addType(UnsignedInt(8));
     u16 = addType(UnsignedInt(16));
@@ -369,6 +363,7 @@ public:
     type = addType(Type{});
     environment = addType(Environment{});
     generic = addType(Generic{});
+    rangeLiteral = addType(RangeLiteral{});
   }
 
   TypeIndex pointerTo(TypeIndex type) {
@@ -418,19 +413,11 @@ public:
   }
 
   UnderlyingType& getType(TypeIndex type) {
+    // fmt::println("Getting type index {} of {}", type.value, underlyingTypes.size());
     return underlyingTypes[type.value];
   }
 
-  OptionalType dereference(TypeIndex type) {
-    auto typeDefinition = underlyingTypes[type.value];
-    if (auto multiPtr = std::get_if<MultiPointer>(&typeDefinition)) {
-      return multiPtr->dereferencedType;
-    } else if (auto ptr = std::get_if<Pointer>(&typeDefinition)) {
-      return ptr->dereferencedType;
-    }
-
-    return std::nullopt;
-  }
+  OptionalType dereference(TypeIndex type);
 
   std::pair<TypeIndex, StructIndex> makeStruct(std::string name, std::string llvmName) {
     StructIndex structIndex{(i32)structPool.size()};
@@ -463,12 +450,20 @@ public:
     return std::holds_alternative<Pointer>(underlying) || std::holds_alternative<MultiPointer>(underlying);
   }
 
-  std::optional<std::pair<Struct::StructField*, i32>> getFieldIndex(TypeIndex typeIndex, std::string_view fieldName) {
+  std::optional<TypeField> getFieldIndex(TypeIndex typeIndex, std::string_view fieldName) {
     auto structDefinition = getStruct(typeIndex);
     if (structDefinition) {
       return (*structDefinition)->getField(fieldName);
     }
 
+    if (auto slice = std::get_if<Slice>(&getType(typeIndex))) {
+      if (fieldName == "data") {
+        return TypeField{.type = multiPointerTo(slice->dereferencedType), .index = 0};
+      }
+      if (fieldName == "length") {
+        return TypeField{.type = usize, .index = 1};
+      }
+    }
     return std::nullopt;
   }
 
@@ -517,7 +512,7 @@ public:
   //   std::cout << std::endl;
   // }
 
-  std::pair<TypeIndex, TupleIndex> tupleOf(std::vector<TypeIndex> types, std::ostream& irFile);
+  std::pair<TypeIndex, TupleIndex> tupleOf(std::vector<TypeIndex> types, std::queue<std::string>& globals);
 
   TupleIndex tupleIndex(TypeIndex type) {
     if (auto tuple = std::get_if<TupleIndex>(&underlyingTypes[type.value])) {
@@ -586,9 +581,9 @@ public:
     return std::nullopt;
   }
 
-  OptionalType sizedArrayElement(TypeIndex type) {
+  std::optional<SizedArray> sizedArray(TypeIndex type) {
     if (auto boxed = std::get_if<SizedArray>(&getType(type))) {
-      return boxed->dereferencedType;
+      return *boxed;
     }
     return std::nullopt;
   }
@@ -637,7 +632,7 @@ public:
   }
 
   std::pair<TypeIndex, EnumIndex> addEnum(TypeIndex rawType, std::string name) {
-    return addEnum(Enum(name, rawType));
+    return addEnum(Enum(name, std::move(rawType)));
   }
 
   std::optional<Enum*> getEnum(TypeIndex type) {
@@ -672,14 +667,14 @@ public:
   }
 
   bool isInt(TypeIndex type) {
-    return isSignedInt(type) || isUnsignedInt(type);
+    return isSignedInt(type) || isUnsignedInt(type) || isAny<IntLiteral>(getType(type));
   }
 
   bool isInfer(TypeIndex type) {
     return std::holds_alternative<Infer>(getType(type));
   }
 
-  void defineLLVMStruct(StructIndex structDefinition, std::ostream& outputFile);
+  void defineLLVMStruct(StructIndex structDefinition, std::queue<std::string>& globals);
 
   Sizing getSizing(TypeIndex type) {
     return std::visit(
@@ -730,6 +725,10 @@ public:
         },
         [](Generic) {
           TODO("Error for sizing Generic type");
+          return Sizing{};
+        },
+        [](RangeLiteral) {
+          TODO("Error for sizing Range type");
           return Sizing{};
         }},
       getType(type));
@@ -782,11 +781,13 @@ public:
   void setStructSizing(StructIndex type) {
     Struct& structDefinition = getStruct(type);
     std::vector<TypeIndex> fieldTypes;
-    for (auto field : structDefinition.fields) {
+    for (auto [_, field] : structDefinition.fields) {
       fieldTypes.push_back(field.type);
     }
     structDefinition.sizing = getSizing(TypeSpan(fieldTypes));
   }
+
+  void debugTypes();
 };
 
 TypePool& Pool();
@@ -796,30 +797,50 @@ TypePool& Pool();
 struct TypeName {
   TypeIndex type;
 
-  friend std::ostream& operator<<(std::ostream& o, const TypeName& type) {
+  static void print(std::ostream& o, TypeIndex type) {
     std::visit(
       Types::overloaded{
         [&o](Types::Void x) { o << "void"; },
         [&o](Types::SignedInt x) { o << "s" << x.bitSize; },
         [&o](Types::UnsignedInt x) { o << "u" << x.bitSize; },
         [&o](Types::Float x) { o << "f" << x.bitSize(); },
-        [&o](Types::Pointer x) { o << "^" << TypeName(x.dereferencedType); },
-        [&o](Types::MultiPointer x) { o << "[^]" << TypeName(x.dereferencedType); },
-        [&o](Types::Slice x) { o << "[]" << TypeName(x.dereferencedType); },
+        [&o](Types::Pointer x) {
+          o << "^";
+          print(o, x.dereferencedType);
+        },
+        [&o](Types::MultiPointer x) {
+          o << "[^]";
+          print(o, x.dereferencedType);
+        },
+        [&o](Types::Slice x) {
+          o << "[]";
+          print(o, x.dereferencedType);
+        },
         [&o](Types::StructIndex x) { o << Types::Pool().structPool[x.value].name; },
         [&o](Types::TupleIndex x) { o << Types::Pool().tuplePool[x.value].name; },
-        [&o](Types::EnumIndex x) { o << TypeName(Types::Pool().enumPool[x.value].rawType); },
-        [&o](Types::FunctionType x) { o << Types::Pool().tuplePool[x.parameters.value].name << " -> " << TypeName(x.returnType); },
+        [&o](Types::EnumIndex x) { print(o, Types::Pool().enumPool[x.value].rawType); },
+        [&o](Types::FunctionType x) {
+          o << Types::Pool().tuplePool[x.parameters.value].name << " -> ";
+          print(o, x.returnType);
+        },
         [&o](Types::Infer x) { o << "infer"; },
         [&o](Types::Opaque x) { o << x.name; },
-        [&o](Types::SizedArray x) { o << "[" << x.length << "]" << TypeName(x.dereferencedType); },
+        [&o](Types::SizedArray x) {
+          o << "[" << x.length << "]";
+          print(o, x.dereferencedType);
+        },
         [&o](Types::Never x) { o << "never"; },
         [&o](Types::IntLiteral) { o << "int literal"; },
         [&o](Types::FloatLiteral) { o << "float literal"; },
         [&o](Types::Generic) { o << "generic"; },
         [&o](Types::Environment) { o << "environment"; },
-        [&o](Types::Type) { o << "type"; }},
-      Types::Pool().getType(type.type));
+        [&o](Types::Type) { o << "type"; },
+        [&o](Types::RangeLiteral) { o << "range"; }},
+      Types::Pool().getType(type));
+  }
+
+  friend std::ostream& operator<<(std::ostream& o, const TypeName& type) {
+    print(o, type.type);
     return o;
   }
 };
@@ -848,11 +869,12 @@ struct LlvmName {
           o << "]";
         },
         [&o](Types::Never x) { TODO("Error for llvm name for never type"); },
-        [&o](Types::IntLiteral) { TODO("Error for llvm name for int literal type"); },
-        [&o](Types::FloatLiteral) { TODO("Error for llvm name for float literal type"); },
+        [&o](Types::IntLiteral) { o << "i32"; },
+        [&o](Types::FloatLiteral) { o << "float"; },
         [&o](Types::Generic) { TODO("Error for llvm name for float literal type"); },
         [&o](Types::Environment) { TODO("Error for llvm name for float literal type"); },
-        [&o](Types::Type) { o << "type"; }},
+        [&o](Types::Type) { TODO("Error for llvm name for type literal type"); },
+        [&o](Types::RangeLiteral) { TODO("Error for llvm name for range literal type"); }},
       Types::Pool().getType(type));
   }
 
