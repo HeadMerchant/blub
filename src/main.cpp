@@ -1,7 +1,10 @@
+#include "fmt/base.h"
 #include "fmt/format.h"
 #include "llvm_comp.h"
 #include "logging.h"
 #include "unistd.h"
+#include <cstddef>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
@@ -33,27 +36,36 @@ int main(int argc, char* argv[]) {
   TranslationUnit::compile(sourceFile, outFile);
   outFile.close();
   fmt::println("Generating object file");
-  execl("llc", "--file-type=obj", outFilename.c_str(), "-o", "main.o");
+  execl("clang", "-c", outFilename.c_str(), "-o", "main.o");
 
   fmt::println("Generating executable");
-  std::vector<std::string> clangArgs;
-  for (auto include : CompilerContext::inst().c.includes) {
-    clangArgs.push_back("-include");
-    clangArgs.push_back(std::string(include).data());
+
+  auto& clangArgs = CompilerContext::inst().c.clangArgs;
+
+  // Create object from included C files
+  bool cIncludes = !clangArgs.empty();
+
+  std::string cIncludeObject;
+  if (cIncludes) {
+    cIncludeObject = "include.o";
+    fmt::println("Compiling included C files");
+    auto clangCommand = fmt::format("clang -x c {} -c /dev/null -o {}", fmt::join(clangArgs, " "), cIncludeObject);
+    fmt::println("Clang args: {}", clangArgs);
+    auto rc = std::system(clangCommand.c_str());
+    if (rc != 0) {
+      fmt::println("Error compiling include files");
+      abort();
+    }
   }
-  for (auto include : CompilerContext::inst().c.includeDirs) {
-    clangArgs.push_back(fmt::format("-I{}", include).data());
+
+  auto& linkedLibararies = CompilerContext::inst().c.linkedLibaries;
+  auto clangCommand = fmt::format("clang main.o {} {} -o {}", cIncludeObject, fmt::join(linkedLibararies, " "), executable);
+
+  fmt::println("Linking with args: {}", clangCommand);
+  auto rc = std::system(clangCommand.c_str());
+  if (rc != 0) {
+    fmt::println("Error linking libraries");
+    abort();
   }
-  for (auto include : CompilerContext::inst().c.defines) {
-    clangArgs.push_back(fmt::format("-D{}", include).data());
-  }
-  for (auto library : CompilerContext::inst().c.linkLibraries) {
-    clangArgs.push_back(fmt::format("-l{}", library).data());
-  }
-  std::vector<char*> cStringedArgs = {const_cast<char*>("main.o"), const_cast<char*>("-o"), executable.data()};
-  for (auto arg : clangArgs) {
-    cStringedArgs.push_back(arg.data());
-  }
-  execvp("clang", &cStringedArgs[0]);
   fmt::println("clanged");
 }

@@ -243,6 +243,15 @@ struct Reference {
       value);
   }
 
+  bool canReference() const {
+    return std::visit(overloaded {
+      [](StackValue x) { return true; },
+      [](Global x) { return true; },
+      [](Reference* x) { return x->canReference(); },
+      [](auto& x) {return false;}
+    }, value);
+  }
+
   using OptStack = std::optional<StackValue>;
   OptStack lValue() {
     return std::visit(
@@ -356,13 +365,13 @@ template <> struct fmt::formatter<Reference> : ostream_formatter {};
 
 class Environment {
 public:
+  static i32 globalIndex;
   std::unordered_map<std::string_view, Reference> defs;
   std::vector<Environment*> imports;
   std::string prefix;
   // For LLVM
 private:
   i32 nextTemporary = 1;
-  i32 nextAnonymousConstant = 0;
   bool quotePrefixedNames;
 
 public:
@@ -431,7 +440,7 @@ public:
   }
 
   Reference makeGlobal(TypeIndex type) {
-    return Reference(Global(nextAnonymousConstant++, type));
+    return Reference(Global(globalIndex++, type));
   }
 
   std::string addConstant(std::string_view name) {
@@ -443,11 +452,11 @@ public:
   }
 
   std::string addGlobal() {
-    return fmt::format("%{}{}", prefix, nextAnonymousConstant++);
+    return fmt::format("%{}{}", prefix, globalIndex++);
   }
 
   i32 nextGlobalIndex() {
-    return nextAnonymousConstant++;
+    return globalIndex++;
   }
 
   static Environment* baseEnvironment();

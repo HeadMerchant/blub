@@ -30,10 +30,8 @@ struct CompilerContext {
   struct {
   } blub;
   struct {
-    std::vector<std::string_view> defines;
-    std::vector<std::string_view> includes;
-    std::vector<std::string_view> includeDirs;
-    std::vector<std::string_view> linkLibraries;
+    std::vector<std::string> linkedLibaries;
+    std::vector<std::string> clangArgs;
   } c;
   struct {
   } cuda;
@@ -68,10 +66,11 @@ public:
   Reference toRegister(Reference* value, std::ostream& outputFile, Environment& environment) {
     if (value->isLiteral()) {
       return *value;
-    } else if (auto stackValue = std::get_if<StackValue>(&value->value)) {
-      auto registerIndex = environment.makeTemporary(stackValue->type);
+    } else if (value->canReference()) {
+      auto type =value->getType();
+      auto registerIndex = environment.makeTemporary(type);
       auto registerValue = Reference(registerIndex);
-      fmt::println(outputFile, "{} = load {}, ptr {}", registerValue, LlvmName(stackValue->type), *value);
+      fmt::println(outputFile, "{} = load {}, ptr {}", registerValue, LlvmName(type), *value);
       return Reference(registerIndex);
     } else if (auto recursive = std::get_if<Reference*>(&value->value)) {
       return toRegister(*recursive, outputFile, environment);
@@ -100,7 +99,7 @@ public:
         crash(node, "Unable to dereference non-pointer type '{}'", LlvmName(registerValue->type));
       }
       return StackValue(registerValue->name, registerValue->type);
-    } else if (auto stackValue = std::get_if<StackValue>(&value->value)) {
+    } else if (value->canReference()) {
       Types::OptionalType dereferencedType = Types::Pool().dereference(registerValue->type);
       if (!dereferencedType.has_value()) {
         crash(node, "Unable to dereference non-pointer type '{}'", LlvmName(registerValue->type));
@@ -110,6 +109,10 @@ public:
     } else {
       TODO("Dereferencing non-stack values?");
     }
+  }
+
+  fs::path concatPath(std::string_view path) {
+    return fs::weakly_canonical(inputFilePath.parent_path().append(path));
   }
 
   Reference interpret(NodeIndex nodeIndex, Environment& environment, std::ostream& outputFile, StatementContext& context) {
@@ -134,10 +137,10 @@ public:
         return Reference::Void();
       }
       case TokenType::LeftSquareBracket: {
-        TODO("Array literals");
+        crash(nodeIndex, "TODO: Array literals");
       }
       case TokenType::LeftParen: {
-        TODO("Tuples");
+        crash(nodeIndex, "TODO: Tuples");
         // TODO: type inference
         std::vector<Reference> elements;
         for (auto element : node.elements) {
@@ -250,16 +253,13 @@ public:
         return makeSlice(global, lengthValue, outputFile, environment);
       }
       if (token->type == TokenType::NullTerminatedString) {
-        auto global = environment.makeGlobal(Types::Pool().multiPointerTo(Types::Pool().u8));
         auto [stringValue, length] = escapeSourceString(token->lexeme, token);
+        auto global = environment.makeGlobal(Types::Pool().sizedArrayOf(Types::Pool().u8, length));
         static std::string nullByte = "\\00";
         std::stringstream instruction;
         instruction << fmt::format("{} = global [{} x i8] c\"{}{}\" align 1\n", global, length + 1, stringValue, nullByte);
         globalsStack.push(instruction.str());
         return global;
-        // Reference* ref =
-        // Reference::literal(Types::Pool().multiPointerTo(Types::Pool().u8),
-        // std::move(name)); return ref;
       }
       if (token->type == TokenType::Decimal) {
         float floatValue = std::stof(token->lexeme.data());
@@ -488,13 +488,13 @@ public:
 
         // left[right]
         //     ^
-        auto parameterNode = parser.getParameterList(node.right);
 
         // Generic instantiation
         if (auto boxedGeneric = std::get_if<Generic>(&leftVal.value)) {
+          auto arguments = parser.getArgumentList(node.right);
           auto expectedArgLength = boxedGeneric->parameterNames.size();
           {
-            auto actualArgLength = parameterNode.requiredParameters.size();
+            auto actualArgLength = arguments.requiredArgs.size();
             if (expectedArgLength != actualArgLength) crash(node.right, "Expected {} generic arguments, but {} were provided", expectedArgLength, actualArgLength);
           }
           Environment genericEnvironment(&boxedGeneric->definitionEnvironment, std::string(""), true);
@@ -502,7 +502,7 @@ public:
 
           // TODO: optional inputs
           for (auto i = 0; i < boxedGeneric->parameterNames.size(); i++) {
-            auto argNode = parameterNode.requiredParameters[i];
+            auto argNode = arguments.requiredArgs[i];
             auto argValue = interpret(argNode, environment, outputFile, context);
 
             auto paramName = boxedGeneric->parameterNames[i];
@@ -514,7 +514,7 @@ public:
             }
           }
 
-          for (auto param : parameterNode.requiredParameters) {
+          for (auto param : arguments.optionalArgs) {
             TODO("Named generic parameters");
           }
 
@@ -579,8 +579,7 @@ public:
         } else if (auto sizedArray = Types::Pool().sizedArray(leftType)) {
           auto length = IntLiteral(sizedArray->length);
           auto elementType = sizedArray->dereferencedType;
-          auto dataPointer = leftVal.unbox<StackValue>();
-          if (!dataPointer) {
+          if (!leftVal.canReference()) {
             TODO("Indexing sized array not in stack value");
           }
           if (Types::Pool().isInt(rightType)) {
@@ -709,7 +708,6 @@ public:
           }
           auto structLlvmName = LlvmName(*type);
           auto structName = TypeName(*type);
-          RegisterValue structVal(environment.addTemporary(), *type);
 
           Types::Struct& definition = **structDefinition;
           auto fieldTypes = Types::TypeSpan(definition.fieldTypes);
@@ -717,6 +715,8 @@ public:
           auto [arguments, namedArguments] = getArguments(fieldTypes, args);
           std::vector<bool> setArguments(fieldTypes.size(), false);
 
+          RegisterValue structVal(environment.addTemporary(), *type);
+          bool isInitialized = false;
           // TODO: default values that aren't zero initialized; using 0 for now to avoid initializing all fields in C structs
           for (i32 i = 0; i < arguments.size(); i++) {
             auto fieldValue = toRegister(&arguments[i], outputFile, environment);
@@ -724,6 +724,7 @@ public:
             auto fieldTypeLlvmName = LlvmName(arguments[i].getType());
             setArguments[i] = true;
             if (i == 0) {
+              isInitialized = true;
               Reference ref(structVal);
               fmt::println(outputFile, "{} = insertvalue {} zeroinitializer, {} {}, 0", ref, structLlvmName, fieldTypeLlvmName, fieldValueName);
             } else {
@@ -734,13 +735,17 @@ public:
             }
           }
 
-          auto i = 0;
-          for (auto [name, value] : namedArguments) {
-            auto argToken = parser.getToken(args.optionalArgs[i].value);
+          for (auto arg: args.optionalArgs) {
+            auto argToken = parser.toPointer(arg.token);
+            auto name = argToken->lexeme;
+            assert(namedArguments.contains(name));
+            auto value = namedArguments[name];
+            // auto argToken = std::find_if(args.optionalArgs.begin(), args.optionalArgs.end(), [this, name](auto x){return parser.toPointer(x.token)->lexeme == name;})->token;
             auto field = definition.getField(name);
             if (!field) {
               crash(argToken, "Unknown field '{}' for type '{}'", name, TypeName(*type));
             }
+            auto i = field->index;
             auto targetType = value.isAssignableTo(field->type);
             if (!targetType) {
               crash(argToken, "Unable to assign argument of type '{}' to parameter of type '{}'", TypeName(value.getType()), TypeName(field->type));
@@ -758,11 +763,14 @@ public:
               crash(argToken, "Duplicate assignment for field '{}'", name);
             }
             setArguments[i] = field->index;
-            Reference prevStruct(RegisterValue(structVal.name));
-            structVal.name = environment.addTemporary();
-            Reference ref(structVal);
-            fmt::println(outputFile, "{} = insertvalue {} {}, {} {}, {}", ref, structLlvmName, prevStruct, LlvmName(field->type), value, field->index);
-            i++;
+            if (isInitialized) {
+              RegisterValue prevStruct{structVal.name};
+              structVal.name = environment.addTemporary();
+              fmt::println(outputFile, "{} = insertvalue {} {}, {} {}, {}", structVal, structLlvmName, prevStruct, LlvmName(field->type), value, field->index);
+            } else {
+              isInitialized = true;
+              fmt::println(outputFile, "{} = insertvalue {} zeroinitializer, {} {}, {}", structVal, structLlvmName, LlvmName(field->type), value, field->index);
+            }
           }
           return Reference(structVal);
         } else {
@@ -881,7 +889,7 @@ public:
 
         auto typeName = *parameterType;
         Reference parameter =
-          isLiteralParameter ? Reference(functionEnvironment.makeTemporary(*parameterType)) : Reference(StackValue(std::string(paramName), *parameterType));
+          isLiteralParameter ? Reference(RegisterValue(paramName, *parameterType)) : Reference(StackValue(paramName, *parameterType));
         if (isLiteralParameter) {
           fmt::print(instruction, "{} {}", LlvmName(typeName), parameter);
         } else {
@@ -907,7 +915,7 @@ public:
           interpret(statement, functionEnvironment, instruction, functionContext);
         }
 
-        if (!environment.hasReturned) {
+        if (!functionEnvironment.hasReturned) {
           if (returnType == Types::Pool()._void) {
             instruction << "ret void\n";
           } else {
@@ -971,26 +979,51 @@ public:
 
           auto includeFile = fs::weakly_canonical(inputFilePath.parent_path().append(parser.getToken(argumentNodes[0])->lexeme));
           auto fileName = includeFile.string();
-          auto fileNameView = std::string_view(fileName);
-          CompilerContext::inst().c.includes.push_back(fileNameView);
+          auto fileNameView = StringPool::inst().copy(std::string_view(fileName));
+          CompilerContext::inst().c.clangArgs.push_back("-include");
+          CompilerContext::inst().c.clangArgs.push_back(std::move(fileName));
+
           auto prefix = std::string(parser.getToken(argumentNodes[1])->lexeme);
 
           return Reference(cBindings(fileNameView, prefix, globalsStack));
           break;
         }
-        case TokenType::BUILTIN_CDefine:
-        case TokenType::BUILTIN_CInclude:
-        case TokenType::BUILTIN_CIncludeDir:
-        case TokenType::BUILTIN_CLink: {
-          auto& clangArgs = builtinToken->type == TokenType::BUILTIN_CDefine       ? CompilerContext::inst().c.defines
-                            : builtinToken->type == TokenType::BUILTIN_CInclude    ? CompilerContext::inst().c.includes
-                            : builtinToken->type == TokenType::BUILTIN_CIncludeDir ? CompilerContext::inst().c.includeDirs
-                                                                                   : CompilerContext::inst().c.linkLibraries;
+        case TokenType::BUILTIN_CDefine: {
+          if (argumentNodes.empty() || argumentNodes.size() > 2) {
+            crash(nodeIndex, "Builtin '@cDefine' must have 1 or 2 arguments, but {}", argumentNodes.size());
+          }
+          std::string arg = fmt::format("-D{}", parser.getToken(argumentNodes[0])->lexeme);
+          if (argumentNodes.size() == 2) {
+            arg = fmt::format("{}={}", arg, parser.getToken(argumentNodes[1])->lexeme);
+          }
+          CompilerContext::inst().c.clangArgs.push_back(std::move(arg));
+          return Reference::Void();
+        }
+        case TokenType::BUILTIN_CInclude: {
           if (argumentNodes.size() == 1 && parser.nodeType(argumentNodes[0]) == NodeType::Literal) {
-            auto fileTokenIndex = parser.getNode(argumentNodes[0]).token;
-            clangArgs.push_back(parser.getToken(fileTokenIndex)->lexeme);
+            auto fileName = parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
+            CompilerContext::inst().c.clangArgs.push_back("-include");
+            CompilerContext::inst().c.clangArgs.push_back(concatPath(fileName).string());
           } else {
-            crash(nodeIndex, "Builtin '@{}' must take one argument literal argument", builtinToken->lexeme);
+            crash(nodeIndex, "Builtin '@cInclude' must take one literal argument");
+          }
+          return Reference::Void();
+        }
+        case TokenType::BUILTIN_CIncludeDir: {
+          if (argumentNodes.size() == 1 && parser.nodeType(argumentNodes[0]) == NodeType::Literal) {
+            auto fileName = parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
+            CompilerContext::inst().c.clangArgs.push_back("-I" + concatPath(fileName).string());
+          } else {
+            crash(nodeIndex, "Builtin '@cIncludeDir' must take one literal argument");
+          }
+          return Reference::Void();
+        }
+        case TokenType::BUILTIN_CLink: {
+          if (argumentNodes.size() == 1 && parser.nodeType(argumentNodes[0]) == NodeType::Literal) {
+            auto libName = parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
+            CompilerContext::inst().c.linkedLibaries.push_back(fmt::format("-l{}", libName));
+          } else {
+            crash(nodeIndex, "Builtin '@cLink' must take one literal argument");
           }
           return Reference::Void();
         }
@@ -1006,13 +1039,20 @@ public:
       }
       auto value = interpret(node.operand, environment, outputFile, context);
       switch (node.operation) {
-      case UnaryOps::Dereference:
-        return Reference(dereference(&value, outputFile, environment, nodeIndex));
+      case UnaryOps::Dereference: {
+        auto type = value.getType();
+        if (Types::Pool().isPointer(type) || Types::Pool().multiPointerElement(type)) {
+          return Reference(dereference(&value, outputFile, environment, nodeIndex));
+        }
+        crash(node.operand, "Can't dereference non-pointer type {}", TypeName(type));
+      }
       case UnaryOps::Reference: {
         if (auto type = value.unboxType()) {
           return Reference(Types::Pool().pointerTo(*type));
         } else if (auto stackVal = value.lValue()) {
           return Reference(RegisterValue(stackVal->name, Types::Pool().pointerTo(stackVal->type)));
+        } else {
+          crash(node.operand, "Unable to make reference to non-stack value or type");
         }
       }
       case UnaryOps::Not: {
@@ -1042,6 +1082,7 @@ public:
         } else if (auto stackVal = value.unbox<StackValue>()) {
           auto type = stackVal->type;
           return Reference(StackValue(stackVal->name, Types::Pool().multiPointerTo(type)));
+          // TODO: take from global?
         } else {
           crash(
             node.operand,
@@ -1055,13 +1096,13 @@ public:
       case UnaryOps::MultiPointerFrom: {
         auto type = value.getType();
         if (auto sizedArray = Types::Pool().sizedArray(type)) {
-          if (auto stackValue = value.unbox<StackValue>()) {
-            auto type = Types::Pool().multiPointerTo(sizedArray->dereferencedType);
-            auto multiPointer = environment.makeTemporary(type);
-            fmt::println(outputFile, "{} = ptr {}", multiPointer, value);
-            return Reference(multiPointer);
+          if (!value.canReference()) {
+            crash(nodeIndex, "Unable to make slice from array stored in temporary value");
           }
-          crash(nodeIndex, "Unable to make slice from array stored in temporary value");
+          auto type = Types::Pool().multiPointerTo(sizedArray->dereferencedType);
+          auto multiPointer = environment.makeTemporary(type);
+          fmt::println(outputFile, "{} = ptr {}", multiPointer, value);
+          return Reference(multiPointer);
         } else if (auto elementType = Types::Pool().sliceElementType(type)) {
           auto slicedObj = toRegister(&value, outputFile, environment);
           auto loadedSlice = *slicedObj.unbox<RegisterValue>();
@@ -1107,11 +1148,11 @@ public:
       case UnaryOps::MakeSlice: {
         auto type = value.getType();
         if (auto sizedArray = Types::Pool().sizedArray(type)) {
-          if (auto stackValue = value.unbox<StackValue>()) {
-            auto length = Reference(IntLiteral(sizedArray->length));
-            return makeSlice(value, length, outputFile, environment);
+          if (!value.canReference()) {
+            crash(nodeIndex, "Unable to make slice from array stored in temporary value");
           }
-          crash(nodeIndex, "Unable to make slice from array stored in temporary value");
+          auto length = Reference(IntLiteral(sizedArray->length));
+          return makeSlice(value, length, outputFile, environment);
         } else if (auto slice = Types::Pool().sliceElementType(type)) {
           return value;
         } else {
@@ -1137,13 +1178,13 @@ public:
           if (Types::Pool().isLlvmLiteralType(returnType)) {
             fmt::println(outputFile, "ret {}", loadedValue);
           } else {
-            fmt::println(outputFile, "store {} {}, ptr %sret\nret", LlvmName(returnType), loadedValue);
+            fmt::println(outputFile, "store {} {}, ptr %return\nret void", LlvmName(returnType), loadedValue);
           }
         } else {
           if (!Types::Pool().isVoid(returnType)) {
             crash(*returnValue, "Must return a value in a function with non-void return type");
           }
-          fmt::println(outputFile, "ret");
+          fmt::println(outputFile, "ret void");
         }
 
         environment.hasReturned = true;
@@ -1321,8 +1362,12 @@ public:
         if (auto value = fileEnv->find(fieldName)) {
           return Reference(*value);
         }
-        auto members = fileEnv->defs | std::views::transform([](const auto& x) { return TypeName(x.second.getType()); });
-        crash(nodeIndex, "Unable to find member '{}' in module\nAvailable fields are {}", fieldName, fmt::join(members, ", "));
+        // auto members = fileEnv->defs | std::views::transform([](const auto& x) { return TypeName(x.second.getType()); });
+        auto members = fileEnv->defs | std::views::transform([](const auto& x) { return x.first; });
+        for (auto [name, value]: fileEnv->defs) {
+          fmt::println("{}: {}", name, TypeName(value.getType()));
+        }
+        crash(node.fieldName, "Unable to find member '{}' in module\nAvailable fields are {}", fieldName, fmt::join(members, ", "));
       }
 
       // TODO: auto dereference pointers
@@ -1344,7 +1389,7 @@ public:
       auto [fieldType, fieldIndex] = boxedField.value();
       auto fieldPointer = environment.addTemporary();
 
-      if (auto stackValue = object.unbox<StackValue>()) {
+      if (object.canReference()) {
         auto result = Reference(StackValue(fieldPointer, fieldType));
         fmt::println(outputFile, "{} = getelementptr inbounds {}, ptr {}, i32 0, i32 {}", result, LlvmName(type), object, fieldIndex);
         return result;
@@ -1556,7 +1601,7 @@ public:
     auto crashBlockId = environment.addTemporary();
     auto continueBlockId = environment.addTemporary();
     fmt::println(outputFile, "{} = icmp slt {} {}, 0", isNegative, LlvmName(index.getType()), index);
-    fmt::println(outputFile, "br {}, label %{}, label %{}", isNegative, crashBlockId, continueBlockId);
+    fmt::println(outputFile, "br i1 {}, label %{}, label %{}", isNegative, crashBlockId, continueBlockId);
     fmt::println(outputFile, "{}:", crashBlockId);
     crashInstruction(outputFile);
     fmt::println(outputFile, "{}:", continueBlockId);
@@ -1567,7 +1612,7 @@ public:
     auto crashBlockId = environment.addTemporary();
     auto continueBlockId = environment.addTemporary();
     fmt::println(outputFile, "{} = icmp ult {} {}, {}", isOutsideBounds, LlvmName(Types::Pool().usize), baseLength, index);
-    fmt::println(outputFile, "br {}, label %{}, label %{}", isOutsideBounds, crashBlockId, continueBlockId);
+    fmt::println(outputFile, "br i1 {}, label %{}, label %{}", isOutsideBounds, crashBlockId, continueBlockId);
     fmt::println(outputFile, "{}:", crashBlockId);
     crashInstruction(outputFile);
     fmt::println(outputFile, "{}:", continueBlockId);
@@ -1578,7 +1623,7 @@ public:
     auto crashBlockId = environment.addTemporary();
     auto continueBlockId = environment.addTemporary();
     fmt::println(outputFile, "{} = icmp ule {} {}, {}", isOutsideBounds, LlvmName(Types::Pool().usize), baseLength, index);
-    fmt::println(outputFile, "br {}, label %{}, label %{}", isOutsideBounds, crashBlockId, continueBlockId);
+    fmt::println(outputFile, "br i1 {}, label %{}, label %{}", isOutsideBounds, crashBlockId, continueBlockId);
     fmt::println(outputFile, "{}:", crashBlockId);
     crashInstruction(outputFile);
     fmt::println(outputFile, "{}:", continueBlockId);
@@ -1594,7 +1639,7 @@ public:
     auto crashBlockId = environment.addTemporary();
     auto continueBlockId = environment.addTemporary();
     fmt::println(outputFile, "{} = icmp slt {} {}, 0", lengthIsNegative, LlvmName(usize), lower);
-    fmt::println(outputFile, "br {}, label %{}, label %{}", lengthIsNegative, crashBlockId, continueBlockId);
+    fmt::println(outputFile, "br i1 {}, label %{}, label %{}", lengthIsNegative, crashBlockId, continueBlockId);
     fmt::println(outputFile, "{}:", crashBlockId);
     crashInstruction(outputFile);
     fmt::println(outputFile, "{}:", continueBlockId);

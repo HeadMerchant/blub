@@ -614,20 +614,6 @@ public:
       stack.push({token, op});
     }
 
-    // Postfix
-    while (true) {
-      if (match(TokenType::Pointer)) {
-        fmt::println("!!Dereference operation!!");
-        auto node = Encodings::UnaryOp{.operand = expr, .operation = UnaryOps::Dereference};
-        expr = addNode(node, previous());
-      } else if (auto token = match(TokenType::Dot)) {
-        auto node = Encodings::DotAccessor({.object = expr, .fieldName = consume(TokenType::Identifier, "Expected identifier after '.' accessor")});
-        expr = addNode(node, token);
-      } else {
-        break;
-      }
-    }
-
     while (!stack.empty()) {
       auto [token, op] = stack.top();
       expr = addNode(Encodings::UnaryOp{.operand = expr, .operation = op}, token);
@@ -652,10 +638,9 @@ public:
     }
 
     NodeIndex expr = access();
-    if (check(TokenType::LeftParen)) {
-      auto token = advance();
+    while (auto token = match(TokenType::LeftParen)) {
       auto node = Encodings::BinaryOp{.left = expr, .right = argumentList(), .operation = token};
-      return addNode(node);
+      expr = addNode(node);
     }
 
     return expr;
@@ -787,27 +772,25 @@ public:
     return addNode(ASTNode{.left = dataIndex.value, .right = packedInputLength, .nodeType = NodeType::ParameterList});
   }
 
-  // NodeIndex addNode(Encodings::InputList node) {
-  //   auto dataIndex = addData(node.requiredInputs);
-  //   // auto optionals = std::bit_cast<DataSpan>(node.optionalInputs);
-  //   for (auto [name, value] : node.optionalInputs) {
-  //     addData(name.value);
-  //     addData(value.value);
-  //   }
-  //   i32 packedInputLength = packInt(node.requiredInputs.size(), node.optionalInputs.size(), static_cast<i8>(node.inputType), 0);
-  //   return addNode(ASTNode{.left = dataIndex.value, .right = packedInputLength, .nodeType = NodeType::InputList});
-  // }
-
   NodeIndex access() {
     NodeIndex expr = primary();
-    if (check(TokenType::LeftSquareBracket)) {
-      auto token = advance();
-      if (check(TokenType::RightSquareBracket)) {
-        return addNode(Encodings::UnaryOp{.operand = expr, .operation = UnaryOps::MakeSlice}, token);
+    while (true) {
+      if (match(TokenType::Pointer)) {
+        auto node = Encodings::UnaryOp{.operand = expr, .operation = UnaryOps::Dereference};
+        expr = addNode(node, previous());
+      } else if (auto token = match(TokenType::Dot)) {
+        auto node = Encodings::DotAccessor({.object = expr, .fieldName = consume(TokenType::Identifier, "Expected identifier after '.' accessor")});
+        expr = addNode(node, token);
+      } else if (auto token = match(TokenType::LeftSquareBracket)) {
+        if (match(TokenType::RightSquareBracket)) {
+          return addNode(Encodings::UnaryOp{.operand = expr, .operation = UnaryOps::MakeSlice}, token);
+        }
+        auto index = expression();
+        consume(TokenType::RightSquareBracket, "Expected a closing ']' after indexing or slicing operation");
+        expr = addNode(Encodings::BinaryOp{.left = expr, .right = index, .operation = token});
+      } else {
+        break;
       }
-      auto index = expression();
-      consume(TokenType::RightSquareBracket, "Expected a closing ']' after indexing or slicing operation");
-      expr = addNode(Encodings::BinaryOp{.left = expr, .right = index, .operation = token});
     }
 
     return expr;

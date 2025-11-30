@@ -172,6 +172,9 @@ struct Struct {
       name, TypeField{.type = type, .index = (i32)fields.size()}
     });
     fieldTypes.push_back(type);
+    if (success) {
+      fmt::println("Defining field: {}", name);
+    }
 
     return success;
   }
@@ -377,23 +380,6 @@ public:
   TypeIndex multiPointerTo(TypeIndex type) {
     return pointerTypesFor(type).multiPointer;
   }
-
-  // TypeIndex sizedArrayOf(TypeIndex type, i32 length) {
-  //   // TODO: consider hash function for TypeIndex
-  //   if(sizedArrays[length].contains(type)) return sizedArrays[length][type];
-
-  //   TypeIndex arrayType = addType(Type {
-  //       .type = Intrinsic::SIZED_ARRAY,
-  //       .llvmName = fmt::format("[{} x {}]", length, getLLVMType(type)),
-  //       .definition = type.value,
-  //       .size = types[type.value].size*length,
-  //       .alignment = types[type.value].alignment,
-  //     },
-  //     fmt::format("[{}]{}", length, typeName(type))
-  //   );
-  //   sizedArrays[length][type] = arrayType;
-  //   return arrayType;
-  // }
 
   PointerType pointerTypesFor(TypeIndex type) {
     assert(type.value < underlyingTypes.size());

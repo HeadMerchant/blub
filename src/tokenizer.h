@@ -273,6 +273,10 @@ struct Tokenizer {
       }
       break;
     }
+    case '%': {
+      addToken(TokenType::Remainder);
+      break;
+    }
     // Comment
     case '#': {
       while (peek() != '\n')
@@ -458,10 +462,10 @@ public:
       for (auto c : lineContents.substr(0, column)) {
         if (c == '\t') tabCount++;
       }
-      fmt::println(out, "{: >8}| {}", column, lineContents);
+      fmt::println(out, "{: >8}| {}", line, lineContents);
       fmt::print(out, "{: >8}| ", "");
       fmt::print(out, "{:\t>{}}", "", tabCount);
-      fmt::println(out, "{: >{}}{: >{}}", "", column - tabCount, "^", lexeme.size());
+      fmt::println(out, "{: >{}}{:^>{}}", "", column - tabCount, "", lexeme.size());
     }
   };
 

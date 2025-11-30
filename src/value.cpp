@@ -30,3 +30,6 @@ Environment* Environment::baseEnvironment() {
 
   return &baseEnvironment;
 }
+
+i32 Environment::globalIndex = 0;
+

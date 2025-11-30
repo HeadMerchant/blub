@@ -1,3 +1,4 @@
+#include "common.h"
 #include "fmt/base.h"
 #include "fmt/format.h"
 #include "types.h"
@@ -15,22 +16,6 @@ using namespace simdjson;
 namespace fs = std::filesystem;
 using TypeCache = std::unordered_map<std::string_view, TypeIndex>;
 
-struct StringViewPool {
-  char* bytes;
-  i32 offset;
-  i32 max;
-
-  std::string_view copy(std::string_view view) {
-    i32 newOffset = offset + view.length();
-    if (newOffset < offset || offset >= max) {
-      throw std::invalid_argument("OOM in string view pool");
-    }
-    std::memcpy(bytes + offset, view.data(), view.length());
-
-    return {bytes + offset, view.length()};
-  }
-};
-
 TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std::string>& globals) {
   // fmt::println("Parsing C type '{}'", qualType);
   // TODO(mut)
@@ -41,6 +26,8 @@ TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std
   if (cTypes.contains(qualType)) {
     return cTypes[qualType];
   }
+
+  qualType = StringPool::inst().copy(qualType);
 
   // Tokenize base type
   i32 endIndex = 0;
@@ -165,19 +152,18 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
     std::string_view valueName, kind;
     if (node["kind"].get(kind) != SUCCESS || node["name"].get(valueName)) continue;
     if (!valueName.starts_with(prefix)) continue;
-    std::string_view unprefixedValueName = valueName.substr(prefix.size());
-    std::string stableValueName(unprefixedValueName);
-    unprefixedValueName = stableValueName;
+    std::string_view unprefixedValueName = StringPool::inst().copy(valueName.substr(prefix.size()));
 
     Reference blubInterface;
     if (kind == "EnumDecl") {
       i32 currentValue = 0;
       fmt::println("Making enum '{}' with raw value '{}'", unprefixedValueName, TypeName(Types::Pool().s32));
-      auto [typeIndex, enumIndex] = Types::Pool().addEnum(Types::Pool().s32, std::move(stableValueName));
+      auto [typeIndex, enumIndex] = Types::Pool().addEnum(Types::Pool().s32, std::string(unprefixedValueName));
       if (auto inner = node["inner"]; inner.error() == SUCCESS) {
         for (auto element : inner.get_array()) {
           std::string_view valueName;
           element["name"].get(valueName);
+          valueName = StringPool::inst().copy(valueName);
           if (element["inner"].has_value()) {
             ondemand::array array;
             bool error = element["inner"].get_array().get(array);
@@ -190,6 +176,11 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
             }
           }
           if (!Types::Pool().getEnum(enumIndex).define(valueName, currentValue)) {
+            auto definition = Types::Pool().getEnum(enumIndex);
+            fmt::println("Duplicate enum value '{}' for enum '{}'", valueName, TypeName(typeIndex));
+            for (auto [name, _]: definition.values) {
+              fmt::println("Variant: {}", name);
+            }
             throw std::invalid_argument(fmt::format("Duplicate enum value '{}' for enum '{}'", valueName, TypeName(typeIndex)));
           }
 
@@ -231,6 +222,7 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
         fmt::print(instruction, "{} ", LlvmName(returnType));
       }
       fmt::print(instruction, "{} ", declareName);
+      instruction << "(";
       bool hasMultiple = false;
       if (returnsStruct) {
         hasMultiple = true;
@@ -256,8 +248,7 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
         fmt::println("Unknown tag '{}' for C RecordDecl '{}'; skipping", tag, valueName);
         continue;
       }
-      auto llvmName = fmt::format("%.cstruct.{}", valueName);
-      auto [typeIndex, structIndex] = Types::Pool().makeStruct(std::string(unprefixedValueName), llvmName);
+      auto [typeIndex, structIndex] = Types::Pool().makeStruct(std::string(unprefixedValueName), fmt::format("%.cstruct.{}", valueName));
 
       Reference* value;
       ondemand::array structFields;
@@ -267,16 +258,20 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
 
       for (auto structField : structFields) {
         std::string_view fieldName;
-        std::string_view fieldType;
+        std::string_view fieldTypeName;
         structField["name"].get(fieldName);
-        structField["type"]["qualType"].get(fieldType);
+        fieldName = StringPool::inst().copy(fieldName);
+        structField["type"]["qualType"].get(fieldTypeName);
 
-        Types::Pool().getStruct(structIndex).defineField(fieldName, parseType(fieldType, cTypes, globals));
+        auto fieldType = parseType(fieldTypeName, cTypes, globals);
+        Types::Pool().getStruct(structIndex).defineField(fieldName, fieldType);
+        fmt::println("Struct field {}: {}", TypeName(fieldType), LlvmName(fieldType));
       }
 
       Types::Pool().setStructSizing(structIndex);
       Types::Pool().defineLLVMStruct(structIndex, globals);
       cTypes[valueName] = typeIndex;
+      blubInterface.value = typeIndex;
     } else {
       fmt::println("Skipping clang ast node of kind '{}'; name: '{}'", kind, unprefixedValueName);
       // TODO(fmt::format("Unknown clang ast node kind: '{}'", kind));

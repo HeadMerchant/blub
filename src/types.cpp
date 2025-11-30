@@ -6,6 +6,7 @@ Types::TypePool& Types::Pool() {
   static Types::TypePool pool = Types::TypePool();
   return pool;
 }
+
 Types::OptionalType Types::TypePool::dereference(TypeIndex type) {
   auto typeDefinition = underlyingTypes[type.value];
   if (auto multiPtr = std::get_if<MultiPointer>(&typeDefinition)) {
@@ -18,6 +19,7 @@ Types::OptionalType Types::TypePool::dereference(TypeIndex type) {
 
   return std::nullopt;
 }
+
 template <> struct fmt::formatter<TypeIndex> : ostream_formatter {};
 std::pair<TypeIndex, Types::TupleIndex> Types::TypePool::tupleOf(std::vector<TypeIndex> types, std::queue<std::string>& globals) {
   if (tuples.contains(types)) {
@@ -28,7 +30,7 @@ std::pair<TypeIndex, Types::TupleIndex> Types::TypePool::tupleOf(std::vector<Typ
   auto llvmNames = types | std::views::transform([](TypeIndex x) { return LlvmName(x); });
   TupleIndex tupleIndex{(i32)tuplePool.size()};
 
-  globals.push(fmt::format("%.tuple.{} = type \{{}}", tupleIndex.value, fmt::join(llvmNames, ", ")));
+  globals.push(fmt::format("%.tuple.{} = type {{{}}}", tupleIndex.value, fmt::join(llvmNames, ", ")));
 
   auto typeName = types | std::views::transform([](TypeIndex x) { return TypeName(x); });
   // TODO: sizing
@@ -38,7 +40,7 @@ std::pair<TypeIndex, Types::TupleIndex> Types::TypePool::tupleOf(std::vector<Typ
     }
   }
   Sizing sizing;
-  tuplePool.emplace_back(elementTypes, getSizing(elementTypes), fmt::format("({})", tupleIndex.value, fmt::join(typeName, ", ")));
+  tuplePool.emplace_back(elementTypes, getSizing(elementTypes), fmt::format("({})", fmt::join(typeName, ", ")));
 
   auto typeIndex = addType(tupleIndex);
 
@@ -50,7 +52,7 @@ std::pair<TypeIndex, Types::TupleIndex> Types::TypePool::tupleOf(std::vector<Typ
 void Types::TypePool::defineLLVMStruct(Types::StructIndex structIndex, std::queue<std::string>& globals) {
   Types::Struct& structDefinition = getStruct(structIndex);
   auto typeNames = structDefinition.fieldTypes | std::views::transform([this](const auto x) { return LlvmName(x); });
-  globals.push(fmt::format("{} = type \{{}}", structDefinition.llvmName, fmt::join(typeNames, ", ")));
+  globals.push(fmt::format("{} = type {{{}}}", structDefinition.llvmName, fmt::join(structDefinition.fieldTypes | std::views::transform([this](const auto x) {return LlvmName(x);}), ", ")));
 }
 
 void Types::TypePool::debugTypes() {

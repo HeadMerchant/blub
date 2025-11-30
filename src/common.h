@@ -2,7 +2,9 @@
 #include "fmt/base.h"
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
+#include <iostream>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -34,3 +36,36 @@ using std::optional;
 using std::pair;
 using Identifier = std::string_view;
 namespace fs = std::filesystem;
+
+struct StringPool {
+  char* bytes;
+  i32 offset;
+  i32 capacity;
+
+  std::string_view copy(std::string_view view) {
+    i32 newOffset = offset + view.length();
+    if (newOffset < offset || offset >= capacity) {
+      debug();
+      throw std::invalid_argument("OOM in string view pool");
+    }
+    memcpy(bytes + offset, view.data(), view.length());
+    std::string_view newView{bytes + offset, view.length()};
+
+    offset = newOffset;
+
+    return newView;
+  }
+
+  StringPool(i32 capacity) {
+    bytes = (char*) malloc(capacity);
+    this->capacity = capacity;
+  }
+
+  void debug() {
+    std::string_view view(bytes, offset);
+    std::cout << view << std::endl;
+    // fmt::println("Strings: {}", view);
+  }
+
+  static StringPool& inst();
+};
