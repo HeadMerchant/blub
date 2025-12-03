@@ -69,3 +69,36 @@ struct StringPool {
 
   static StringPool& inst();
 };
+
+enum class LogLevel {
+  Parsing = 1,
+  Tokenize = 2,
+  CImport = 4,
+  Compile = 8,
+};
+
+inline LogLevel operator|(LogLevel a, LogLevel b) {
+  return static_cast<LogLevel>(static_cast<int>(a) | static_cast<int>(b));
+}
+
+inline int operator&(LogLevel a, LogLevel b) {
+  return static_cast<int>(a) & static_cast<int>(b);
+}
+
+struct Logger {
+  // static inline struct {
+  //   unsigned int parsing : 1;
+  //   unsigned int tokenize : 1;
+  //   unsigned int cImport : 1;
+  //   unsigned int compile : 1;
+  // } setLevels;
+  static inline LogLevel globalLevels = static_cast<LogLevel>(0);
+  LogLevel logLevel;
+
+  template <typename... Args> void operator()(fmt::format_string<Args...> fmt, Args&&... args) const {
+    if (globalLevels & logLevel) {
+      fmt::println(fmt, std::forward<Args>(args)...);
+    }
+  }
+};
+

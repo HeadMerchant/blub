@@ -1,6 +1,9 @@
+#include "common.h"
 #include "fmt/format.h"
 #include "types.h"
 #include <ranges>
+
+Logger logger(LogLevel::Compile);
 
 Types::TypePool& Types::Pool() {
   static Types::TypePool pool = Types::TypePool();
@@ -10,10 +13,10 @@ Types::TypePool& Types::Pool() {
 Types::OptionalType Types::TypePool::dereference(TypeIndex type) {
   auto typeDefinition = underlyingTypes[type.value];
   if (auto multiPtr = std::get_if<MultiPointer>(&typeDefinition)) {
-    fmt::println("dereferencing mutlipointer type {}", TypeName(type));
+    logger("dereferencing mutlipointer type {}", TypeName(type));
     return multiPtr->dereferencedType;
   } else if (auto ptr = std::get_if<Pointer>(&typeDefinition)) {
-    fmt::println("dereferencing pointer type {}", TypeName(type));
+    logger("dereferencing pointer type {}", TypeName(type));
     return ptr->dereferencedType;
   }
 
@@ -36,7 +39,7 @@ std::pair<TypeIndex, Types::TupleIndex> Types::TypePool::tupleOf(std::vector<Typ
   // TODO: sizing
   if (types.size() == 1) {
     if (auto enumIndex = std::get_if<EnumIndex>(&getType(types[0]))) {
-      fmt::println("Tuple with enum index: '{}' with raw type '{}'", enumIndex->value, enumPool[enumIndex->value].rawType.value);
+      logger("Tuple with enum index: '{}' with raw type '{}'", enumIndex->value, enumPool[enumIndex->value].rawType.value);
     }
   }
   Sizing sizing;

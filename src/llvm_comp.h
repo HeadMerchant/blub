@@ -2,7 +2,6 @@
 #include "cimport.h"
 #include "common.h"
 #include "fmt/base.h"
-#include "logging.h"
 #include "parser.h"
 #include "tokenizer.h"
 #include "types.h"
@@ -30,7 +29,7 @@ struct CompilerContext {
   struct {
   } blub;
   struct {
-    std::vector<std::string> linkedLibaries;
+    std::vector<std::string> linkedLibraries;
     std::vector<std::string> clangArgs;
   } c;
   struct {
@@ -57,17 +56,17 @@ public:
   Environment fileEnvironment;
   Parser& parser;
   std::span<NodeIndex> program;
-  std::ostream& log;
   std::queue<std::string> globalsStack;
+  Logger log;
 
   TranslationUnit(Parser& parser, std::span<NodeIndex> program, fs::path inputPath, std::ofstream& outputFileStream)
-      : parser(parser), fileEnvironment(), program(program), log(logger(LogLevel::DEBUG)), inputFilePath(inputPath), outputFileStream(outputFileStream) {}
+      : parser(parser), fileEnvironment(), program(program), log(LogLevel::Compile), inputFilePath(inputPath), outputFileStream(outputFileStream) {}
 
   Reference toRegister(Reference* value, std::ostream& outputFile, Environment& environment) {
     if (value->isLiteral()) {
       return *value;
     } else if (value->canReference()) {
-      auto type =value->getType();
+      auto type = value->getType();
       auto registerIndex = environment.makeTemporary(type);
       auto registerValue = Reference(registerIndex);
       fmt::println(outputFile, "{} = load {}, ptr {}", registerValue, LlvmName(type), *value);
@@ -601,39 +600,8 @@ public:
         break;
       }
       case TokenType::LeftParen: {
-        auto getArguments = [this, &environment, &outputFile](Types::TypeSpan paramTypes, Parser::ArgumentList argsNode) {
-          std::vector<Reference> arguments;
-          i32 i = 0;
-          for (auto arg : argsNode.requiredArgs) {
-            auto paramType = paramTypes[i];
-            i++;
-            fmt::println("{}", TypeName(paramType));
-            StatementContext context{.expectedType = paramType};
-            auto argument = interpret(arg, environment, outputFile, context);
-            auto targetType = argument.isAssignableTo(paramType);
-            if (!targetType) {
-              crash(arg, fmt::runtime("Unable to assign argument of type '{}' to parameter of type '{}'"), TypeName(argument.getType()), TypeName(paramType));
-            }
-            if (Types::Pool().isFloat(paramType)) {
-              arguments.push_back(argument.coerceFloat());
-            } else {
-              arguments.push_back(argument);
-            }
-          }
-
-          std::unordered_map<Identifier, Reference> namedArgs;
-          StatementContext context;
-          for (auto [name, value] : argsNode.optionalArgs) {
-            auto nameToken = parser.getToken(name);
-            auto [_, success] = namedArgs.emplace(nameToken->lexeme, interpret(value, environment, outputFile, context));
-            if (!success) {
-              crash(nameToken, "Duplicate named argument");
-            }
-          }
-          return std::make_pair(arguments, namedArgs);
-        };
         auto function = interpret(node.left, environment, outputFile, context);
-        auto args = parser.getArgumentList(node.right);
+        auto argsNode = parser.getArgumentList(node.right);
         std::span<TypeIndex> expectedTypes;
 
         if (auto func = function.unboxFunction()) {
@@ -657,19 +625,19 @@ public:
             }
           }
 
-          auto [arguments, namedArguments] = getArguments(parameterTypes, args);
+          auto [arguments, namedArguments] = getArguments(parameterTypes, argsNode, environment, outputFile);
           for (i32 i = 0; i < arguments.size(); i++) {
             if (auto argType = arguments[i].isAssignableTo(parameterTypes[i])) {
               if (Types::Pool().isLlvmLiteralType(*argType)) {
                 auto value = toRegister(&arguments[i], outputFile, environment);
                 parameters.push_back(fmt::format("{} {}", LlvmName(*argType), value));
               } else {
-                auto value = toByValPointer(arguments[i], outputFile, environment, args.requiredArgs[i]);
+                auto value = toByValPointer(arguments[i], outputFile, environment, argsNode.requiredArgs[i]);
                 parameters.push_back(fmt::format("ptr byval({}) {}", LlvmName(*argType), value));
               }
             } else {
               crash(
-                args.requiredArgs[i],
+                argsNode.requiredArgs[i],
                 "Invalid argument in function call (can't pass argument of type {} to parameter of type {})",
                 TypeName(arguments[i].getType()),
                 TypeName(parameterTypes[i]));
@@ -677,6 +645,7 @@ public:
             setArguments[i] = true;
           }
 
+          // TODO: optional arguments
           for (auto [name, value] : namedArguments) {
             TODO("Named arguments for function calls");
           }
@@ -700,79 +669,12 @@ public:
             return Reference(RegisterValue(resultIndex, returnType));
           }
           return Reference(StackValue(resultIndex, returnType));
-          // TODO: optional arguments
         } else if (auto type = function.unboxType()) {
           auto structDefinition = Types::Pool().getStruct(*type);
           if (!structDefinition.has_value()) {
             crash(nodeIndex, "Can't construct non-struct type {}", TypeName(*type));
           }
-          auto structLlvmName = LlvmName(*type);
-          auto structName = TypeName(*type);
-
-          Types::Struct& definition = **structDefinition;
-          auto fieldTypes = Types::TypeSpan(definition.fieldTypes);
-
-          auto [arguments, namedArguments] = getArguments(fieldTypes, args);
-          std::vector<bool> setArguments(fieldTypes.size(), false);
-
-          RegisterValue structVal(environment.addTemporary(), *type);
-          bool isInitialized = false;
-          // TODO: default values that aren't zero initialized; using 0 for now to avoid initializing all fields in C structs
-          for (i32 i = 0; i < arguments.size(); i++) {
-            auto fieldValue = toRegister(&arguments[i], outputFile, environment);
-            auto fieldValueName = fieldValue;
-            auto fieldTypeLlvmName = LlvmName(arguments[i].getType());
-            setArguments[i] = true;
-            if (i == 0) {
-              isInitialized = true;
-              Reference ref(structVal);
-              fmt::println(outputFile, "{} = insertvalue {} zeroinitializer, {} {}, 0", ref, structLlvmName, fieldTypeLlvmName, fieldValueName);
-            } else {
-              Reference prevStruct(RegisterValue(structVal.name));
-              structVal.name = environment.addTemporary();
-              Reference ref(structVal);
-              fmt::println(outputFile, "{} = insertvalue {} {}, {} {}, {}", ref, structLlvmName, prevStruct, fieldTypeLlvmName, fieldValueName, i);
-            }
-          }
-
-          for (auto arg: args.optionalArgs) {
-            auto argToken = parser.toPointer(arg.token);
-            auto name = argToken->lexeme;
-            assert(namedArguments.contains(name));
-            auto value = namedArguments[name];
-            // auto argToken = std::find_if(args.optionalArgs.begin(), args.optionalArgs.end(), [this, name](auto x){return parser.toPointer(x.token)->lexeme == name;})->token;
-            auto field = definition.getField(name);
-            if (!field) {
-              crash(argToken, "Unknown field '{}' for type '{}'", name, TypeName(*type));
-            }
-            auto i = field->index;
-            auto targetType = value.isAssignableTo(field->type);
-            if (!targetType) {
-              crash(argToken, "Unable to assign argument of type '{}' to parameter of type '{}'", TypeName(value.getType()), TypeName(field->type));
-            }
-            if (Types::Pool().isFloat(*targetType)) {
-              if (auto intLit = value.getInt()) {
-                value.value = FloatLiteral(*intLit);
-              }
-            }
-            if (setArguments[i]) {
-              auto originalToken = parser.getToken(args.requiredArgs[i]);
-              auto location = parser.locationOf(args.requiredArgs[i]);
-              fmt::println(std::cerr, "Field '{}' originally assigned here", name);
-              location.underline(std::cerr);
-              crash(argToken, "Duplicate assignment for field '{}'", name);
-            }
-            setArguments[i] = field->index;
-            if (isInitialized) {
-              RegisterValue prevStruct{structVal.name};
-              structVal.name = environment.addTemporary();
-              fmt::println(outputFile, "{} = insertvalue {} {}, {} {}, {}", structVal, structLlvmName, prevStruct, LlvmName(field->type), value, field->index);
-            } else {
-              isInitialized = true;
-              fmt::println(outputFile, "{} = insertvalue {} zeroinitializer, {} {}, {}", structVal, structLlvmName, LlvmName(field->type), value, field->index);
-            }
-          }
-          return Reference(structVal);
+          return constructStruct(nodeIndex, *type, argsNode, environment, outputFile);
         } else {
           crash(nodeIndex, "Unable to call value of type '{}' as a function", TypeName(function.getType()));
         }
@@ -879,17 +781,13 @@ public:
           crash(parameterIndex, "Parameter type must be a compile time-known type");
         }
 
-        // fmt::println("Parameter type: {} ({})",
-        // Types::Pool().typeName(*parameterType), parameterType->value);
         parameterTypes.push_back(*parameterType);
-        // fmt::println("Parameter: {}:{}", parameterDefinition.name->lexeme, TypeName(*parameterType));
         bool isLiteralParameter = Types::Pool().isLlvmLiteralType(*parameterType);
 
         std::string_view paramName = parameterDefinition.name->lexeme;
 
         auto typeName = *parameterType;
-        Reference parameter =
-          isLiteralParameter ? Reference(RegisterValue(paramName, *parameterType)) : Reference(StackValue(paramName, *parameterType));
+        Reference parameter = isLiteralParameter ? Reference(RegisterValue(paramName, *parameterType)) : Reference(StackValue(paramName, *parameterType));
         if (isLiteralParameter) {
           fmt::print(instruction, "{} {}", LlvmName(typeName), parameter);
         } else {
@@ -929,8 +827,6 @@ public:
       globalsStack.push(instruction.str());
       auto [_, tupleType] = Types::Pool().tupleOf(std::move(parameterTypes), globalsStack);
       auto functionType = Types::FunctionType(tupleType, returnType);
-      // TypeIndex functionType = Types::Pool().addFunction();
-      // fmt::println("Making function of type {}", functionType);
       return Reference(Function(functionType, llvmName));
     }
     case NodeType::Unary: {
@@ -1021,7 +917,7 @@ public:
         case TokenType::BUILTIN_CLink: {
           if (argumentNodes.size() == 1 && parser.nodeType(argumentNodes[0]) == NodeType::Literal) {
             auto libName = parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
-            CompilerContext::inst().c.linkedLibaries.push_back(fmt::format("-l{}", libName));
+            CompilerContext::inst().c.linkedLibraries.push_back(fmt::format("-l{}", libName));
           } else {
             crash(nodeIndex, "Builtin '@cLink' must take one literal argument");
           }
@@ -1262,10 +1158,10 @@ public:
           fmt::println(outputFile, "br label %{}", endLabel);
         }
       } else {
-        fmt::println("br i1 {}, label %{}, label %{}", loadedCondition, ifLabel, endLabel);
+        fmt::println(outputFile, "br i1 {}, label %{}, label %{}", loadedCondition, ifLabel, endLabel);
         outputFile << ifInstruction.str();
         if (!ifReturns) {
-          fmt::println("br label %{}", endLabel);
+          fmt::println(outputFile, "br label %{}", endLabel);
         }
       }
       if (ifReturns && elseReturns) {
@@ -1282,7 +1178,7 @@ public:
           return ifResult;
         }
         auto phiResult = Reference(environment.makeTemporary(type));
-        fmt::println("{}  = phi {} [{}, %{}], [{}, %{}]", phiResult, LlvmName(type), ifLabel, ifResult, elseLabel, elseResult);
+        fmt::println(outputFile, "{}  = phi {} [{}, %{}], [{}, %{}]", phiResult, LlvmName(type), ifLabel, ifResult, elseLabel, elseResult);
         return phiResult;
       }
 
@@ -1340,7 +1236,7 @@ public:
     case NodeType::DotAcces: {
       auto node = parser.getDotAccess(nodeIndex);
       if (!node.object && !context.expectedType) {
-        fmt::println("Index for object: {} vs {}", parser.getNode(nodeIndex).left, nodeIndex.value);
+        log("Index for object: {} vs {}", parser.getNode(nodeIndex).left, nodeIndex.value);
         crash(nodeIndex, "Prefix '.' operator requires that statement has an expected type");
       }
       Reference object = node.object ? interpret(node.object.value(), environment, outputFile, context) : Reference(context.expectedType.value());
@@ -1364,8 +1260,8 @@ public:
         }
         // auto members = fileEnv->defs | std::views::transform([](const auto& x) { return TypeName(x.second.getType()); });
         auto members = fileEnv->defs | std::views::transform([](const auto& x) { return x.first; });
-        for (auto [name, value]: fileEnv->defs) {
-          fmt::println("{}: {}", name, TypeName(value.getType()));
+        for (auto [name, value] : fileEnv->defs) {
+          log("{}: {}", name, TypeName(value.getType()));
         }
         crash(node.fieldName, "Unable to find member '{}' in module\nAvailable fields are {}", fieldName, fmt::join(members, ", "));
       }
@@ -1378,7 +1274,7 @@ public:
         object.value = dereffed;
         type = *dereferenced;
       } else {
-        fmt::println("Accessing field for type {}", TypeName(type));
+        log("Accessing field for type {}", TypeName(type));
       }
       auto boxedField = Types::Pool().getFieldIndex(type, fieldName);
 
@@ -1401,7 +1297,18 @@ public:
         TODO("error for getting struct field");
       }
     }
-    case NodeType::ArgumentList:
+    case NodeType::ArgumentList: {
+      if (!context.expectedType) {
+        crash(nodeIndex, "Can't evaluate value tuple without inferred type");
+      }
+      auto type = context.expectedType.value();
+      auto structDefinition = Types::Pool().getStruct(type);
+      if (!structDefinition.has_value()) {
+        crash(nodeIndex, "Can't construct non-struct type {}", TypeName(type));
+      }
+      auto argsNode = parser.getArgumentList(nodeIndex);
+      return constructStruct(nodeIndex, type, argsNode, environment, outputFile);
+    }
     case NodeType::ParameterList: {
       crash(nodeIndex, "Input list nodes shouldn't be directly interpreted");
     }
@@ -1549,6 +1456,7 @@ public:
     fmt::println(out, "Compiler error in file {} at line {}:{}", inputFilePath.string(), location.line, location.column);
     location.underline(out);
     fmt::println(out, fmt, std::forward<Args>(args)...);
+
     abort();
   }
 
@@ -1659,5 +1567,111 @@ public:
 
   void crashInstruction(std::ostream& output) {
     fmt::println(output, "call void @llvm.trap()\nunreachable");
+  }
+
+  Reference constructStruct(NodeIndex nodeIndex, TypeIndex type, Parser::ArgumentList& argsNode, Environment& environment, std::ostream& outputFile) {
+    auto structDefinition = Types::Pool().getStruct(type);
+    if (!structDefinition.has_value()) {
+      crash(nodeIndex, "Can't construct non-struct type {}", TypeName(type));
+    }
+    auto structLlvmName = LlvmName(type);
+    auto structName = TypeName(type);
+
+    Types::Struct& definition = **structDefinition;
+    auto fieldTypes = Types::TypeSpan(definition.fieldTypes);
+
+    auto [arguments, namedArguments] = getArguments(fieldTypes, argsNode, environment, outputFile);
+    std::vector<bool> setArguments(fieldTypes.size(), false);
+
+    RegisterValue structVal(environment.addTemporary(), type);
+    bool isInitialized = false;
+    // TODO: default values that aren't zero initialized; using 0 for now to avoid initializing all fields in C structs
+    for (i32 i = 0; i < arguments.size(); i++) {
+      auto fieldValue = toRegister(&arguments[i], outputFile, environment);
+      auto fieldValueName = fieldValue;
+      auto fieldTypeLlvmName = LlvmName(arguments[i].getType());
+      setArguments[i] = true;
+      if (i == 0) {
+        isInitialized = true;
+        Reference ref(structVal);
+        fmt::println(outputFile, "{} = insertvalue {} zeroinitializer, {} {}, 0", ref, structLlvmName, fieldTypeLlvmName, fieldValueName);
+      } else {
+        Reference prevStruct(RegisterValue(structVal.name));
+        structVal.name = environment.addTemporary();
+        Reference ref(structVal);
+        fmt::println(outputFile, "{} = insertvalue {} {}, {} {}, {}", ref, structLlvmName, prevStruct, fieldTypeLlvmName, fieldValueName, i);
+      }
+    }
+
+    for (auto arg : argsNode.optionalArgs) {
+      auto argToken = parser.toPointer(arg.token);
+      auto name = argToken->lexeme;
+      assert(namedArguments.contains(name));
+      auto value = namedArguments[name];
+      // auto argToken = std::find_if(args.optionalArgs.begin(), args.optionalArgs.end(), [this, name](auto x){return parser.toPointer(x.token)->lexeme == name;})->token;
+      auto field = definition.getField(name);
+      if (!field) {
+        crash(argToken, "Unknown field '{}' for type '{}'", name, TypeName(type));
+      }
+      auto i = field->index;
+      auto targetType = value.isAssignableTo(field->type);
+      if (!targetType) {
+        crash(argToken, "Unable to assign argument of type '{}' to parameter of type '{}'", TypeName(value.getType()), TypeName(field->type));
+      }
+      if (Types::Pool().isFloat(*targetType)) {
+        if (auto intLit = value.getInt()) {
+          value.value = FloatLiteral(*intLit);
+        }
+      }
+      if (setArguments[i]) {
+        auto originalToken = parser.getToken(argsNode.requiredArgs[i]);
+        auto location = parser.locationOf(argsNode.requiredArgs[i]);
+        fmt::println(std::cerr, "Field '{}' originally assigned here", name);
+        location.underline(std::cerr);
+        crash(argToken, "Duplicate assignment for field '{}'", name);
+      }
+      setArguments[i] = field->index;
+      if (isInitialized) {
+        RegisterValue prevStruct{structVal.name};
+        structVal.name = environment.addTemporary();
+        fmt::println(outputFile, "{} = insertvalue {} {}, {} {}, {}", structVal, structLlvmName, prevStruct, LlvmName(field->type), value, field->index);
+      } else {
+        isInitialized = true;
+        fmt::println(outputFile, "{} = insertvalue {} zeroinitializer, {} {}, {}", structVal, structLlvmName, LlvmName(field->type), value, field->index);
+      }
+    }
+    return Reference(structVal);
+  }
+
+  pair<std::vector<Reference>, std::unordered_map<Identifier, Reference>>
+  getArguments(Types::TypeSpan paramTypes, Parser::ArgumentList& argsNode, Environment& environment, std::ostream& outputFile) {
+    std::vector<Reference> arguments;
+    i32 i = 0;
+    for (auto arg : argsNode.requiredArgs) {
+      auto paramType = paramTypes[i];
+      i++;
+      StatementContext context{.expectedType = paramType};
+      auto argument = interpret(arg, environment, outputFile, context);
+      auto targetType = argument.isAssignableTo(paramType);
+      if (!targetType) {
+        crash(arg, fmt::runtime("Unable to assign argument of type '{}' to parameter of type '{}'"), TypeName(argument.getType()), TypeName(paramType));
+      }
+      if (Types::Pool().isFloat(paramType)) {
+        arguments.push_back(argument.coerceFloat());
+      } else {
+        arguments.push_back(argument);
+      }
+    }
+
+    std::unordered_map<Identifier, Reference> namedArgs;
+    StatementContext context;
+    for (auto [name, value] : argsNode.optionalArgs) {
+      auto nameToken = parser.getToken(name);
+      auto [_, success] = namedArgs.emplace(nameToken->lexeme, interpret(value, environment, outputFile, context));
+      if (!success) {
+        crash(nameToken, "Duplicate named argument");
+      }
+    }
+    return std::make_pair(arguments, namedArgs);
   }
 };

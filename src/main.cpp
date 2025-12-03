@@ -1,27 +1,40 @@
+#include "common.h"
 #include "fmt/base.h"
 #include "fmt/format.h"
 #include "llvm_comp.h"
-#include "logging.h"
 #include "unistd.h"
-#include <cstddef>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <getopt.h>
 
 int main(int argc, char* argv[]) {
-  std::ostream& log = logger(LogLevel::DEBUG);
-  // no source file passed in
-  if (argc < 2) {
-    throw std::invalid_argument("missing source file input argument");
+  std::string executable;
+  int opt;
+  while ((opt = getopt(argc, argv, "tpic:o:")) != -1) {
+    switch (opt) {
+      case 't': Logger::globalLevels = Logger::globalLevels | LogLevel::Tokenize; break;
+      case 'p': Logger::globalLevels = Logger::globalLevels | LogLevel::Parsing; break;
+      case 'i': Logger::globalLevels = Logger::globalLevels | LogLevel::CImport; break;
+      case 'c': Logger::globalLevels = Logger::globalLevels | LogLevel::Compile; break;
+      case 'o': executable = optarg; break;
+      default: {
+        fmt::println(std::cerr, "Unknown command line flag: {}", opt);
+        return 1;
+      }
+    }
   }
 
-  std::string sourceFile(argv[1]);
-  std::string executable;
-  if (argc > 3) {
-    executable = argv[2];
-  } else {
+  if (optind >= argc) {
+    fmt::println(std::cerr, "Missing input source file");
+    return 1;
+  }
+
+  std::string_view sourceFile(argv[optind]);
+
+  if (executable.empty()) {
     executable = fs::path(sourceFile).stem().string();
   }
 
@@ -58,7 +71,7 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  auto& linkedLibararies = CompilerContext::inst().c.linkedLibaries;
+  auto& linkedLibararies = CompilerContext::inst().c.linkedLibraries;
   auto clangCommand = fmt::format("clang main.o {} {} -o {}", cIncludeObject, fmt::join(linkedLibararies, " "), executable);
 
   fmt::println("Linking with args: {}", clangCommand);

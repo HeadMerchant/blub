@@ -17,7 +17,7 @@ namespace fs = std::filesystem;
 using TypeCache = std::unordered_map<std::string_view, TypeIndex>;
 
 TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std::string>& globals) {
-  // fmt::println("Parsing C type '{}'", qualType);
+  Logger log(LogLevel::CImport);
   // TODO(mut)
   if (qualType.starts_with("const ")) {
     qualType = qualType.substr(6);
@@ -42,7 +42,7 @@ TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std
   if (!cTypes.contains(baseTypeString)) {
     throw std::invalid_argument(fmt::format("Undefined C type: {} in type {}", baseTypeString, qualType));
   }
-  fmt::println("base type: {}", baseTypeString);
+  log("base type: {}", baseTypeString);
   TypeIndex type = cTypes[baseTypeString];
 
   auto modifiers = qualType.substr(endIndex);
@@ -72,14 +72,11 @@ TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std
 
   // TODO: does this work for nested function pointers?
   if (modifiers.starts_with('(')) {
-    // fmt::println("Making function with return type: {}", TypeName(type));
     if (modifiers == "(void)") {
-      fmt::println("Empty params {}", modifiers);
       std::vector<TypeIndex> emptyTuple;
       auto [_, paramTypes] = Types::Pool().tupleOf(std::move(emptyTuple), globals);
       type = Types::Pool().addFunction(Types::FunctionType{.parameters = paramTypes, .returnType = type});
     } else {
-      fmt::println("Not empty params {}", modifiers);
       modifiers = modifiers.substr(1);
       std::vector<TypeIndex> paramTypes;
       while (true) {
@@ -133,10 +130,11 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
     {"float",      Types::Pool().f32  },
     {"double",     Types::Pool().f64  },
   };
-  fmt::println("Importing {}", cFile.string());
   if (importedFiles.contains(cFile)) {
     return &importedFiles[cFile];
   }
+  Logger log(LogLevel::CImport);
+  log("Importing {}", cFile.string());
 
   Environment& environment = importedFiles[cFile];
 
@@ -157,7 +155,7 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
     Reference blubInterface;
     if (kind == "EnumDecl") {
       i32 currentValue = 0;
-      fmt::println("Making enum '{}' with raw value '{}'", unprefixedValueName, TypeName(Types::Pool().s32));
+      log("Making enum '{}' with raw value '{}'", unprefixedValueName, TypeName(Types::Pool().s32));
       auto [typeIndex, enumIndex] = Types::Pool().addEnum(Types::Pool().s32, std::string(unprefixedValueName));
       if (auto inner = node["inner"]; inner.error() == SUCCESS) {
         for (auto element : inner.get_array()) {
@@ -177,9 +175,9 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
           }
           if (!Types::Pool().getEnum(enumIndex).define(valueName, currentValue)) {
             auto definition = Types::Pool().getEnum(enumIndex);
-            fmt::println("Duplicate enum value '{}' for enum '{}'", valueName, TypeName(typeIndex));
+            fmt::println(std::cerr, "Duplicate enum value '{}' for enum '{}'", valueName, TypeName(typeIndex));
             for (auto [name, _]: definition.values) {
-              fmt::println("Variant: {}", name);
+              log("Variant: {}", name);
             }
             throw std::invalid_argument(fmt::format("Duplicate enum value '{}' for enum '{}'", valueName, TypeName(typeIndex)));
           }
@@ -204,13 +202,13 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
       auto declareName = fmt::format("@{}", valueName);
       TypeIndex type = parseType(qualType, cTypes, globals);
       if (!Types::Pool().functionType(type).has_value()) {
-        fmt::println("Unable to get function type for C type '{}'", qualType);
-        fmt::println("Blub name: '{}'", TypeName(type));
+        fmt::println(std::cerr, "Unable to get function type for C type '{}'", qualType);
+        fmt::println(std::cerr, "Blub name: '{}'", TypeName(type));
         abort();
       }
       auto functionType = Types::Pool().functionType(type).value();
-      fmt::println("Generating llvm declaration for C function: '{}': {}", unprefixedValueName, qualType);
-      fmt::println("Internal name: {}", valueName);
+      log("Generating llvm declaration for C function: '{}': {}", unprefixedValueName, qualType);
+      log("Internal name: {}", valueName);
       bool returnsStruct = Types::Pool().storageType(functionType.returnType) == Types::LLVMStorage::VARIABLE;
       bool returnsVoid = Types::Pool().isVoid(functionType.returnType);
       std::stringstream instruction;
@@ -245,7 +243,7 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
       std::string_view tag;
       node["tagUsed"].get(tag);
       if (tag != "struct") {
-        fmt::println("Unknown tag '{}' for C RecordDecl '{}'; skipping", tag, valueName);
+        log("Unknown tag '{}' for C RecordDecl '{}'; skipping", tag, valueName);
         continue;
       }
       auto [typeIndex, structIndex] = Types::Pool().makeStruct(std::string(unprefixedValueName), fmt::format("%.cstruct.{}", valueName));
@@ -265,7 +263,7 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
 
         auto fieldType = parseType(fieldTypeName, cTypes, globals);
         Types::Pool().getStruct(structIndex).defineField(fieldName, fieldType);
-        fmt::println("Struct field {}: {}", TypeName(fieldType), LlvmName(fieldType));
+        log("Struct field {}: {}", TypeName(fieldType), LlvmName(fieldType));
       }
 
       Types::Pool().setStructSizing(structIndex);
@@ -273,8 +271,7 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
       cTypes[valueName] = typeIndex;
       blubInterface.value = typeIndex;
     } else {
-      fmt::println("Skipping clang ast node of kind '{}'; name: '{}'", kind, unprefixedValueName);
-      // TODO(fmt::format("Unknown clang ast node kind: '{}'", kind));
+      log("Skipping clang ast node of kind '{}'; name: '{}'", kind, unprefixedValueName);
     }
 
     environment.define(unprefixedValueName, blubInterface);
@@ -283,11 +280,3 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
   return &environment;
 }
 
-// template <typename... Args> [[noreturn]] void crash(fs::path& path, fmt::format_string<Args...> fmt, Args&&... args) const {
-//   auto& out = std::cerr;
-//   auto location = locationOf(lexeme());
-//   fmt::println(out, "C import error in file {} at line {}:{}", path.string(), location.line, location.column);
-//   location.underline(out);
-//   fmt::println(out, fmt, std::forward<Args>(args)...);
-//   abort();
-// }

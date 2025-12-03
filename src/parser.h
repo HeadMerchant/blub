@@ -1,6 +1,6 @@
 #pragma once
 #include "common.h"
-#include "logging.h"
+#include "fmt/base.h"
 #include "tokenizer.h"
 #include <bit>
 #include <cassert>
@@ -22,7 +22,7 @@ enum class NodeType {
   Definition,
   If,
   Struct,
-  DotAcces,
+  DotAccess,
   Enum,
   MultiLineString,
   ArgumentList,
@@ -144,13 +144,13 @@ struct Enum {
 using namespace Tokenization;
 class Parser {
 public:
-  Parser(Tokenizer& tokenizer) : tokenizer(tokenizer), tokens(tokenizer.tokens), log(logger(LogLevel::DEBUG)) {}
+  Parser(Tokenizer& tokenizer) : tokenizer(tokenizer), tokens(tokenizer.tokens), log(LogLevel::Parsing) {}
   const Tokenizer& tokenizer;
   const std::vector<Token>& tokens;
   std::vector<i32> extraData;
   std::vector<ASTNode> nodes;
   TokenIndex current = {0};
-  std::ostream& log;
+  Logger log;
 
   const Token& peek(TokenIndex ahead = {0}) {
     return tokens[current.value + ahead.value];
@@ -159,7 +159,6 @@ public:
   const TokenPointer advance() {
     if (!isAtEnd()) current.value++;
     TokenPointer token = previous();
-    // log << "Advancing: " << token->lexeme << "\n";
     return token;
   }
 
@@ -196,8 +195,8 @@ public:
     return current.value + ahead.value >= tokens.size() || peek(ahead).type == TokenType::EndOfFile;
   }
 
-  const TokenPointer previous() {
-    return tokens.data() + current.value - 1;
+  const TokenPointer previous(i32 behind = 1) {
+    return tokens.data() + current.value - behind;
   }
   TokenPointer getToken(TokenIndex token) const {
     return &tokens[token.value];
@@ -415,11 +414,11 @@ public:
   }
 
   NodeIndex addNode(Encodings::DotAccessor node, TokenPointer token) {
-    return addNode(ASTNode{.left = encodeOptional(node.object), .right = toIndex(node.fieldName).value, .token = toIndex(token), .nodeType = NodeType::DotAcces});
+    return addNode(ASTNode{.left = encodeOptional(node.object), .right = toIndex(node.fieldName).value, .token = toIndex(token), .nodeType = NodeType::DotAccess});
   }
 
   Encodings::DotAccessor getDotAccess(NodeIndex node) {
-    auto encoded = getNode(node, NodeType::DotAcces);
+    auto encoded = getNode(node, NodeType::DotAccess);
     return {.object = readOptional(encoded.left), .fieldName = toPointer({encoded.right})};
   }
 
@@ -445,13 +444,17 @@ public:
     while (!isAtEnd()) {
       statements.push_back(statement());
     }
+
+    log("Top-level statements:");
+    for (auto x: statements) {
+      log("Node type: {}", (i32) nodeType(x));
+      locationOf(x).underline(std::cout);
+    }
     return statements;
   }
 
   NodeIndex statement() {
-    if (check(TokenType::StatementBreak)) {
-      advance();
-    }
+    acceptN(TokenType::StatementBreak);
 
     NodeIndex node = assignment();
 
@@ -483,11 +486,11 @@ public:
     if (check(TokenType::Assign) || check(TokenType::Colon)) {
       TokenPointer token = advance();
       NodeIndex value = expression();
-      log << "Assigning " << getDefinition(name).name->lexeme << "\n";
+      log("Assigning {}", getDefinition(name).name->lexeme);
       return addNode(Encodings::Declaration{.definition = name, .value = value}, toIndex(token));
     }
 
-    log << "Defining " << getDefinition(name).name->lexeme << "\n";
+    log("Defining {}", getDefinition(name).name->lexeme);
     return name;
   }
 
@@ -635,6 +638,8 @@ public:
       consume(TokenType::LeftParen, "Compiler builtins must be called like functions");
       auto args = argumentList();
       return addNode(Encodings::UnaryOp{.operand = args, .operation = UnaryOps::CompilerBuiltin}, builtin);
+    } else {
+        log("Skipping non-built in '{}'", tokens[current.value].lexeme);
     }
 
     NodeIndex expr = access();
@@ -857,24 +862,14 @@ public:
       return addNode(ifNode, ifToken);
     }
 
-    if (match(TokenType::LeftParen)) {
-      auto token = previous();
-      if (match(TokenType::RightParen)) {
-        return addNode(Encodings::Block{.elements = ChildSpan()}, toIndex(token));
-      }
-      NodeIndex grouping = expression();
-      if (check(TokenType::Comma)) {
-        std::vector<NodeIndex> tupleElements{grouping};
-        while (!match(TokenType::RightParen)) {
-          consume(TokenType::Comma, "Tuples require commas to separate elements");
-          if (match(TokenType::RightParen)) {
-            break;
-          }
-          tupleElements.push_back(expression());
-        }
-        return addNode(Encodings::Block{.elements = ChildSpan(tupleElements)}, toIndex(token));
-      }
-      consume(TokenType::RightParen, "Expected a closing parenthesis");
+    if (auto token = match(TokenType::LeftParen)) {
+      auto grouping = argumentList();
+      // auto argsList = getArgumentList(grouping);
+      // if (argsList.requiredArgs.size() == 1 && argsList.optionalArgs.empty() && previous(2)->type == TokenType::Comma) {
+      //   nodes.pop_back();
+      //   extraData.pop_back();
+      //   return argsList.requiredArgs[0];
+      // }
       return grouping;
     }
 
@@ -1073,7 +1068,7 @@ public:
     return addNode(Encodings::BinaryOp{.left = parameters, .right = value, .operation = token});
   }
 
-  auto locationOf(NodeIndex node) const {
+  Tokenizer::TokenLocation locationOf(NodeIndex node) const {
     auto token = getToken(node);
     return tokenizer.locationOf(token->lexeme);
   }
@@ -1089,5 +1084,12 @@ public:
     location.underline(out);
     fmt::println(out, fmt, std::forward<Args>(args)...);
     abort();
+  }
+
+  void dumpNodes() {
+    for (i32 i = 0; i < nodes.size(); i++) {
+      log("Node type: {}", (i32) nodeType({i}));
+      locationOf({i}).underline(std::cout);
+    }
   }
 };

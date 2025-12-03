@@ -172,9 +172,6 @@ struct Struct {
       name, TypeField{.type = type, .index = (i32)fields.size()}
     });
     fieldTypes.push_back(type);
-    if (success) {
-      fmt::println("Defining field: {}", name);
-    }
 
     return success;
   }
@@ -399,7 +396,6 @@ public:
   }
 
   UnderlyingType& getType(TypeIndex type) {
-    // fmt::println("Getting type index {} of {}", type.value, underlyingTypes.size());
     return underlyingTypes[type.value];
   }
 
