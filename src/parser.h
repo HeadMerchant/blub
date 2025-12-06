@@ -123,17 +123,6 @@ struct NamedValue {
 };
 using NamedValues = std::span<NamedValue>;
 
-struct InputList {
-  ChildSpan requiredInputs;
-  // ChildSpan optionalInputs;
-  NamedValues optionalInputs;
-  enum class InputType {
-    Parameter,
-    Argument,
-  };
-  InputType inputType;
-};
-
 struct Enum {
   OptionalNode rawType;
   TokenSpan values;
@@ -157,7 +146,10 @@ public:
   }
 
   const TokenPointer advance() {
-    if (!isAtEnd()) current.value++;
+    if (isAtEnd()) {
+      crash(previous(), "Failed parsing by reaching end of file");
+    }
+    current.value++;
     TokenPointer token = previous();
     return token;
   }
@@ -254,11 +246,11 @@ public:
     return nodes[index.value];
   }
 
-  NodeType nodeType(NodeIndex index) {
+  NodeType nodeType(NodeIndex index) const {
     return nodes[index.value].nodeType;
   }
 
-  ASTNode getNode(NodeIndex index, NodeType type) {
+  ASTNode getNode(NodeIndex index, NodeType type) const {
     auto encoded = nodes[index.value];
     assert(encoded.nodeType == type);
     return encoded;
@@ -330,7 +322,7 @@ public:
     return {.token = toPointer(encoded.token)};
   }
 
-  OptionalNode readOptional(i32 expectedIndex) {
+  OptionalNode readOptional(i32 expectedIndex) const {
     if (expectedIndex == MAX_NODE) return std::nullopt;
     return NodeIndex{expectedIndex};
   }
@@ -348,7 +340,7 @@ public:
     return addNode(ASTNode{.left = dataIndex.value, .right = node.parameters.value, .token = token, .nodeType = NodeType::FunctionLiteral});
   }
 
-  Encodings::FunctionLiteral getFunctionLiteral(NodeIndex node) {
+  Encodings::FunctionLiteral getFunctionLiteral(NodeIndex node) const {
     auto encoded = getNode(node, NodeType::FunctionLiteral);
     auto& parameters = extraData;
 
@@ -443,12 +435,6 @@ public:
     std::vector<NodeIndex> statements;
     while (!isAtEnd()) {
       statements.push_back(statement());
-    }
-
-    log("Top-level statements:");
-    for (auto x: statements) {
-      log("Node type: {}", (i32) nodeType(x));
-      locationOf(x).underline(std::cout);
     }
     return statements;
   }
@@ -638,8 +624,6 @@ public:
       consume(TokenType::LeftParen, "Compiler builtins must be called like functions");
       auto args = argumentList();
       return addNode(Encodings::UnaryOp{.operand = args, .operation = UnaryOps::CompilerBuiltin}, builtin);
-    } else {
-        log("Skipping non-built in '{}'", tokens[current.value].lexeme);
     }
 
     NodeIndex expr = access();
@@ -655,19 +639,18 @@ public:
     bool hasMultiple = false;
     std::vector<NodeIndex> requiredInputs;
     std::vector<Encodings::NamedValue> optionalInputs;
-    i32 listLength = 0;
 
     // allow combined length to fit in signed 8
     static const i32 MAX_ARGUMENTS = 127;
-    while (!check(closingBracket)) {
+    auto token = toIndex(previous());
+    while (!match(closingBracket)) {
       acceptN(TokenType::StatementBreak);
       if (hasMultiple) {
         consume(TokenType::Comma, "Expected separating comma between parameters");
         acceptN(TokenType::StatementBreak);
       }
 
-      // Allow trailing comma
-      if (check(closingBracket)) {
+      if (match(closingBracket)) {
         break;
       }
 
@@ -691,15 +674,13 @@ public:
       acceptN(TokenType::StatementBreak);
     }
 
-    consume(closingBracket, "Expected ')' for declaration");
-
     auto dataIndex = addData(requiredInputs);
     for (auto [name, value] : optionalInputs) {
       addData(name.value);
-      addData(value.value);
+      addData(value);
     }
-    i32 packedInputLength = packInt(requiredInputs.size(), optionalInputs.size(), static_cast<i8>(Encodings::InputList::InputType::Argument), 0);
-    return addNode(ASTNode{.left = dataIndex.value, .right = packedInputLength, .nodeType = NodeType::ArgumentList});
+    i32 packedInputLength = packInt(requiredInputs.size(), optionalInputs.size(), 0, 0);
+    return addNode(ASTNode{.left = dataIndex.value, .right = packedInputLength, .token = token, .nodeType = NodeType::ArgumentList});
   }
 
   struct ArgumentList {
@@ -709,12 +690,13 @@ public:
 
   ArgumentList getArgumentList(NodeIndex node) {
     auto encoded = getNode(node, NodeType::ArgumentList);
-    auto [requiredLength, optionalLength, inputType, _] = unpackInt(encoded.right);
+    auto [requiredLength, optionalLength, unused, _] = unpackInt(encoded.right);
     auto children = getChildren();
-    return {
+    ArgumentList item = {
       .requiredArgs = children.subspan(encoded.left, requiredLength),
       .optionalArgs = std::bit_cast<Encodings::NamedValues>(children.subspan(encoded.left + requiredLength, optionalLength)),
     };
+    return item;
   }
 
   struct ParameterList {
@@ -736,7 +718,8 @@ public:
     bool hasMultiple = false;
     std::vector<NodeIndex> requiredInputs;
     std::vector<NodeIndex> optionalInputs;
-    i32 listLength = 0;
+
+    auto token = toIndex(previous());
 
     // allow combined length to fit in signed 8
     static const i32 MAX_ARGUMENTS = 127;
@@ -773,8 +756,8 @@ public:
 
     auto dataIndex = addData(requiredInputs);
     addData(optionalInputs);
-    i32 packedInputLength = packInt(requiredInputs.size(), optionalInputs.size(), static_cast<i8>(Encodings::InputList::InputType::Parameter), 0);
-    return addNode(ASTNode{.left = dataIndex.value, .right = packedInputLength, .nodeType = NodeType::ParameterList});
+    i32 packedInputLength = packInt(requiredInputs.size(), optionalInputs.size(), 0, 0);
+    return addNode(ASTNode{.left = dataIndex.value, .right = packedInputLength, .token = token, .nodeType = NodeType::ParameterList});
   }
 
   NodeIndex access() {
@@ -863,14 +846,32 @@ public:
     }
 
     if (auto token = match(TokenType::LeftParen)) {
-      auto grouping = argumentList();
+      // if (match(TokenType::RightParen)) {
+      //   return addNode(Encodings::Block{.elements = ChildSpan()}, toIndex(token));
+      // }
+      // NodeIndex grouping = expression();
+      // if (check(TokenType::Comma)) {
+      //   std::vector<NodeIndex> tupleElements{grouping};
+      //   while (!match(TokenType::RightParen)) {
+      //     consume(TokenType::Comma, "Tuples require commas to separate elements");
+      //     if (match(TokenType::RightParen)) {
+      //       break;
+      //     }
+      //     tupleElements.push_back(expression());
+      //   }
+      //   return addNode(Encodings::Block{.elements = ChildSpan(tupleElements)}, toIndex(token));
+      // }
+      // consume(TokenType::RightParen, "Expected a closing parenthesis");
+      // return grouping;
+      return argumentList();
+      // auto grouping = argumentList();
       // auto argsList = getArgumentList(grouping);
       // if (argsList.requiredArgs.size() == 1 && argsList.optionalArgs.empty() && previous(2)->type == TokenType::Comma) {
       //   nodes.pop_back();
       //   extraData.pop_back();
       //   return argsList.requiredArgs[0];
       // }
-      return grouping;
+      // return grouping;
     }
 
     if (auto token = match(TokenType::MultiPointer)) {
@@ -956,9 +957,7 @@ public:
     std::vector<NodeIndex> statements;
     acceptN(TokenType::StatementBreak);
     while (!match(TokenType::RightCurlyBrace)) {
-      acceptN(TokenType::StatementBreak);
-      statements.push_back(assignment());
-      acceptN(TokenType::StatementBreak);
+      statements.push_back(statement());
     }
 
     auto node = Encodings::Block{.elements = ChildSpan(statements)};
@@ -1044,25 +1043,6 @@ public:
     // Params
     consume(TokenType::LeftSquareBracket, "Expected '[' for parameter declaration");
 
-    // bool hasMultiple = false;
-    // std::vector<NodeIndex> requiredInputs;
-    // while (!match(TokenType::RightSquareBracket)) {
-    //   if (hasMultiple) {
-    //     consume(TokenType::Comma, "");
-    //     if (match(TokenType::RightSquareBracket)) {
-    //       break;
-    //     }
-    //   }
-
-    //   hasMultiple = true;
-    //   auto parameterName = consume(TokenType::Identifier, "Expected generic parameter name to be an identifier");
-    //   requiredInputs.push_back(addNode(Encodings::Literal(parameterName)));
-    // }
-    //
-    // auto parameters = addNode(
-    //   Encodings::InputList{
-    //     .requiredInputs = ChildSpan(requiredInputs), .optionalInputs = Encodings::NamedValues(), .inputType = Encodings::InputList::InputType::Parameter});
-
     auto parameters = parameterList(Tokenization::TokenType::RightSquareBracket);
     auto value = expression();
     return addNode(Encodings::BinaryOp{.left = parameters, .right = value, .operation = token});
@@ -1083,12 +1063,13 @@ public:
     fmt::println(out, "Parser error in file {} at line {}:{}", tokenizer.inputFilePath.string(), location.line, location.column);
     location.underline(out);
     fmt::println(out, fmt, std::forward<Args>(args)...);
+    dumpNodes();
     abort();
   }
 
-  void dumpNodes() {
+  void dumpNodes() const {
     for (i32 i = 0; i < nodes.size(); i++) {
-      log("Node type: {}", (i32) nodeType({i}));
+      fmt::println("Node type: {}", (i32) nodeType({i}));
       locationOf({i}).underline(std::cout);
     }
   }

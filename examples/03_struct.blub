@@ -22,7 +22,7 @@ print_u32 :: fn(x: u32) {
 	while (y > 0) {
 		digit := y % 10
 		y = y / 10
-		buf[i] = '0' + @numcast(digit)
+		buf[i] = '0' + @numCast(digit)
 		i = i - 1
 	}
 	print(buf[i..])
@@ -41,7 +41,7 @@ print_s32 :: fn(x: s32) {
 	while (y > 0) {
 		digit := y % 10
 		y = y / 10
-		buf[i] = '0' + @numcast(digit)
+		buf[i] = '0' + @numCast(digit)
 		i = i - 1
 	}
 	if (isNegative) {

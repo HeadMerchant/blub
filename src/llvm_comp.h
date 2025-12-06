@@ -196,7 +196,9 @@ public:
 
         StackValue* stackValue = std::get_if<StackValue>(&std::get<Reference*>(definition.value)->value);
         TypeIndex expectedType = stackValue->type;
-        auto value = interpret(node.value, environment, outputFile, context);
+        StatementContext valueContext {.name = std::get<Identifier>(stackValue->name), .expectedType = stackValue->type};
+        log("Making value: '{}: {}'", stackValue->name, TypeName(stackValue->type));
+        auto value = interpret(node.value, environment, outputFile, valueContext);
         auto assignedType = value.isAssignableTo(expectedType);
         if (!assignedType) {
           crash(
@@ -226,7 +228,7 @@ public:
           crash(nodeIndex, "Type for identifier '{}' is not a type", node.name->lexeme);
         }
       }
-      std::optional<Reference*> definition = environment.define(name, Reference(StackValue(node.name->lexeme, Types::Pool().infer)));
+      std::optional<Reference*> definition = environment.define(name, Reference(StackValue(node.name->lexeme, type)));
       if (definition) {
         return Reference(*definition);
       }
@@ -1233,7 +1235,7 @@ public:
       }
       return Reference(typeIndex);
     }
-    case NodeType::DotAcces: {
+    case NodeType::DotAccess: {
       auto node = parser.getDotAccess(nodeIndex);
       if (!node.object && !context.expectedType) {
         log("Index for object: {} vs {}", parser.getNode(nodeIndex).left, nodeIndex.value);
@@ -1415,6 +1417,9 @@ public:
         globalsStack.pop();
       }
     }
+
+    dumpStatements();
+
     return &fileEnvironment;
   }
 
@@ -1456,7 +1461,7 @@ public:
     fmt::println(out, "Compiler error in file {} at line {}:{}", inputFilePath.string(), location.line, location.column);
     location.underline(out);
     fmt::println(out, fmt, std::forward<Args>(args)...);
-
+    dumpStatements();
     abort();
   }
 
@@ -1673,5 +1678,31 @@ public:
       }
     }
     return std::make_pair(arguments, namedArgs);
+  }
+
+  void dumpStatements() {
+    if (!(Logger::globalLevels & LogLevel::Parsing)) return;
+    Logger logger{LogLevel::Parsing};
+    logger("All nodes");
+    parser.dumpNodes();
+
+    logger("All statements");
+    for (auto x: program) {
+      logger("Node type: {}", (int) parser.nodeType(x));
+      parser.locationOf(x).underline(std::cout);
+      if (parser.nodeType(x) == NodeType::Declaration) {
+        auto value = parser.getDeclaration(x).value;
+        if (parser.nodeType(value) == NodeType::FunctionLiteral) {
+          auto function = parser.getFunctionLiteral(value);
+          if (function.body) {
+            auto statements = parser.getBlock(function.body.value()).elements;
+            for (auto statement: statements) {
+              logger("Node type: {}", (int) parser.nodeType(statement));
+              parser.locationOf(statement).underline(std::cout);
+            }
+          }
+        }
+      }
+    }
   }
 };
