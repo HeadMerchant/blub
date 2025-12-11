@@ -1359,7 +1359,27 @@ public:
       return Reference(typeIndex);
     }
     case NodeType::MultiLineString: {
-      TODO("Multi line string compilation");
+      auto node = parser.getNode(nodeIndex, NodeType::MultiLineString);
+      i32 startToken = node.left;
+      i32 numLines = node.right;
+      std::vector<std::string> escapedLines;
+      i32 totalLength = 0;
+      for (auto i = 0; i < numLines; i++) {
+        auto& line = parser.tokens[startToken + i*2];
+        auto [stringValue, length] = escapeSourceString(line.lexeme, &line);
+        totalLength += length;
+        escapedLines.push_back(std::move(stringValue));
+      }
+      log("Escaped lines: {}", escapedLines);
+      totalLength += numLines - 1;
+
+      auto global = environment.makeGlobal(Types::Pool().u8);
+      std::stringstream instruction;
+      instruction << fmt::format("{} = global [{} x i8] c\"{}\" align 1\n", global, totalLength, fmt::join(escapedLines, "\\0A"));
+      globalsStack.push(instruction.str());
+      auto sliceType = Types::Pool().sliceOf(Types::Pool().u8);
+      auto lengthValue = Reference(IntLiteral(totalLength));
+      return makeSlice(global, lengthValue, outputFile, environment);
     }
     }
     crash(nodeIndex, "Unknown node type");

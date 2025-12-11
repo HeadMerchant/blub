@@ -803,6 +803,22 @@ public:
       return addNode(node, token);
     }
 
+    if (auto token = match(TokenType::MultiLineString)) {
+      i32 numTokens = 1;
+      TokenIndex startToken = toIndex(token);
+      while (match(TokenType::StatementBreak)) {
+        if (match(TokenType::MultiLineString)) {
+          numTokens++;
+        } else {
+          break;
+        }
+      }
+      for (int i = 0; i < numTokens; i++) {
+        fmt::println("String tokens: {}", tokens[startToken.value + i*2].lexeme);
+      }
+      return addNode(ASTNode {.left = toIndex(token).value, .right = numTokens, .token = toIndex(token), .nodeType = NodeType::MultiLineString});
+    }
+
     if (check(TokenType::Function)) {
       return function();
     }
@@ -1068,6 +1084,7 @@ public:
   }
 
   void dumpNodes() const {
+    if (!(Logger::globalLevels & LogLevel::Parsing)) return;
     for (i32 i = 0; i < nodes.size(); i++) {
       fmt::println("Node type: {}", (i32) nodeType({i}));
       locationOf({i}).underline(std::cout);

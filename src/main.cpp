@@ -48,8 +48,12 @@ int main(int argc, char* argv[]) {
   fmt::println(outFile, "declare void @llvm.trap() nounwind");
   TranslationUnit::compile(sourceFile, outFile);
   outFile.close();
-  fmt::println("Generating object file");
-  execl("clang", "-c", outFilename.c_str(), "-o", "main.o");
+  auto objectCommand = fmt::format("clang -c {} -o main.o", outFilename);
+  fmt::println("Generating object file: {}", objectCommand);
+  if (auto rc = std::system(objectCommand.c_str())) {
+    fmt::println(std::cerr, "Error generating object file (likely error in blub compiler)");
+    abort();
+  }
 
   fmt::println("Generating executable");
 
@@ -75,9 +79,8 @@ int main(int argc, char* argv[]) {
   auto clangCommand = fmt::format("clang main.o {} {} -o {}", cIncludeObject, fmt::join(linkedLibararies, " "), executable);
 
   fmt::println("Linking with args: {}", clangCommand);
-  auto rc = std::system(clangCommand.c_str());
-  if (rc != 0) {
-    fmt::println("Error linking libraries");
+  if (auto rc = std::system(clangCommand.c_str())) {
+    fmt::println(std::cerr, "Error linking libraries");
     abort();
   }
   fmt::println("clanged");

@@ -348,8 +348,9 @@ struct Tokenizer {
     case '\\': {
       if (peek() == '"') {
         advance();
-        string(TokenType::MultiLineString, '\n');
-        firstCharacterOnLine.push_back(current);
+        start += 2;
+        while (peek() != '\n') advance();
+        addToken(TokenType::MultiLineString);
       } else {
         addToken(TokenType::MatrixDiv);
       }
