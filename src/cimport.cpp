@@ -7,6 +7,7 @@
 #include <charconv>
 #include <cstdlib>
 #include <filesystem>
+#include <map>
 #include <simdjson.h>
 #include <stdexcept>
 #include <unordered_map>
@@ -14,7 +15,7 @@
 
 using namespace simdjson;
 namespace fs = std::filesystem;
-using TypeCache = std::unordered_map<std::string_view, TypeIndex>;
+using TypeCache = std::map<std::string_view, TypeIndex>;
 
 TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std::string>& globals) {
   Logger log(LogLevel::CImport);
@@ -74,7 +75,7 @@ TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std
   if (modifiers.starts_with('(')) {
     if (modifiers == "(void)") {
       std::vector<TypeIndex> emptyTuple;
-      auto [_, paramTypes] = Types::Pool().tupleOf(std::move(emptyTuple), globals);
+      auto [_, paramTypes] = Types::Pool().tupleOf(std::move(emptyTuple));
       type = Types::Pool().addFunction(Types::FunctionType{.parameters = paramTypes, .returnType = type});
     } else {
       modifiers = modifiers.substr(1);
@@ -98,7 +99,7 @@ TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std
         break;
       }
 
-      auto [_, paramTuple] = Types::Pool().tupleOf(paramTypes, globals);
+      auto [_, paramTuple] = Types::Pool().tupleOf(paramTypes);
       type = Types::Pool().addFunction(Types::FunctionType{.parameters = paramTuple, .returnType = type});
     }
   }
@@ -109,7 +110,7 @@ TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std
 
 Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::string>& globals) {
   static std::unordered_map<fs::path, Environment> importedFiles;
-  static std::unordered_map<std::string_view, TypeIndex> cTypes = {
+  static TypeCache cTypes = {
     {"uint8_t",    Types::Pool().u8   },
     {"uint16_t",   Types::Pool().u16  },
     {"uint32_t",   Types::Pool().u32  },
@@ -150,7 +151,8 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
     std::string_view valueName, kind;
     if (node["kind"].get(kind) != SUCCESS || node["name"].get(valueName)) continue;
     if (!valueName.starts_with(prefix)) continue;
-    std::string_view unprefixedValueName = StringPool::inst().copy(valueName.substr(prefix.size()));
+    valueName = StringPool::inst().copy(valueName);
+    std::string_view unprefixedValueName = valueName.substr(prefix.size());
 
     Reference blubInterface;
     if (kind == "EnumDecl") {
@@ -176,7 +178,7 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
           if (!Types::Pool().getEnum(enumIndex).define(valueName, currentValue)) {
             auto definition = Types::Pool().getEnum(enumIndex);
             fmt::println(std::cerr, "Duplicate enum value '{}' for enum '{}'", valueName, TypeName(typeIndex));
-            for (auto [name, _]: definition.values) {
+            for (auto [name, _] : definition.values) {
               log("Variant: {}", name);
             }
             throw std::invalid_argument(fmt::format("Duplicate enum value '{}' for enum '{}'", valueName, TypeName(typeIndex)));
@@ -197,9 +199,12 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
       if (error) {
         throw std::invalid_argument(fmt::format("Unable to get qualified type for C function '{}'", valueName));
       }
+      if (valueName == "sglue_environment") {
+        log("{}: {}", valueName, qualType);
+      }
 
       // TODO: factor out to Types module?
-      auto declareName = fmt::format("@{}", valueName);
+      auto declareName = StringPool::inst().copy(fmt::format("@{}", valueName));
       TypeIndex type = parseType(qualType, cTypes, globals);
       if (!Types::Pool().functionType(type).has_value()) {
         fmt::println(std::cerr, "Unable to get function type for C type '{}'", qualType);
@@ -209,35 +214,7 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
       auto functionType = Types::Pool().functionType(type).value();
       log("Generating llvm declaration for C function: '{}': {}", unprefixedValueName, qualType);
       log("Internal name: {}", valueName);
-      bool returnsStruct = Types::Pool().storageType(functionType.returnType) == Types::LLVMStorage::VARIABLE;
-      bool returnsVoid = Types::Pool().isVoid(functionType.returnType);
-      std::stringstream instruction;
-      fmt::print(instruction, "declare ");
-      auto returnType = functionType.returnType;
-      if (returnsStruct | returnsVoid) {
-        fmt::print(instruction, "void ");
-      } else {
-        fmt::print(instruction, "{} ", LlvmName(returnType));
-      }
-      fmt::print(instruction, "{} ", declareName);
-      instruction << "(";
-      bool hasMultiple = false;
-      if (returnsStruct) {
-        hasMultiple = true;
-        fmt::print(instruction, "ptr sret({}) align {}", LlvmName(returnType), Types::Pool().getSizing(returnType).alignment.byteAlignment());
-      }
-      for (auto paramType : Types::Pool().tupleElements(functionType.parameters)) {
-        if (hasMultiple) instruction << ", ";
-        hasMultiple = true;
-        auto typeName = paramType;
-        if (Types::Pool().isLlvmLiteralType(paramType)) {
-          fmt::print(instruction, "{}", LlvmName(typeName));
-        } else {
-          fmt::print(instruction, "ptr byval({})", LlvmName(typeName));
-        }
-      }
-      instruction << ")\n";
-      globals.push(instruction.str());
+      functionType.forwardDeclare(declareName, globals);
       blubInterface.value = Function(functionType, declareName);
     } else if (kind == "RecordDecl") {
       std::string_view tag;
@@ -276,7 +253,13 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
 
     environment.define(unprefixedValueName, blubInterface);
   }
+
+  // if (Logger::globalLevels & LogLevel::CImport) {
+  //   fmt::println("C Types");
+  //   for (auto [cName, blubName] : cTypes) {
+  //     fmt::println("{}: {}", cName, TypeName(blubName));
+  //   }
+  // }
   importedFiles[cFile] = environment;
   return &environment;
 }
-

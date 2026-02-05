@@ -12,6 +12,7 @@
 #include <limits>
 #include <optional>
 #include <queue>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -48,6 +49,7 @@ struct TypeIndex {
 
 namespace Types {
 const i32 NUM_BUILTINS = 14;
+const std::string_view SliceName = "%.slice";
 
 enum class LLVMStorage { VOID, LITERAL, VARIABLE };
 
@@ -58,6 +60,8 @@ struct TypeField {
   TypeIndex type;
   i32 index;
 };
+
+using FieldMap = std::unordered_map<Identifier, TypeField>;
 
 struct DataIndex {
   i32 value;
@@ -95,6 +99,8 @@ struct FunctionType {
       return (hash<i32>()(k.parameters.value) ^ (hash<i32>()(k.returnType.value) << 1));
     }
   };
+
+  void forwardDeclare(std::string_view name, std::queue<std::string>& globals);
 };
 
 struct Log2Alignment {
@@ -150,7 +156,7 @@ struct Sizing {
 };
 
 struct Struct {
-  std::unordered_map<Identifier, TypeField> fields;
+  FieldMap fields;
   // SymbolMap statics;
   std::string name;
   std::string llvmName;
@@ -276,7 +282,6 @@ template <class... Ts> struct overloaded : Ts... {
 struct Tuple {
   std::span<TypeIndex> types;
   Sizing sizing;
-  std::string name;
 };
 
 class TypePool {
@@ -329,6 +334,9 @@ public:
 
   TypeIndex addType(UnderlyingType type) {
     i32 index = underlyingTypes.size();
+    if (auto bruh = std::get_if<SignedInt>(&type)) {
+      fmt::println("Int size {}", bruh->bitSize);
+    }
     underlyingTypes.push_back(type);
     return {index};
   }
@@ -494,7 +502,25 @@ public:
   //   std::cout << std::endl;
   // }
 
-  std::pair<TypeIndex, TupleIndex> tupleOf(std::vector<TypeIndex> types, std::queue<std::string>& globals);
+  std::pair<TypeIndex, Types::TupleIndex> tupleOf(std::vector<TypeIndex> types) {
+    Logger logger(LogLevel::Compile);
+    if (tuples.contains(types)) {
+      return tuples[types];
+    }
+
+    auto elementTypes = std::span(types);
+    TupleIndex tupleIndex{(i32)tuplePool.size()};
+
+    Sizing sizing;
+    tuplePool.emplace_back(elementTypes, getSizing(elementTypes));
+
+    auto typeIndex = addType(tupleIndex);
+    tupleTypeIndices.push_back(typeIndex);
+
+    std::pair<TypeIndex, TupleIndex> cached{typeIndex, tupleIndex};
+    tuples[std::move(types)] = cached;
+    return cached;
+  }
 
   TupleIndex tupleIndex(TypeIndex type) {
     if (auto tuple = std::get_if<TupleIndex>(&underlyingTypes[type.value])) {
@@ -541,8 +567,13 @@ public:
   // pointers, ints, etc
   // TODO: use a more specific condition
   bool isLlvmLiteralType(TypeIndex type) {
-    auto underlyingType = getType(type);
-    return !(std::holds_alternative<StructIndex>(underlyingType) || std::holds_alternative<Slice>(underlyingType));
+    return isLiteralReturn(type);
+    // auto underlyingType = getType(type);
+    // return !(std::holds_alternative<StructIndex>(underlyingType) || std::holds_alternative<Slice>(underlyingType));
+  }
+
+  bool isLiteralReturn(TypeIndex type) {
+    return getSizing(type).byteSize <= 16;
   }
 
   bool isVoid(TypeIndex type) {
@@ -571,7 +602,7 @@ public:
   }
 
   TypeIndex sizedArrayOf(TypeIndex elementType, i32 size) {
-    auto sizes = sizedArrays[size];
+    auto& sizes = sizedArrays[size];
     if (sizes.contains(elementType)) {
       return sizes[elementType];
     }
@@ -757,6 +788,12 @@ public:
     if (isAny<FloatLiteral>(child)) {
       return isAny<Float>(parent);
     }
+    if (auto parentVal = std::get_if<Pointer>(&parent)) {
+      return parentVal->dereferencedType == _void && isAny<Pointer>(child);
+    }
+    if (auto parentVal = std::get_if<MultiPointer>(&parent)) {
+      return parentVal->dereferencedType == _void && isAny<MultiPointer>(child);
+    }
     return false;
   }
 
@@ -779,7 +816,7 @@ TypePool& Pool();
 struct TypeName {
   TypeIndex type;
 
-  static void print(std::ostream& o, TypeIndex type) {
+  static void print(std::ostream& o, Types::UnderlyingType& type) {
     std::visit(
       Types::overloaded{
         [&o](Types::Void x) { o << "void"; },
@@ -799,10 +836,23 @@ struct TypeName {
           print(o, x.dereferencedType);
         },
         [&o](Types::StructIndex x) { o << Types::Pool().structPool[x.value].name; },
-        [&o](Types::TupleIndex x) { o << Types::Pool().tuplePool[x.value].name; },
-        [&o](Types::EnumIndex x) { print(o, Types::Pool().enumPool[x.value].rawType); },
+        [&o](Types::TupleIndex x) {
+          bool hasMultiple = false;
+          o << "(";
+          for (auto type : Types::Pool().tupleElements(x)) {
+            if (hasMultiple) {
+              o << ", ";
+            }
+
+            hasMultiple = true;
+            print(o, type);
+          }
+          o << ")";
+        },
+        [&o](Types::EnumIndex x) { o << Types::Pool().enumPool[x.value].name; },
         [&o](Types::FunctionType x) {
-          o << Types::Pool().tuplePool[x.parameters.value].name << " -> ";
+          print(o, Types::Pool().tupleTypeIndices[x.parameters.value]);
+          o << " -> ";
           print(o, x.returnType);
         },
         [&o](Types::Infer x) { o << "infer"; },
@@ -818,7 +868,11 @@ struct TypeName {
         [&o](Types::Environment) { o << "environment"; },
         [&o](Types::Type) { o << "type"; },
         [&o](Types::RangeLiteral) { o << "range"; }},
-      Types::Pool().getType(type));
+      type);
+  }
+
+  static void print(std::ostream& o, TypeIndex type) {
+    print(o, Types::Pool().getType(type));
   }
 
   friend std::ostream& operator<<(std::ostream& o, const TypeName& type) {
@@ -829,7 +883,7 @@ struct TypeName {
 
 struct LlvmName {
   TypeIndex type;
-  static void format(std::ostream& o, TypeIndex type) {
+  static void format(std::ostream& o, Types::UnderlyingType& type) {
     std::visit(
       Types::overloaded{
         [&o](Types::Void x) { o << "void"; },
@@ -840,7 +894,18 @@ struct LlvmName {
         [&o](Types::MultiPointer x) { o << "ptr"; },
         [&o](Types::Slice x) { o << "%.slice"; },
         [&o](Types::StructIndex x) { o << Types::Pool().structPool[x.value].llvmName; },
-        [&o](Types::TupleIndex x) { o << "%.tuple." << x.value; },
+        [&o](Types::TupleIndex x) {
+          bool hasMultiple = false;
+          o << "{";
+          for (auto type : Types::Pool().tupleElements(x)) {
+            if (hasMultiple) {
+              o << ", ";
+            }
+            hasMultiple = true;
+            format(o, type);
+          }
+          o << "}";
+        },
         [&o](Types::EnumIndex x) { format(o, Types::Pool().enumPool[x.value].rawType); },
         [&o](Types::FunctionType x) { o << "ptr"; },
         [&o](Types::Opaque x) { o << x.llvmName; },
@@ -857,7 +922,11 @@ struct LlvmName {
         [&o](Types::Environment) { TODO("Error for llvm name for float literal type"); },
         [&o](Types::Type) { TODO("Error for llvm name for type literal type"); },
         [&o](Types::RangeLiteral) { TODO("Error for llvm name for range literal type"); }},
-      Types::Pool().getType(type));
+      type);
+  }
+
+  static void format(std::ostream& o, TypeIndex type) {
+    format(o, Types::Pool().getType(type));
   }
 
   friend std::ostream& operator<<(std::ostream& o, const LlvmName& type) {

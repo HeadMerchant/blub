@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -46,6 +47,9 @@ public:
 struct IntLiteral {
   int64_t value;
   TypeIndex type;
+
+  IntLiteral(int64_t value) : value(value), type(Types::Pool().intLiteral) {};
+  IntLiteral(int64_t value, TypeIndex type) : value(value), type(type) {};
 };
 
 template <> struct fmt::formatter<IntLiteral> : fmt::formatter<int64_t> {
@@ -88,7 +92,7 @@ template <> struct fmt::formatter<StackValue> : ostream_formatter {};
 class Function {
 public:
   Types::FunctionType type;
-  std::string globalName;
+  std::string_view globalName;
 
   void llvmDeclaration(std::ostream& o, std::optional<std::span<std::string_view>> paramNames) {
     TypeIndex returnType = type.returnType;
@@ -229,7 +233,7 @@ struct Reference {
         [](StackValue x) { return x.type; },
         [](bool x) { return Types::Pool()._bool; },
         [](Reference* x) { return x->getType(); },
-        [](IntLiteral x) { return Types::Pool().intLiteral; },
+        [](IntLiteral x) { return x.type; },
         [](FloatLiteral x) { return Types::Pool().floatLiteral; },
         [](Never) { return Types::Pool().never; },
         [](TypeIndex) { return Types::Pool().type; },
@@ -244,12 +248,8 @@ struct Reference {
   }
 
   bool canReference() const {
-    return std::visit(overloaded {
-      [](StackValue x) { return true; },
-      [](Global x) { return true; },
-      [](Reference* x) { return x->canReference(); },
-      [](auto& x) {return false;}
-    }, value);
+    return std::visit(
+      overloaded{[](StackValue x) { return true; }, [](Global x) { return true; }, [](Reference* x) { return x->canReference(); }, [](auto& x) { return false; }}, value);
   }
 
   using OptStack = std::optional<StackValue>;
@@ -363,16 +363,22 @@ struct Reference {
 };
 template <> struct fmt::formatter<Reference> : ostream_formatter {};
 
+enum class EnvType { Global, Function };
+
 class Environment {
 public:
   static i32 globalIndex;
   std::unordered_map<std::string_view, Reference> defs;
   std::vector<Environment*> imports;
   std::string prefix;
-  // For LLVM
+  // TODO: scoping
+  std::vector<std::vector<std::string_view>> scope;
+  EnvType envType;
+
 private:
   i32 nextTemporary = 1;
   bool quotePrefixedNames;
+  static i32 nextGlobalTemporary;
 
 public:
   bool hasReturned = false;
@@ -384,9 +390,9 @@ public:
     return prefix;
   }
 
-  Environment() : parent(Environment::baseEnvironment()), imports(), defs(), prefix("") {}
+  Environment() : parent(Environment::baseEnvironment()), imports(), defs(), prefix(""), envType(EnvType::Global) {}
   Environment(Environment* parent, std::string_view prefix, bool quoteTemporaries = false)
-      : parent(parent), imports(), defs(), quotePrefixedNames(quoteTemporaries | parent->quotePrefixedNames) {
+      : parent(parent), imports(), defs(), quotePrefixedNames(quoteTemporaries | parent->quotePrefixedNames), envType(EnvType::Function) {
     std::stringstream ss;
     ss << parent->prefix << prefix << ".";
     this->prefix = ss.str();
@@ -421,9 +427,18 @@ public:
   }
 
   i32 addTemporary() {
-    i32 index = nextTemporary;
-    nextTemporary += 1;
-    return index;
+    switch (envType) {
+    case EnvType::Function: {
+      i32 index = nextTemporary;
+      nextTemporary += 1;
+      return index;
+    }
+    case EnvType::Global: {
+      i32 index = nextGlobalTemporary;
+      nextGlobalTemporary += 1;
+      return index;
+    }
+    }
   }
 
   RegisterValue makeTemporary(TypeIndex type) {

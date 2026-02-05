@@ -77,6 +77,7 @@ enum class TokenType {
   Mut,
   Opaque,
   Generic,
+  Self,
 
   // Literal
   Identifier,
@@ -97,6 +98,7 @@ enum class TokenType {
   BUILTIN_CIncludeDir,
   BUILTIN_CLink,
   BUILTIN_CImport,
+  BUILTIN_Type,
 
   // CUDA
   CudaBlockIdxX,
@@ -349,7 +351,8 @@ struct Tokenizer {
       if (peek() == '"') {
         advance();
         start += 2;
-        while (peek() != '\n') advance();
+        while (peek() != '\n')
+          advance();
         addToken(TokenType::MultiLineString);
       } else {
         addToken(TokenType::MatrixDiv);

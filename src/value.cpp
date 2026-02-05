@@ -32,4 +32,4 @@ Environment* Environment::baseEnvironment() {
 }
 
 i32 Environment::globalIndex = 0;
-
+i32 Environment::nextGlobalTemporary = 1;

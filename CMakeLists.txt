@@ -15,6 +15,16 @@ file(GLOB_RECURSE sources src/*.cpp src/*.h)
 include_directories(src)
 add_executable(blub ${sources})
 
+add_custom_command(
+    TARGET blub POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+            ${CMAKE_SOURCE_DIR}/lib
+            $<TARGET_FILE_DIR:blub>/lib
+)
+
+target_compile_definitions(blub PRIVATE
+    LIB_BLUB_DIR="${CMAKE_CURRENT_BINARY_DIR}/lib"
+)
 
 # dependencies
 include(FetchContent)

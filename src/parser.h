@@ -27,6 +27,7 @@ enum class NodeType {
   MultiLineString,
   ArgumentList,
   ParameterList,
+  ForLoop,
 };
 
 enum class UnaryOps { Not, Reference, Dereference, SliceType, MakeSlice, MultiPointerTo, MultiPointerFrom, CompilerBuiltin, Import, Minus, BitNot, Return };
@@ -128,6 +129,12 @@ struct Enum {
   TokenSpan values;
 };
 
+struct ForLoop {
+  TokenPointer capture;
+  NodeIndex iterator;
+  NodeIndex body;
+};
+
 }; // namespace Encodings
 
 using namespace Tokenization;
@@ -190,9 +197,15 @@ public:
   const TokenPointer previous(i32 behind = 1) {
     return tokens.data() + current.value - behind;
   }
+
   TokenPointer getToken(TokenIndex token) const {
     return &tokens[token.value];
   }
+
+  TokenIndex getTokenIndex(NodeIndex node) const {
+    return nodes[node.value].token;
+  }
+
   TokenPointer getToken(NodeIndex node) const {
     return toPointer(nodes[node.value].token);
   }
@@ -426,6 +439,15 @@ public:
     return {.rawType = readOptional(data[0]), .values = std::bit_cast<TokenSpan>(data.subspan(1))};
   }
 
+  NodeIndex addNode(Encodings::ForLoop node, TokenPointer token) {
+    return addNode(ASTNode{.left = toIndex(node.capture).value, .right = node.iterator.value, .token = toIndex(token), .nodeType = NodeType::ForLoop});
+  }
+
+  Encodings::ForLoop getForLoop(NodeIndex node) {
+    auto encoded = getNode(node, NodeType::ForLoop);
+    return {.capture = toPointer({encoded.left}), .iterator = {encoded.right}, .body = {node.value - 1}};
+  }
+
 public:
   bool nodeTokenPrecedes(NodeIndex a, NodeIndex b) {
     return getNode(a).token.value < getNode(b).token.value;
@@ -530,8 +552,8 @@ public:
     static std::vector<TokenType> types = {TokenType::DoubleEqual, TokenType::NotEqual};
 
     NodeIndex expr = comparison();
-    while (match(types)) {
-      TokenPointer op = previous();
+    while (auto op = match(types)) {
+      expr = addNode(Encodings::BinaryOp{.left = expr, .right = comparison(), .operation = op});
     }
     return expr;
   }
@@ -612,20 +634,6 @@ public:
   }
 
   NodeIndex call() {
-    static std::vector<TokenType> builtinTokens = {
-      TokenType::BUILTIN_RegisterType,
-      TokenType::BUILTIN_NumCast,
-      TokenType::BUILTIN_CDefine,
-      TokenType::BUILTIN_CInclude,
-      TokenType::BUILTIN_CIncludeDir,
-      TokenType::BUILTIN_CLink,
-      TokenType::BUILTIN_CImport};
-    if (auto builtin = match(builtinTokens)) {
-      consume(TokenType::LeftParen, "Compiler builtins must be called like functions");
-      auto args = argumentList();
-      return addNode(Encodings::UnaryOp{.operand = args, .operation = UnaryOps::CompilerBuiltin}, builtin);
-    }
-
     NodeIndex expr = access();
     while (auto token = match(TokenType::LeftParen)) {
       auto node = Encodings::BinaryOp{.left = expr, .right = argumentList(), .operation = token};
@@ -785,11 +793,36 @@ public:
   }
 
   NodeIndex primary() {
+    if (check(TokenType::While)) {
+      return whileLoop();
+    }
+
+    if (check(TokenType::LeftCurlyBrace)) {
+      return block();
+    }
+
+    static std::vector<TokenType> builtinTokens = {
+      TokenType::BUILTIN_RegisterType,
+      TokenType::BUILTIN_NumCast,
+      TokenType::BUILTIN_CDefine,
+      TokenType::BUILTIN_CInclude,
+      TokenType::BUILTIN_CIncludeDir,
+      TokenType::BUILTIN_CLink,
+      TokenType::BUILTIN_CImport,
+      TokenType::BUILTIN_Type,
+    };
+
+    if (auto builtin = match(builtinTokens)) {
+      consume(TokenType::LeftParen, "Compiler builtins must be called like functions");
+      auto args = argumentList();
+      return addNode(Encodings::UnaryOp{.operand = args, .operation = UnaryOps::CompilerBuiltin}, builtin);
+    }
     static std::vector<TokenType> literals = {
-      TokenType::String,        TokenType::Decimal,       TokenType::Integer,        TokenType::NullTerminatedString, TokenType::True,           TokenType::False,
-      TokenType::Identifier,    TokenType::Opaque,        TokenType::CudaBlockIdxX,  TokenType::CudaBlockIdxY,        TokenType::CudaBlockIdxZ,  TokenType::CudaBlockDimX,
-      TokenType::CudaBlockDimY, TokenType::CudaBlockDimZ, TokenType::CudaThreadIdxX, TokenType::CudaThreadIdxY,       TokenType::CudaThreadIdxZ, TokenType::CudaGridDimX,
-      TokenType::CudaGridDimY,  TokenType::CudaGridDimZ,  TokenType::Char,
+      TokenType::String,         TokenType::Decimal,        TokenType::Integer,       TokenType::NullTerminatedString, TokenType::True,
+      TokenType::False,          TokenType::Identifier,     TokenType::Opaque,        TokenType::CudaBlockIdxX,        TokenType::CudaBlockIdxY,
+      TokenType::CudaBlockIdxZ,  TokenType::CudaBlockDimX,  TokenType::CudaBlockDimY, TokenType::CudaBlockDimZ,        TokenType::CudaThreadIdxX,
+      TokenType::CudaThreadIdxY, TokenType::CudaThreadIdxZ, TokenType::CudaGridDimX,  TokenType::CudaGridDimY,         TokenType::CudaGridDimZ,
+      TokenType::Char,           TokenType::Self,
     };
 
     if (auto token = match(literals)) {
@@ -814,13 +847,17 @@ public:
         }
       }
       for (int i = 0; i < numTokens; i++) {
-        fmt::println("String tokens: {}", tokens[startToken.value + i*2].lexeme);
+        fmt::println("String tokens: {}", tokens[startToken.value + i * 2].lexeme);
       }
-      return addNode(ASTNode {.left = toIndex(token).value, .right = numTokens, .token = toIndex(token), .nodeType = NodeType::MultiLineString});
+      return addNode(ASTNode{.left = toIndex(token).value, .right = numTokens, .token = toIndex(token), .nodeType = NodeType::MultiLineString});
     }
 
     if (check(TokenType::Function)) {
       return function();
+    }
+
+    if (check(TokenType::For)) {
+      return forLoop();
     }
 
     if (check(TokenType::Struct)) {
@@ -849,13 +886,13 @@ public:
         TokenType::RightParen,
         "Condition for 'if' statement needs to be "
         "surrounded by parentheses ')'");
-      auto value = expression();
+      auto value = assignment();
 
       auto ifNode = Encodings::If{.condition = condition, .value = value};
       OptionalNode elseNode = std::nullopt;
       if (check(TokenType::Else)) {
         advance();
-        elseNode = expression();
+        elseNode = assignment();
       }
       ifNode.elseValue = elseNode;
       return addNode(ifNode, ifToken);
@@ -912,6 +949,7 @@ public:
         if (items.size() > 0) {
           consume(TokenType::Comma, "Expected separating comma between elements of array literal");
         }
+        acceptN(TokenType::StatementBreak);
 
         // Allow trailing comma
         if (check(TokenType::RightSquareBracket)) {
@@ -921,7 +959,7 @@ public:
         items.push_back(expression());
 
         // TODO: update this as new closing tokens get added
-        std::vector<TokenType> closingTokens = {
+        static std::vector<TokenType> closingTokens = {
           TokenType::StatementBreak,
           TokenType::Comma,
           TokenType::RightCurlyBrace,
@@ -934,6 +972,7 @@ public:
           NodeIndex elementType = expression();
           return addNode(Encodings::BinaryOp{.left = items[0], .right = elementType, .operation = startToken});
         }
+        acceptN(TokenType::StatementBreak);
       }
 
       consume(TokenType::RightSquareBracket, "Unclosed array literal; Expected ']'");
@@ -947,6 +986,7 @@ public:
   NodeIndex function() {
     consume(TokenType::Function, "Expected 'fn' keyword");
     auto keyword = previous();
+    accept(TokenType::String);
     // Params
     consume(TokenType::LeftParen, "Expected '(' for parameter declaration");
 
@@ -1018,7 +1058,7 @@ public:
   NodeIndex whileLoop() {
     TokenPointer token = consume(TokenType::While, "'while' loop requires 'while' keyword");
     NodeIndex condition = expression();
-    NodeIndex loopBody = block();
+    NodeIndex loopBody = assignment();
     Encodings::BinaryOp loop = {.left = condition, .right = loopBody, .operation = token};
     return addNode(loop);
   }
@@ -1086,8 +1126,19 @@ public:
   void dumpNodes() const {
     if (!(Logger::globalLevels & LogLevel::Parsing)) return;
     for (i32 i = 0; i < nodes.size(); i++) {
-      fmt::println("Node type: {}", (i32) nodeType({i}));
+      fmt::println("Node type: {}", (i32)nodeType({i}));
       locationOf({i}).underline(std::cout);
     }
+  }
+
+  NodeIndex forLoop() {
+    auto keyword = consume(TokenType::For, "For loop must begin with a 'for' keyword");
+    consume(TokenType::LeftParen, "For loop's header must be within parentheses; Expected '('");
+    auto capture = consume(TokenType::Identifier, "Expected identifier for iteration variable");
+    consume(TokenType::Colon, "Expected ':' between capture variable and iterator");
+    auto iterator = expression();
+    consume(TokenType::RightParen, "For loop's header must be within parentheses; Expected ')'");
+    auto body = expression();
+    return addNode(Encodings::ForLoop{.capture = capture, .iterator = iterator, .body = body}, keyword);
   }
 };

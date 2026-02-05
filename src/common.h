@@ -57,14 +57,13 @@ struct StringPool {
   }
 
   StringPool(i32 capacity) {
-    bytes = (char*) malloc(capacity);
+    bytes = (char*)malloc(capacity);
     this->capacity = capacity;
   }
 
   void debug() {
     std::string_view view(bytes, offset);
     std::cout << view << std::endl;
-    // fmt::println("Strings: {}", view);
   }
 
   static StringPool& inst();
@@ -101,4 +100,3 @@ struct Logger {
     }
   }
 };
-

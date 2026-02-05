@@ -24,38 +24,13 @@ Types::OptionalType Types::TypePool::dereference(TypeIndex type) {
 }
 
 template <> struct fmt::formatter<TypeIndex> : ostream_formatter {};
-std::pair<TypeIndex, Types::TupleIndex> Types::TypePool::tupleOf(std::vector<TypeIndex> types, std::queue<std::string>& globals) {
-  if (tuples.contains(types)) {
-    return tuples[types];
-  }
-
-  auto elementTypes = std::span(types);
-  auto llvmNames = types | std::views::transform([](TypeIndex x) { return LlvmName(x); });
-  TupleIndex tupleIndex{(i32)tuplePool.size()};
-
-  globals.push(fmt::format("%.tuple.{} = type {{{}}}", tupleIndex.value, fmt::join(llvmNames, ", ")));
-
-  auto typeName = types | std::views::transform([](TypeIndex x) { return TypeName(x); });
-  // TODO: sizing
-  if (types.size() == 1) {
-    if (auto enumIndex = std::get_if<EnumIndex>(&getType(types[0]))) {
-      logger("Tuple with enum index: '{}' with raw type '{}'", enumIndex->value, enumPool[enumIndex->value].rawType.value);
-    }
-  }
-  Sizing sizing;
-  tuplePool.emplace_back(elementTypes, getSizing(elementTypes), fmt::format("({})", fmt::join(typeName, ", ")));
-
-  auto typeIndex = addType(tupleIndex);
-
-  std::pair<TypeIndex, TupleIndex> cached{typeIndex, tupleIndex};
-  tuples[std::move(types)] = cached;
-  return cached;
-}
 
 void Types::TypePool::defineLLVMStruct(Types::StructIndex structIndex, std::queue<std::string>& globals) {
   Types::Struct& structDefinition = getStruct(structIndex);
   auto typeNames = structDefinition.fieldTypes | std::views::transform([this](const auto x) { return LlvmName(x); });
-  globals.push(fmt::format("{} = type {{{}}}", structDefinition.llvmName, fmt::join(structDefinition.fieldTypes | std::views::transform([this](const auto x) {return LlvmName(x);}), ", ")));
+  globals.push(
+    fmt::format(
+      "{} = type {{{}}}", structDefinition.llvmName, fmt::join(structDefinition.fieldTypes | std::views::transform([this](const auto x) { return LlvmName(x); }), ", ")));
 }
 
 void Types::TypePool::debugTypes() {
@@ -63,4 +38,44 @@ void Types::TypePool::debugTypes() {
   for (i32 j = 0; j < underlyingTypes.size(); j++) {
     fmt::println("{}: {}", j, TypeName(TypeIndex{j}));
   }
+}
+
+void Types::FunctionType::forwardDeclare(std::string_view name, std::queue<std::string>& globals) {
+  auto returnType = this->returnType;
+  Types::LLVMStorage returnStorage = Types::Pool().storageType(returnType);
+  auto parameterTypes = Types::Pool().tupleElements(this->parameters);
+
+  std::stringstream instruction;
+  fmt::print(instruction, "declare ");
+  if (Types::Pool().isLiteralReturn(returnType)) {
+    fmt::print(instruction, "{} ", LlvmName(returnType));
+  } else {
+    fmt::print(instruction, "void ");
+  }
+  fmt::print(instruction, "{}(", name);
+
+  bool hasParameters = false;
+  if (returnStorage == Types::LLVMStorage::VARIABLE) {
+    // TODO: factor out %return register
+    fmt::print(instruction, "ptr noalias sret({}) align {} %return", LlvmName(returnType), Types::Pool().getSizing(returnType).alignment.byteAlignment());
+    hasParameters = true;
+  }
+  for (auto paramType : parameterTypes) {
+    if (hasParameters) {
+      instruction << ", ";
+    }
+    hasParameters = true;
+
+    bool isLiteralParameter = Types::Pool().isLlvmLiteralType(paramType);
+    if (isLiteralParameter) {
+      fmt::print(instruction, "{}", LlvmName(paramType));
+    } else {
+      // TODO: type alignment; for now align to s64
+      fmt::print(instruction, "ptr byval({})", LlvmName(paramType));
+    }
+  }
+
+  instruction << ")";
+
+  globals.push(instruction.str());
 }

@@ -1,6 +1,7 @@
 #include "tokenizer.h"
 using namespace Tokenization;
 std::unordered_map<std::string_view, TokenType> Tokenizer::builtinFunctions = {
+  {"type",         TokenType::BUILTIN_Type        },
   {"numCast",      TokenType::BUILTIN_NumCast     },
   {"registerType", TokenType::BUILTIN_RegisterType},
   {"cDefine",      TokenType::BUILTIN_CDefine     },
@@ -30,4 +31,5 @@ std::unordered_map<std::string_view, TokenType> Tokenizer::keywords = {
   {"opaque", TokenType::Opaque  },
   {"gn",     TokenType::Generic },
   {"return", TokenType::Return  },
+  {"Self",   TokenType::Self    },
 };
