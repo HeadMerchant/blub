@@ -59,12 +59,14 @@ template <> struct fmt::formatter<IntLiteral> : fmt::formatter<int64_t> {
 };
 struct FloatLiteral {
   double value;
+  Types::Float::Precision precision;
+  FloatLiteral(double value, Types::Float::Precision precision = Types::Float::Precision::f32) : value(value), precision(precision) {}
 };
 
 template <class... Ts> struct overloaded : Ts... {
   using Ts::operator()...;
 };
-using RegisterName = std::variant<std::string_view, i32>;
+using RegisterName = std::variant<std::string_view, u32>;
 
 struct RegisterValue {
   RegisterName name;
@@ -191,14 +193,18 @@ struct Reference {
     return TypePool.isAssignable(type, targetType);
   }
 
-  Reference coerceFloat() const {
+  Reference coerceFloat(Types::Float::Precision precision) const {
     auto type = getType();
+    if (auto literal = std::get_if<FloatLiteral>(&this->value)) {
+      auto value = literal->value;
+      return Reference(FloatLiteral(value, precision));
+    }
     if (Types::Pool().isFloat(type)) return *this;
     if (auto intLit = std::get_if<IntLiteral>(&value)) {
       return Reference(FloatLiteral(intLit->value));
     }
     if (auto ref = std::get_if<Reference*>(&value)) {
-      return (*ref)->coerceFloat();
+      return (*ref)->coerceFloat(precision);
     }
     throw std::invalid_argument(fmt::format("Attempted to coerce value of type {} to float", TypeName(type)));
   }
@@ -211,7 +217,7 @@ struct Reference {
     if (!targetType) return std::nullopt;
 
     auto type = *targetType;
-    if (type != Types::Pool().floatLiteral) {
+    if (type == Types::Pool().floatLiteral) {
       if (typeA == Types::Pool().intLiteral) {
         auto value = a->unbox<IntLiteral>()->value;
         return std::make_tuple(type, Reference(FloatLiteral(value)), Reference(b));
@@ -259,7 +265,7 @@ struct Reference {
       value);
   }
 
-  std::optional<i32*> structFieldIndex() {
+  std::optional<u32*> structFieldIndex() {
     // if (i32* indexPointer = std::get_if<i32>(&value)) {
     //     return indexPointer;
     // } else {
@@ -324,7 +330,23 @@ struct Reference {
         [&o](TypeIndex x) { o << LlvmName(x); },
         [&o](bool x) { o << x; },
         [&o](StackValue x) { o << x; },
-        [&o](FloatLiteral x) { fmt::print(o, "{:#f}", x.value); },
+        [&o](FloatLiteral x) {
+          switch (x.precision) {
+          case Types::Float::Precision::f16: {
+            TODO("Support f16/half-precision floats");
+          }
+          case Types::Float::Precision::f32: {
+            auto val = std::bit_cast<uint32_t>((float)x.value);
+            auto extended = static_cast<uint64_t>(val) << 32;
+            fmt::print(o, "0x{:X}", extended);
+            break;
+          }
+          case Types::Float::Precision::f64:
+            auto val = std::bit_cast<uint64_t>(x.value);
+            fmt::print(o, "0x{:X}", val);
+            break;
+          }
+        },
         [&o](RegisterValue x) { fmt::print(o, "%{}", x.name); },
         [&o](IntLiteral x) { o << x.value; },
         [&o](Function x) { o << x.globalName; },
@@ -333,7 +355,7 @@ struct Reference {
         [&o](Global x) { fmt::print(o, "@{}", x.name); },
         [&o](Environment* x) { TODO("Can't convert environments into llvm names"); },
         [&o](Generic x) { TODO("Can't convert environments into llvm names"); },
-        [&o](Never x) { TODO("Can't convert environments into llvm names"); },
+        [&o](Never x) { o << "undef"; },
         [&o](Range x) { TODO("Can't convert ranges into llvm names"); },
       },
       x.value);
@@ -367,7 +389,7 @@ enum class EnvType { Global, Function };
 
 class Environment {
 public:
-  static i32 globalIndex;
+  static u32 globalIndex;
   std::unordered_map<std::string_view, Reference> defs;
   std::vector<Environment*> imports;
   std::string prefix;
@@ -375,10 +397,9 @@ public:
   std::vector<std::vector<std::string_view>> scope;
   EnvType envType;
 
-private:
-  i32 nextTemporary = 1;
+  u32 nextTemporary = 1;
   bool quotePrefixedNames;
-  static i32 nextGlobalTemporary;
+  static u32 nextGlobalTemporary;
 
 public:
   bool hasReturned = false;
@@ -426,15 +447,15 @@ public:
     }
   }
 
-  i32 addTemporary() {
+  u32 addTemporary() {
     switch (envType) {
     case EnvType::Function: {
-      i32 index = nextTemporary;
+      u32 index = nextTemporary;
       nextTemporary += 1;
       return index;
     }
     case EnvType::Global: {
-      i32 index = nextGlobalTemporary;
+      u32 index = nextGlobalTemporary;
       nextGlobalTemporary += 1;
       return index;
     }
@@ -450,7 +471,7 @@ public:
   }
 
   // labels only begin with "%" when used
-  std::string addLabel(std::string name, i32 index) {
+  std::string addLabel(std::string name, u32 index) {
     return fmt::format("{}{}{}", parent->prefix, name, index);
   }
 
@@ -467,10 +488,10 @@ public:
   }
 
   std::string addGlobal() {
-    return fmt::format("%{}{}", prefix, globalIndex++);
+    return fmt::format("%.anon.{}{}", prefix, globalIndex++);
   }
 
-  i32 nextGlobalIndex() {
+  u32 nextGlobalIndex() {
     return globalIndex++;
   }
 

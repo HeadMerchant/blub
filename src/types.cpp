@@ -35,7 +35,7 @@ void Types::TypePool::defineLLVMStruct(Types::StructIndex structIndex, std::queu
 
 void Types::TypePool::debugTypes() {
   fmt::println("Pool contains these types:");
-  for (i32 j = 0; j < underlyingTypes.size(); j++) {
+  for (u32 j = 0; j < underlyingTypes.size(); j++) {
     fmt::println("{}: {}", j, TypeName(TypeIndex{j}));
   }
 }
@@ -78,4 +78,8 @@ void Types::FunctionType::forwardDeclare(std::string_view name, std::queue<std::
   instruction << ")";
 
   globals.push(instruction.str());
+}
+
+bool TypeIndex::isInfer() {
+  return *this == Types::Pool().infer;
 }

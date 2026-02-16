@@ -2,9 +2,11 @@
 #include "common.h"
 #include "fmt/base.h"
 #include "fmt/ostream.h"
+#include <cctype>
 #include <iostream>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Tokenization {
@@ -85,10 +87,13 @@ enum class TokenType {
   NullTerminatedString,
   Decimal,
   Integer,
+  HexInt,
   MultiLineString,
   Char,
+  // TODO: int types
   UnsignedIntType,
   SignedIntType,
+  Undef,
 
   // Builtins
   BUILTIN_NumCast,
@@ -96,7 +101,8 @@ enum class TokenType {
   BUILTIN_CInclude,
   BUILTIN_CDefine,
   BUILTIN_CIncludeDir,
-  BUILTIN_CLink,
+  BUILTIN_Link,
+  BUILTIN_LinkDir,
   BUILTIN_CImport,
   BUILTIN_Type,
 
@@ -126,14 +132,28 @@ public:
   const TokenType type;
 
   bool isArithmeticOperation() const {
-    return type == TokenType::DoubleEqual || type == TokenType::NotEqual || type == TokenType::Lt || type == TokenType::Gt || type == TokenType::Leq ||
-           type == TokenType::Geq || type == TokenType::Plus || type == TokenType::Minus || type == TokenType::Mult || type == TokenType::Div;
+    static std::unordered_set<TokenType> ops{
+      TokenType::DoubleEqual,
+      TokenType::NotEqual,
+      TokenType::Lt,
+      TokenType::Gt,
+      TokenType::Leq,
+      TokenType::Geq,
+      TokenType::Plus,
+      TokenType::Minus,
+      TokenType::Mult,
+      TokenType::Div,
+      TokenType::Remainder,
+    };
+
+    return ops.contains(type);
   }
 };
 
 struct Tokenizer {
   static std::unordered_map<std::string_view, TokenType> builtinFunctions;
   static std::unordered_map<std::string_view, TokenType> keywords;
+  Logger log;
   bool isDone = false;
   int start = 0;
   int current = 0;
@@ -162,6 +182,8 @@ struct Tokenizer {
       if (peek() == '<') {
         advance();
         addToken(TokenType::ExclusiveRange);
+      } else if (isdigit(peek())) {
+        number(true);
       } else {
         addToken(TokenType::Dot);
       }
@@ -270,6 +292,10 @@ struct Tokenizer {
       if (peek() == '>') {
         advance();
         addToken(TokenType::ThinArrow);
+      } else if (peek() == '-' && peek(1) == '-') {
+        advance();
+        advance();
+        addToken(TokenType::Undef);
       } else {
         addToken(TokenType::Minus);
       }
@@ -368,6 +394,10 @@ struct Tokenizer {
         string(TokenType::NullTerminatedString);
       } else if (isalpha(c) || c == '_') {
         identifier();
+      } else if (c == '0' && peek() == 'x') {
+        advance();
+        start += 2;
+        hex();
       } else if (isdigit(c)) {
         number();
       } else {
@@ -380,7 +410,7 @@ struct Tokenizer {
     return sourceCode[current++];
   }
 
-  char peek(i32 ahead = 0) {
+  char peek(u32 ahead = 0) {
     return sourceCode[current + ahead];
   }
 
@@ -418,12 +448,15 @@ struct Tokenizer {
     addToken(TokenType::Identifier);
   }
 
-  void number() {
-    bool hasDecimal = false;
+  void number(bool hasDecimal = false) {
     while (!isAtEnd()) {
       char c = peek();
       if (!(isdigit(c) || c == '.')) break;
       if (c == '.') {
+        if (peek(1) == '<') {
+          addToken(TokenType::Integer);
+          return;
+        }
         if (hasDecimal) {
           crash("Encountered second decimal point when parsing number");
         }
@@ -435,6 +468,19 @@ struct Tokenizer {
     addToken(tokenType);
   }
 
+  static bool isHex(char c) {
+    return isdigit(c) || (c <= 'F' && c >= 'A') || (c <= 'f' && c >= 'a');
+  }
+
+  void hex() {
+    while (!isAtEnd()) {
+      char c = peek();
+      if (!isHex(c)) break;
+      advance();
+    }
+    addToken(TokenType::HexInt);
+  }
+
   std::string_view lexeme() const {
     return sourceCode.substr(start, current - start);
   }
@@ -444,7 +490,8 @@ struct Tokenizer {
   }
 
 public:
-  Tokenizer(const std::string_view& sourceCode, fs::path& inputFile) : sourceCode(sourceCode), tokens(), firstCharacterOnLine(), inputFilePath(inputFile) {
+  Tokenizer(const std::string_view& sourceCode, fs::path& inputFile)
+      : sourceCode(sourceCode), tokens(), firstCharacterOnLine(), inputFilePath(inputFile), log(LogLevel::Tokenize) {
     firstCharacterOnLine.push_back(0);
     while (!isAtEnd()) {
       scanToken();
@@ -453,16 +500,16 @@ public:
   }
 
   std::vector<Token> tokens;
-  std::vector<i32> firstCharacterOnLine;
+  std::vector<u32> firstCharacterOnLine;
 
   struct TokenLocation {
-    i32 line;
-    i32 column;
+    u32 line;
+    u32 column;
     std::string_view lineContents;
     std::string_view lexeme;
 
     void underline(std::ostream& out) {
-      i32 tabCount = 0;
+      u32 tabCount = 0;
       for (auto c : lineContents.substr(0, column)) {
         if (c == '\t') tabCount++;
       }
@@ -475,10 +522,10 @@ public:
 
   TokenLocation locationOf(std::string_view lexeme) const {
     // i32 charIndex = lexeme.data() - sourceCode.data();
-    i32 charIndex = lexeme.begin() - sourceCode.begin();
+    u32 charIndex = lexeme.begin() - sourceCode.begin();
     auto line = std::lower_bound(firstCharacterOnLine.begin(), firstCharacterOnLine.end(), charIndex);
-    i32 lineNumber = line - firstCharacterOnLine.begin();
-    i32 lineStartIndex = (line - 1)[0];
+    u32 lineNumber = line - firstCharacterOnLine.begin();
+    u32 lineStartIndex = (line - 1)[0];
     return {.line = lineNumber, .column = charIndex - lineStartIndex, .lineContents = sourceCode.substr(lineStartIndex, *line - lineStartIndex - 1), .lexeme = lexeme};
   }
 

@@ -7,7 +7,8 @@ std::unordered_map<std::string_view, TokenType> Tokenizer::builtinFunctions = {
   {"cDefine",      TokenType::BUILTIN_CDefine     },
   {"cInclude",     TokenType::BUILTIN_CInclude    },
   {"cIncludeDir",  TokenType::BUILTIN_CIncludeDir },
-  {"cLink",        TokenType::BUILTIN_CLink       },
+  {"link",         TokenType::BUILTIN_Link        },
+  {"linkDir",      TokenType::BUILTIN_LinkDir     },
   {"cImport",      TokenType::BUILTIN_CImport     },
 };
 

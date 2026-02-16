@@ -24,7 +24,7 @@
 struct Reference;
 
 struct TypeIndex {
-  i32 value;
+  u32 value;
   bool operator==(const TypeIndex& other) const {
     return value == other.value;
   }
@@ -32,7 +32,7 @@ struct TypeIndex {
   struct Hash {
     std::size_t operator()(const TypeIndex& k) const {
       using std::hash;
-      return hash<i32>()(k.value);
+      return hash<u32>()(k.value);
     }
 
     std::size_t operator()(const std::vector<TypeIndex>& vec) const {
@@ -48,7 +48,7 @@ struct TypeIndex {
 };
 
 namespace Types {
-const i32 NUM_BUILTINS = 14;
+const u32 NUM_BUILTINS = 14;
 const std::string_view SliceName = "%.slice";
 
 enum class LLVMStorage { VOID, LITERAL, VARIABLE };
@@ -58,30 +58,30 @@ using TypeSpan = std::span<TypeIndex>;
 
 struct TypeField {
   TypeIndex type;
-  i32 index;
+  u32 index;
 };
 
 using FieldMap = std::unordered_map<Identifier, TypeField>;
 
 struct DataIndex {
-  i32 value;
+  u32 value;
 };
 struct StructIndex {
-  i32 value;
+  u32 value;
 };
 struct EnumIndex {
-  i32 value;
+  u32 value;
 };
 
 struct TupleIndex {
-  i32 value;
+  u32 value;
   bool operator==(const TupleIndex& other) const {
     return value == other.value;
   }
 
   struct Hash {
     std::size_t operator()(const TupleIndex& k) const {
-      return std::hash<i32>()(k.value);
+      return std::hash<u32>()(k.value);
     }
   };
 };
@@ -96,7 +96,7 @@ struct FunctionType {
   struct Hash {
     std::size_t operator()(const Types::FunctionType& k) const {
       using std::hash;
-      return (hash<i32>()(k.parameters.value) ^ (hash<i32>()(k.returnType.value) << 1));
+      return (hash<u32>()(k.parameters.value) ^ (hash<u32>()(k.returnType.value) << 1));
     }
   };
 
@@ -105,17 +105,17 @@ struct FunctionType {
 
 struct Log2Alignment {
   uint8_t value;
-  static Log2Alignment fromByteSize(i32 byteSize) {
-    uint8_t log2Alignment = std::numeric_limits<i32>::digits - 1 - __builtin_clz(byteSize);
+  static Log2Alignment fromByteSize(u32 byteSize) {
+    uint8_t log2Alignment = std::numeric_limits<u32>::digits - 1 - __builtin_clz(byteSize);
     return {log2Alignment};
   }
 
-  static Log2Alignment fromBitSize(i32 bitSize) {
+  static Log2Alignment fromBitSize(u32 bitSize) {
     auto byteSize = 1 + (bitSize - 1) / 8;
     return fromByteSize(byteSize);
   }
 
-  i32 byteAlignment() const {
+  u32 byteAlignment() const {
     return 1 << value;
   }
 
@@ -126,15 +126,15 @@ struct Log2Alignment {
 };
 
 struct Sizing {
-  i32 byteSize;
-  i32 bitSize;
+  u32 byteSize;
+  u32 bitSize;
   Log2Alignment alignment;
 
-  static Sizing fromBitSize(i32 bitSize) {
+  static Sizing fromBitSize(u32 bitSize) {
     if (bitSize == 0) {
       TODO("Zero-sized structs/int sizing");
     }
-    i32 byteSize = 1 + (bitSize - 1) / 8;
+    u32 byteSize = 1 + (bitSize - 1) / 8;
     auto alignment = Log2Alignment::fromByteSize(byteSize);
 
     if (bitSize <= 8) {
@@ -150,7 +150,7 @@ struct Sizing {
     return Sizing{.byteSize = byteSize, .bitSize = bitSize, .alignment = alignment};
   }
 
-  static Sizing alignToPointer(i32 byteSize) {
+  static Sizing alignToPointer(u32 byteSize) {
     return Sizing{.byteSize = byteSize, .bitSize = byteSize * 8, .alignment = Log2Alignment::fromByteSize(8)};
   }
 };
@@ -175,7 +175,7 @@ struct Struct {
 
   bool defineField(Identifier name, TypeIndex type) {
     auto [_, success] = fields.insert({
-      name, TypeField{.type = type, .index = (i32)fields.size()}
+      name, TypeField{.type = type, .index = (u32)fields.size()}
     });
     fieldTypes.push_back(type);
 
@@ -213,16 +213,18 @@ struct PointerType {
 struct Void {};
 struct Infer {};
 struct SignedInt {
-  i32 bitSize;
+  u32 bitSize;
 };
 
 struct UnsignedInt {
-  i32 bitSize;
+  u32 bitSize;
 };
 struct Float {
-  enum { f16, f32, f64 } floatName;
-  i32 bitSize() {
-    return floatName == f16 ? 16 : floatName == f32 ? 32 : 64;
+  enum class Precision { f16, f32, f64 };
+  using enum Precision;
+  Precision precision;
+  u32 bitSize() {
+    return precision == f16 ? 16 : precision == f32 ? 32 : 64;
   }
 };
 struct Pointer {
@@ -235,7 +237,7 @@ struct Slice {
   TypeIndex dereferencedType;
 };
 struct FunctionIndex {
-  i32 index;
+  u32 index;
 };
 struct Opaque {
   std::string name;
@@ -243,7 +245,7 @@ struct Opaque {
 };
 struct SizedArray {
   TypeIndex dereferencedType;
-  i32 length;
+  u32 length;
 };
 struct Never {};
 struct IntLiteral {};
@@ -299,7 +301,7 @@ public:
   std::vector<Tuple> tuplePool;
   std::vector<TypeIndex> tupleTypeIndices;
   std::unordered_map<std::vector<TypeIndex>, std::pair<TypeIndex, TupleIndex>, TypeIndex::Hash> tuples;
-  std::unordered_map<i32, std::unordered_map<TypeIndex, TypeIndex, TypeIndex::Hash>> sizedArrays;
+  std::unordered_map<u32, std::unordered_map<TypeIndex, TypeIndex, TypeIndex::Hash>> sizedArrays;
   // TODO: function
   std::unordered_map<FunctionType, TypeIndex, FunctionType::Hash> functionCache;
 
@@ -308,19 +310,19 @@ public:
   // LLVM types
   TypeIndex _void;
   TypeIndex _bool;
-  TypeIndex u8;
-  TypeIndex u16;
-  TypeIndex u32;
-  TypeIndex u64;
-  TypeIndex s8;
-  TypeIndex s16;
-  TypeIndex s32;
-  TypeIndex s64;
-  TypeIndex f16;
-  TypeIndex f32;
-  TypeIndex f64;
-  TypeIndex usize;
-  TypeIndex isize;
+  TypeIndex _u8;
+  TypeIndex _u16;
+  TypeIndex _u32;
+  TypeIndex _u64;
+  TypeIndex _s8;
+  TypeIndex _s16;
+  TypeIndex _s32;
+  TypeIndex _s64;
+  TypeIndex _f16;
+  TypeIndex _f32;
+  TypeIndex _f64;
+  TypeIndex _usize;
+  TypeIndex _isize;
 
   // Type system jank
   TypeIndex infer;
@@ -333,7 +335,7 @@ public:
   TypeIndex rangeLiteral;
 
   TypeIndex addType(UnderlyingType type) {
-    i32 index = underlyingTypes.size();
+    u32 index = underlyingTypes.size();
     if (auto bruh = std::get_if<SignedInt>(&type)) {
       fmt::println("Int size {}", bruh->bitSize);
     }
@@ -346,21 +348,21 @@ public:
     underlyingTypes.reserve(256);
 
     _void = addType(Void{});
-    u8 = addType(UnsignedInt(8));
-    u16 = addType(UnsignedInt(16));
-    u32 = addType(UnsignedInt(32));
-    u64 = addType(UnsignedInt(64));
-    s8 = addType(SignedInt(8));
-    s16 = addType(SignedInt(16));
-    s32 = addType(SignedInt(32));
-    s64 = addType(SignedInt(64));
+    _u8 = addType(UnsignedInt(8));
+    _u16 = addType(UnsignedInt(16));
+    _u32 = addType(UnsignedInt(32));
+    _u64 = addType(UnsignedInt(64));
+    _s8 = addType(SignedInt(8));
+    _s16 = addType(SignedInt(16));
+    _s32 = addType(SignedInt(32));
+    _s64 = addType(SignedInt(64));
     // TODO: change based on target word size
-    usize = u64;
-    isize = s64;
+    _usize = _u64;
+    _isize = _s64;
 
-    f16 = addType(Float(Float::f16));
-    f32 = addType(Float(Float::f32));
-    f64 = addType(Float(Float::f64));
+    _f16 = addType(Float(Float::f16));
+    _f32 = addType(Float(Float::f32));
+    _f64 = addType(Float(Float::f64));
     _bool = addType(UnsignedInt(1));
 
     infer = addType(Infer{});
@@ -410,7 +412,7 @@ public:
   OptionalType dereference(TypeIndex type);
 
   std::pair<TypeIndex, StructIndex> makeStruct(std::string name, std::string llvmName) {
-    StructIndex structIndex{(i32)structPool.size()};
+    StructIndex structIndex{(u32)structPool.size()};
     structPool.emplace_back(name, llvmName);
     return {addType(structIndex), structIndex};
   }
@@ -440,6 +442,13 @@ public:
     return std::holds_alternative<Pointer>(underlying) || std::holds_alternative<MultiPointer>(underlying);
   }
 
+  std::optional<TypeIndex> unboxReference(TypeIndex index) {
+    if (auto pointer = std::get_if<Pointer>(&underlyingTypes[index.value])) {
+      return pointer->dereferencedType;
+    }
+    return std::nullopt;
+  }
+
   std::optional<TypeField> getFieldIndex(TypeIndex typeIndex, std::string_view fieldName) {
     auto structDefinition = getStruct(typeIndex);
     if (structDefinition) {
@@ -451,7 +460,7 @@ public:
         return TypeField{.type = multiPointerTo(slice->dereferencedType), .index = 0};
       }
       if (fieldName == "length") {
-        return TypeField{.type = usize, .index = 1};
+        return TypeField{.type = _usize, .index = 1};
       }
     }
     return std::nullopt;
@@ -470,8 +479,8 @@ public:
       return std::nullopt;
     }
 
-    if (type == intLiteral) return s32;
-    if (type == floatLiteral) return f32;
+    if (type == intLiteral) return _s32;
+    if (type == floatLiteral) return _f32;
 
     return type;
   }
@@ -509,7 +518,7 @@ public:
     }
 
     auto elementTypes = std::span(types);
-    TupleIndex tupleIndex{(i32)tuplePool.size()};
+    TupleIndex tupleIndex{(u32)tuplePool.size()};
 
     Sizing sizing;
     tuplePool.emplace_back(elementTypes, getSizing(elementTypes));
@@ -601,7 +610,7 @@ public:
     return std::nullopt;
   }
 
-  TypeIndex sizedArrayOf(TypeIndex elementType, i32 size) {
+  TypeIndex sizedArrayOf(TypeIndex elementType, u32 size) {
     auto& sizes = sizedArrays[size];
     if (sizes.contains(elementType)) {
       return sizes[elementType];
@@ -639,7 +648,7 @@ public:
   }
 
   std::pair<TypeIndex, EnumIndex> addEnum(Enum enumDefinition) {
-    EnumIndex enumIndex{(i32)enumPool.size()};
+    EnumIndex enumIndex{(u32)enumPool.size()};
     enumPool.push_back(enumDefinition);
     return {addType(enumIndex), enumIndex};
   }
@@ -660,7 +669,7 @@ public:
   }
 
   bool isFloat(TypeIndex type) {
-    return std::holds_alternative<Float>(getType(type));
+    return isAny<Float, FloatLiteral>(getType(type));
   }
 
   std::optional<Float> getFloat(TypeIndex type) {
@@ -748,10 +757,10 @@ public:
   }
 
   Sizing getSizing(TypeSpan types) {
-    i32 structSize = 0;
-    i32 structAlignment = 1;
+    u32 structSize = 0;
+    u32 structAlignment = 1;
 
-    auto alignTo = [](i32 size, i32 alignment) { return (size + alignment - 1) & ~(alignment - 1); };
+    auto alignTo = [](u32 size, u32 alignment) { return (size + alignment - 1) & ~(alignment - 1); };
 
     for (auto field : types) {
       auto fieldSizing = getSizing(field);
@@ -889,7 +898,7 @@ struct LlvmName {
         [&o](Types::Void x) { o << "void"; },
         [&o](Types::SignedInt x) { o << "i" << x.bitSize; },
         [&o](Types::UnsignedInt x) { o << "i" << x.bitSize; },
-        [&o](Types::Float x) { o << (x.floatName == Types::Float::f16 ? "half" : (x.floatName == Types::Float::f32 ? "float" : "double")); },
+        [&o](Types::Float x) { o << (x.precision == Types::Float::f16 ? "half" : (x.precision == Types::Float::f32 ? "float" : "double")); },
         [&o](Types::Pointer x) { o << "ptr"; },
         [&o](Types::MultiPointer x) { o << "ptr"; },
         [&o](Types::Slice x) { o << "%.slice"; },

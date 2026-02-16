@@ -10,13 +10,20 @@
 #include <tuple>
 #include <variant>
 
-using i32 = uint32_t;
-using i8 = uint8_t;
+using u8 = uint8_t;
+using u16 = uint16_t;
+using u32 = uint32_t;
+using u64 = uint64_t;
+// using s8 = int8_t;
+// using s16 = int16_t;
+// using s32 = int32_t;
+// using s64 = int64_t;
+
 [[noreturn]] void TODO(std::string message);
 
-i32 packInt(i8 a, i8 b, i8 c, i8 d);
+u32 packInt(u8 a, u8 b, u8 c, u8 d);
 
-std::tuple<i8, i8, i8, i8> unpackInt(i32 value);
+std::tuple<u8, u8, u8, u8> unpackInt(u32 value);
 
 template <typename... Ts, typename Variant> bool isAny(const Variant& v) {
   return ((std::holds_alternative<Ts>(v)) || ...);
@@ -39,11 +46,11 @@ namespace fs = std::filesystem;
 
 struct StringPool {
   char* bytes;
-  i32 offset;
-  i32 capacity;
+  u32 offset;
+  u32 capacity;
 
   std::string_view copy(std::string_view view) {
-    i32 newOffset = offset + view.length();
+    u32 newOffset = offset + view.length();
     if (newOffset < offset || offset >= capacity) {
       debug();
       throw std::invalid_argument("OOM in string view pool");
@@ -56,7 +63,7 @@ struct StringPool {
     return newView;
   }
 
-  StringPool(i32 capacity) {
+  StringPool(u32 capacity) {
     bytes = (char*)malloc(capacity);
     this->capacity = capacity;
   }

@@ -31,7 +31,7 @@ TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std
   qualType = StringPool::inst().copy(qualType);
 
   // Tokenize base type
-  i32 endIndex = 0;
+  u32 endIndex = 0;
   while (endIndex < qualType.size()) {
     auto c = qualType[endIndex];
     if (!(isalnum(c) || c == '_')) {
@@ -55,7 +55,7 @@ TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std
       modifiers = modifiers.substr(1);
       auto closingBracketIndex = modifiers.find(']');
       auto lengthString = modifiers.substr(0, closingBracketIndex);
-      i32 arrayLength;
+      u32 arrayLength;
       std::from_chars(lengthString.data(), lengthString.data() + lengthString.size(), arrayLength);
 
       type = Types::Pool().sizedArrayOf(type, arrayLength);
@@ -108,28 +108,50 @@ TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std
   return type;
 }
 
+u32 longestPrefixEndingIn(std::span<std::string_view> strings, char lastChar) {
+  u32 prevLength = 0;
+  u32 currentLength = 0;
+  while (true) {
+    auto start = prevLength + 1;
+    auto i = start;
+    for (; i < strings[0].length(); i++) {
+      if (strings[0][i] == lastChar) break;
+    }
+
+    if (i == prevLength + 1) break;
+
+    for (auto string : strings) {
+      if (i >= string.length()) return prevLength;
+      if (string.substr(start, i - prevLength) != strings[0].substr(start, i - prevLength)) return prevLength;
+    }
+    prevLength = i;
+  }
+
+  return prevLength;
+}
+
 Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::string>& globals) {
   static std::unordered_map<fs::path, Environment> importedFiles;
   static TypeCache cTypes = {
-    {"uint8_t",    Types::Pool().u8   },
-    {"uint16_t",   Types::Pool().u16  },
-    {"uint32_t",   Types::Pool().u32  },
-    {"uint64_t",   Types::Pool().u64  },
-    {"int8_t",     Types::Pool().s8   },
-    {"int16_t",    Types::Pool().s16  },
-    {"int32_t",    Types::Pool().s32  },
-    {"int64_t",    Types::Pool().s64  },
-    {"__uint64_t", Types::Pool().s64  },
-    {"int",        Types::Pool().s32  },
-    {"char",       Types::Pool().u8   },
-    {"size_t",     Types::Pool().usize},
-    {"void",       Types::Pool()._void},
-    {"intptr_t",   Types::Pool().usize},
-    {"uintptr_t",  Types::Pool().usize},
-    {"bool",       Types::Pool()._bool},
-    {"char",       Types::Pool().u8   },
-    {"float",      Types::Pool().f32  },
-    {"double",     Types::Pool().f64  },
+    {"uint8_t",    Types::Pool()._u8   },
+    {"uint16_t",   Types::Pool()._u16  },
+    {"uint32_t",   Types::Pool()._u32  },
+    {"uint64_t",   Types::Pool()._u64  },
+    {"int8_t",     Types::Pool()._s8   },
+    {"int16_t",    Types::Pool()._s16  },
+    {"int32_t",    Types::Pool()._s32  },
+    {"int64_t",    Types::Pool()._s64  },
+    {"__uint64_t", Types::Pool()._s64  },
+    {"int",        Types::Pool()._s32  },
+    {"char",       Types::Pool()._u8   },
+    {"size_t",     Types::Pool()._usize},
+    {"void",       Types::Pool()._void },
+    {"intptr_t",   Types::Pool()._usize},
+    {"uintptr_t",  Types::Pool()._usize},
+    {"bool",       Types::Pool()._bool },
+    {"char",       Types::Pool()._u8   },
+    {"float",      Types::Pool()._f32  },
+    {"double",     Types::Pool()._f64  },
   };
   if (importedFiles.contains(cFile)) {
     return &importedFiles[cFile];
@@ -156,13 +178,28 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
 
     Reference blubInterface;
     if (kind == "EnumDecl") {
-      i32 currentValue = 0;
-      log("Making enum '{}' with raw value '{}'", unprefixedValueName, TypeName(Types::Pool().s32));
-      auto [typeIndex, enumIndex] = Types::Pool().addEnum(Types::Pool().s32, std::string(unprefixedValueName));
+      u32 currentValue = 0;
+      log("Making enum '{}' with raw value '{}'", unprefixedValueName, TypeName(Types::Pool()._s32));
+      auto [typeIndex, enumIndex] = Types::Pool().addEnum(Types::Pool()._s32, std::string(unprefixedValueName));
+      std::vector<std::string_view> enumVals;
       if (auto inner = node["inner"]; inner.error() == SUCCESS) {
         for (auto element : inner.get_array()) {
           std::string_view valueName;
           element["name"].get(valueName);
+          if (valueName[0] == '_') continue;
+          enumVals.push_back(valueName);
+        }
+      }
+      u32 prefixLength = longestPrefixEndingIn(enumVals, '_');
+      log("Enum prefix: {}\n{}", enumVals[0].substr(0, prefixLength), fmt::join(enumVals, "\n"));
+
+      if (auto inner = node["inner"]; inner.error() == SUCCESS) {
+        for (auto element : inner.get_array()) {
+          std::string_view valueName;
+          element["name"].get(valueName);
+          if (valueName[0] != '_') {
+            valueName = valueName.substr(1 + prefixLength);
+          }
           valueName = StringPool::inst().copy(valueName);
           if (element["inner"].has_value()) {
             ondemand::array array;

@@ -33,31 +33,31 @@ enum class NodeType {
 enum class UnaryOps { Not, Reference, Dereference, SliceType, MakeSlice, MultiPointerTo, MultiPointerFrom, CompilerBuiltin, Import, Minus, BitNot, Return };
 
 struct NodeIndex {
-  i32 value;
+  u32 value;
 };
 
 struct DataIndex {
-  i32 value;
+  u32 value;
 };
 
 struct TokenIndex {
-  i32 value;
+  u32 value;
 };
 
 struct ASTNode {
-  i32 left;
-  i32 right;
+  u32 left;
+  u32 right;
   TokenIndex token;
   NodeType nodeType;
 };
 
 using TokenPointer = const Tokenization::Token*;
 using NodeList = std::vector<TokenIndex>;
-using DataSpan = std::span<i32>;
+using DataSpan = std::span<u32>;
 using ChildSpan = std::span<NodeIndex>;
 using TokenSpan = std::span<TokenIndex>;
 using OptionalNode = std::optional<NodeIndex>;
-static i32 MAX_NODE = std::numeric_limits<i32>::max();
+static u32 MAX_NODE = std::numeric_limits<u32>::max();
 
 namespace Encodings {
 struct Declaration {
@@ -126,7 +126,7 @@ using NamedValues = std::span<NamedValue>;
 
 struct Enum {
   OptionalNode rawType;
-  TokenSpan values;
+  NamedValues entries;
 };
 
 struct ForLoop {
@@ -143,7 +143,7 @@ public:
   Parser(Tokenizer& tokenizer) : tokenizer(tokenizer), tokens(tokenizer.tokens), log(LogLevel::Parsing) {}
   const Tokenizer& tokenizer;
   const std::vector<Token>& tokens;
-  std::vector<i32> extraData;
+  std::vector<u32> extraData;
   std::vector<ASTNode> nodes;
   TokenIndex current = {0};
   Logger log;
@@ -180,6 +180,25 @@ public:
     return peek(ahead).type == type;
   }
 
+  bool isClosingToken(TokenIndex ahead = {0}) {
+    // TODO: update this as new closing tokens get added
+    static std::vector<TokenType> closingTokens = {
+      TokenType::StatementBreak,
+      TokenType::Comma,
+      TokenType::RightCurlyBrace,
+      TokenType::RightSquareBracket,
+      TokenType::RightParen,
+      TokenType::RightSquareBracket,
+      TokenType::Else,
+    };
+
+    for (auto token : closingTokens) {
+      if (check(token, ahead)) return true;
+    }
+
+    return false;
+  }
+
   bool check(std::span<TokenType> types, TokenIndex ahead = {0}) {
     if (isAtEnd(ahead)) {
       return false;
@@ -194,7 +213,7 @@ public:
     return current.value + ahead.value >= tokens.size() || peek(ahead).type == TokenType::EndOfFile;
   }
 
-  const TokenPointer previous(i32 behind = 1) {
+  const TokenPointer previous(u32 behind = 1) {
     return tokens.data() + current.value - behind;
   }
 
@@ -243,11 +262,11 @@ public:
   }
 
   const NodeIndex nodeIndex() {
-    return NodeIndex{.value = (i32)nodes.size() - 1};
+    return NodeIndex{.value = (u32)nodes.size() - 1};
   }
 
   const DataIndex dataIndex() {
-    return {(i32)extraData.size() - 1};
+    return {(u32)extraData.size() - 1};
   }
 
   NodeIndex addNode(ASTNode node) {
@@ -270,22 +289,31 @@ public:
   }
 
   ChildSpan getChildren() {
-    return std::bit_cast<ChildSpan>(std::span<i32>(extraData));
+    return std::bit_cast<ChildSpan>(std::span<u32>(extraData));
   }
 
   DataIndex addData(NodeIndex node) {
     return addData(node.value);
   }
 
-  DataIndex addData(i32 data) {
-    DataIndex start = {(i32)extraData.size()};
+  DataIndex addData(u32 data) {
+    DataIndex start = {(u32)extraData.size()};
     extraData.push_back(data);
     return start;
   }
 
   DataIndex addData(DataSpan newData) {
-    DataIndex start = {(i32)extraData.size()};
+    DataIndex start = {(u32)extraData.size()};
     extraData.insert(extraData.end(), newData.begin(), newData.end());
+    return start;
+  }
+
+  DataIndex addData(Encodings::NamedValues data) {
+    DataIndex start = {(u32)extraData.size()};
+    for (auto [name, value] : data) {
+      addData(name.value);
+      addData(value.value);
+    }
     return start;
   }
 
@@ -294,7 +322,7 @@ public:
   }
 
   TokenIndex toIndex(TokenPointer token) {
-    return {(i32)(token - tokens.data())};
+    return {(u32)(token - tokens.data())};
   }
 
   TokenPointer toPointer(TokenIndex index) const {
@@ -317,7 +345,7 @@ public:
   }
 
   NodeIndex addNode(Encodings::UnaryOp node, TokenPointer token) {
-    return addNode(ASTNode{.left = static_cast<i32>(node.operation), .right = node.operand.value, .token = toIndex(token), .nodeType = NodeType::Unary});
+    return addNode(ASTNode{.left = static_cast<u32>(node.operation), .right = node.operand.value, .token = toIndex(token), .nodeType = NodeType::Unary});
   }
 
   Encodings::UnaryOp getUnary(NodeIndex index) {
@@ -335,19 +363,19 @@ public:
     return {.token = toPointer(encoded.token)};
   }
 
-  OptionalNode readOptional(i32 expectedIndex) const {
+  OptionalNode readOptional(u32 expectedIndex) const {
     if (expectedIndex == MAX_NODE) return std::nullopt;
     return NodeIndex{expectedIndex};
   }
 
-  i32 encodeOptional(OptionalNode child) {
+  u32 encodeOptional(OptionalNode child) {
     if (child.has_value()) return child->value;
     return MAX_NODE;
   }
 
   NodeIndex addNode(Encodings::FunctionLiteral node, TokenIndex token) {
     // Block stored directed after args
-    i32 nextIndex = nodes.size();
+    u32 nextIndex = nodes.size();
     auto dataIndex = addData(encodeOptional(node.returnType));
     addData(encodeOptional(node.body));
     return addNode(ASTNode{.left = dataIndex.value, .right = node.parameters.value, .token = token, .nodeType = NodeType::FunctionLiteral});
@@ -364,7 +392,7 @@ public:
   NodeIndex addNode(Encodings::Block node, TokenIndex token) {
     auto index = addData(node.elements);
 
-    return addNode({.left = index.value, .right = (i32)node.elements.size(), .token = token, .nodeType = NodeType::Block});
+    return addNode({.left = index.value, .right = (u32)node.elements.size(), .token = token, .nodeType = NodeType::Block});
   }
 
   Encodings::Block getBlock(NodeIndex node) {
@@ -408,7 +436,7 @@ public:
   NodeIndex addNode(Encodings::Struct node, TokenPointer token) {
     auto dataIndex = addData(node.children);
     addData(encodeOptional(node.implBlock));
-    return addNode(ASTNode{.left = dataIndex.value, .right = (i32)node.children.size(), .token = toIndex(token), .nodeType = NodeType::Struct});
+    return addNode(ASTNode{.left = dataIndex.value, .right = (u32)node.children.size(), .token = toIndex(token), .nodeType = NodeType::Struct});
   }
 
   Encodings::Struct getStruct(NodeIndex node) {
@@ -429,14 +457,16 @@ public:
 
   NodeIndex addNode(Encodings::Enum node, TokenPointer token) {
     auto dataIndex = addData(encodeOptional(node.rawType));
-    addData(std::bit_cast<DataSpan>(node.values));
-    return addNode(ASTNode{.left = dataIndex.value, .right = (i32)node.values.size(), .token = toIndex(token), .nodeType = NodeType::Enum});
+    addData(node.entries);
+    return addNode(ASTNode{.left = dataIndex.value, .right = (u32)node.entries.size(), .token = toIndex(token), .nodeType = NodeType::Enum});
   }
 
   Encodings::Enum getEnumDefinition(NodeIndex node) {
     auto encoded = getNode(node, NodeType::Enum);
-    auto data = std::span<i32>(extraData).subspan(encoded.left, encoded.right);
-    return {.rawType = readOptional(data[0]), .values = std::bit_cast<TokenSpan>(data.subspan(1))};
+    auto rawType = extraData[encoded.left];
+    auto entries = std::bit_cast<Encodings::NamedValues>(std::span(extraData).subspan(encoded.left + 1, encoded.right));
+
+    return {.rawType = readOptional(rawType), .entries = entries};
   }
 
   NodeIndex addNode(Encodings::ForLoop node, TokenPointer token) {
@@ -516,7 +546,7 @@ public:
   }
 
   NodeIndex expression() {
-    return equality();
+    return logicalOr();
   }
 
   NodeIndex logicalOr() {
@@ -527,14 +557,19 @@ public:
     } else {
       expr = logicalAnd();
     }
-    static std::vector<TokenType> types = {TokenType::LogicOr, TokenType::LogicAnd};
-    while (auto op = match(types)) {
-      auto node = Encodings::BinaryOp{.left = expr, .right = logicalAnd(), .operation = op};
-      expr = addNode(node);
-    }
-    if (auto op = match(TokenType::ExclusiveRange)) {
-      auto node = Encodings::BinaryOp{.left = logicalAnd(), .right = {MAX_NODE}, .operation = op};
-      expr = addNode(node);
+    while (true) {
+      if (auto op = match(TokenType::LogicOr)) {
+        auto node = Encodings::BinaryOp{.left = expr, .right = logicalAnd(), .operation = op};
+        expr = addNode(node);
+      } else if (auto op = match(TokenType::ExclusiveRange)) {
+        if (isClosingToken()) {
+          auto node = Encodings::BinaryOp{.left = expr, .right = {MAX_NODE}, .operation = op};
+          expr = addNode(node);
+        } else {
+          auto node = Encodings::BinaryOp{.left = expr, .right = logicalAnd(), .operation = op};
+          expr = addNode(node);
+        }
+      } else break;
     }
     return expr;
   }
@@ -582,8 +617,7 @@ public:
   NodeIndex addition() {
     static std::vector<TokenType> types = {TokenType::Plus, TokenType::Minus};
     auto expr = multiplication();
-    while (match(types)) {
-      TokenPointer op = previous();
+    while (auto op = match(types)) {
       auto node = Encodings::BinaryOp{.left = expr, .right = multiplication(), .operation = op};
       expr = addNode(node);
     }
@@ -591,7 +625,7 @@ public:
   }
 
   NodeIndex multiplication() {
-    static std::vector<TokenType> types = {TokenType::Mult, TokenType::Div, TokenType::ShiftRight, TokenType::ShiftLeft};
+    static std::vector<TokenType> types = {TokenType::Mult, TokenType::Div, TokenType::ShiftRight, TokenType::ShiftLeft, TokenType::Remainder};
     auto expr = unary();
     while (match(types)) {
       TokenPointer op = previous();
@@ -634,28 +668,47 @@ public:
   }
 
   NodeIndex call() {
-    NodeIndex expr = access();
-    while (auto token = match(TokenType::LeftParen)) {
-      auto node = Encodings::BinaryOp{.left = expr, .right = argumentList(), .operation = token};
-      expr = addNode(node);
+    NodeIndex expr = primary();
+    while (true) {
+      if (auto token = match(TokenType::LeftParen)) {
+        auto node = Encodings::BinaryOp{.left = expr, .right = argumentList(), .operation = token};
+        expr = addNode(node);
+      } else if (auto token = match(TokenType::LeftSquareBracket)) {
+        if (match(TokenType::RightSquareBracket)) {
+          fmt::println("We making a slice");
+          return addNode(Encodings::UnaryOp{.operand = expr, .operation = UnaryOps::MakeSlice}, token);
+        }
+        auto index = expression();
+        consume(TokenType::RightSquareBracket, "Expected a closing ']' after indexing or slicing operation");
+        expr = addNode(Encodings::BinaryOp{.left = expr, .right = index, .operation = token});
+      } else if (match(TokenType::Pointer)) {
+        auto node = Encodings::UnaryOp{.operand = expr, .operation = UnaryOps::Dereference};
+        expr = addNode(node, previous());
+      } else if (auto token = match(TokenType::Dot)) {
+        auto node = Encodings::DotAccessor({.object = expr, .fieldName = consume(TokenType::Identifier, "Expected identifier after '.' accessor")});
+        expr = addNode(node, token);
+      } else {
+        break;
+      }
     }
 
     return expr;
   }
 
-  NodeIndex argumentList(TokenType closingBracket = TokenType::RightParen) {
+  NodeIndex argumentList(TokenType closingBracket = TokenType::RightParen, bool canBeUsedAsGrouping = false) {
     bool hasMultiple = false;
     std::vector<NodeIndex> requiredInputs;
     std::vector<Encodings::NamedValue> optionalInputs;
 
     // allow combined length to fit in signed 8
-    static const i32 MAX_ARGUMENTS = 127;
+    static const u32 MAX_ARGUMENTS = 127;
     auto token = toIndex(previous());
     while (!match(closingBracket)) {
       acceptN(TokenType::StatementBreak);
       if (hasMultiple) {
         consume(TokenType::Comma, "Expected separating comma between parameters");
         acceptN(TokenType::StatementBreak);
+        canBeUsedAsGrouping = false;
       }
 
       if (match(closingBracket)) {
@@ -682,12 +735,16 @@ public:
       acceptN(TokenType::StatementBreak);
     }
 
+    if (canBeUsedAsGrouping && requiredInputs.size() == 1 && optionalInputs.empty()) {
+      return requiredInputs[0];
+    }
+
     auto dataIndex = addData(requiredInputs);
     for (auto [name, value] : optionalInputs) {
       addData(name.value);
       addData(value);
     }
-    i32 packedInputLength = packInt(requiredInputs.size(), optionalInputs.size(), 0, 0);
+    u32 packedInputLength = packInt(requiredInputs.size(), optionalInputs.size(), 0, 0);
     return addNode(ASTNode{.left = dataIndex.value, .right = packedInputLength, .token = token, .nodeType = NodeType::ArgumentList});
   }
 
@@ -730,7 +787,7 @@ public:
     auto token = toIndex(previous());
 
     // allow combined length to fit in signed 8
-    static const i32 MAX_ARGUMENTS = 127;
+    static const u32 MAX_ARGUMENTS = 127;
     while (!check(closingBracket)) {
       if (hasMultiple) {
         consume(TokenType::Comma, "Expected separating comma between parameters");
@@ -764,32 +821,8 @@ public:
 
     auto dataIndex = addData(requiredInputs);
     addData(optionalInputs);
-    i32 packedInputLength = packInt(requiredInputs.size(), optionalInputs.size(), 0, 0);
+    u32 packedInputLength = packInt(requiredInputs.size(), optionalInputs.size(), 0, 0);
     return addNode(ASTNode{.left = dataIndex.value, .right = packedInputLength, .token = token, .nodeType = NodeType::ParameterList});
-  }
-
-  NodeIndex access() {
-    NodeIndex expr = primary();
-    while (true) {
-      if (match(TokenType::Pointer)) {
-        auto node = Encodings::UnaryOp{.operand = expr, .operation = UnaryOps::Dereference};
-        expr = addNode(node, previous());
-      } else if (auto token = match(TokenType::Dot)) {
-        auto node = Encodings::DotAccessor({.object = expr, .fieldName = consume(TokenType::Identifier, "Expected identifier after '.' accessor")});
-        expr = addNode(node, token);
-      } else if (auto token = match(TokenType::LeftSquareBracket)) {
-        if (match(TokenType::RightSquareBracket)) {
-          return addNode(Encodings::UnaryOp{.operand = expr, .operation = UnaryOps::MakeSlice}, token);
-        }
-        auto index = expression();
-        consume(TokenType::RightSquareBracket, "Expected a closing ']' after indexing or slicing operation");
-        expr = addNode(Encodings::BinaryOp{.left = expr, .right = index, .operation = token});
-      } else {
-        break;
-      }
-    }
-
-    return expr;
   }
 
   NodeIndex primary() {
@@ -807,7 +840,8 @@ public:
       TokenType::BUILTIN_CDefine,
       TokenType::BUILTIN_CInclude,
       TokenType::BUILTIN_CIncludeDir,
-      TokenType::BUILTIN_CLink,
+      TokenType::BUILTIN_Link,
+      TokenType::BUILTIN_LinkDir,
       TokenType::BUILTIN_CImport,
       TokenType::BUILTIN_Type,
     };
@@ -817,12 +851,14 @@ public:
       auto args = argumentList();
       return addNode(Encodings::UnaryOp{.operand = args, .operation = UnaryOps::CompilerBuiltin}, builtin);
     }
+
     static std::vector<TokenType> literals = {
-      TokenType::String,         TokenType::Decimal,        TokenType::Integer,       TokenType::NullTerminatedString, TokenType::True,
-      TokenType::False,          TokenType::Identifier,     TokenType::Opaque,        TokenType::CudaBlockIdxX,        TokenType::CudaBlockIdxY,
-      TokenType::CudaBlockIdxZ,  TokenType::CudaBlockDimX,  TokenType::CudaBlockDimY, TokenType::CudaBlockDimZ,        TokenType::CudaThreadIdxX,
-      TokenType::CudaThreadIdxY, TokenType::CudaThreadIdxZ, TokenType::CudaGridDimX,  TokenType::CudaGridDimY,         TokenType::CudaGridDimZ,
-      TokenType::Char,           TokenType::Self,
+      TokenType::String,         TokenType::Decimal,       TokenType::Integer,        TokenType::NullTerminatedString,
+      TokenType::True,           TokenType::False,         TokenType::Identifier,     TokenType::Opaque,
+      TokenType::CudaBlockIdxX,  TokenType::CudaBlockIdxY, TokenType::CudaBlockIdxZ,  TokenType::CudaBlockDimX,
+      TokenType::CudaBlockDimY,  TokenType::CudaBlockDimZ, TokenType::CudaThreadIdxX, TokenType::CudaThreadIdxY,
+      TokenType::CudaThreadIdxZ, TokenType::CudaGridDimX,  TokenType::CudaGridDimY,   TokenType::CudaGridDimZ,
+      TokenType::Char,           TokenType::Self,          TokenType::HexInt,         TokenType::Undef,
     };
 
     if (auto token = match(literals)) {
@@ -837,10 +873,12 @@ public:
     }
 
     if (auto token = match(TokenType::MultiLineString)) {
-      i32 numTokens = 1;
+      u32 numTokens = 1;
       TokenIndex startToken = toIndex(token);
-      while (match(TokenType::StatementBreak)) {
-        if (match(TokenType::MultiLineString)) {
+      while (check(TokenType::StatementBreak)) {
+        if (check(TokenType::MultiLineString, {1})) {
+          advance();
+          advance();
           numTokens++;
         } else {
           break;
@@ -869,7 +907,7 @@ public:
     }
 
     if (auto token = match(TokenType::Return)) {
-      if (check(TokenType::StatementBreak) || check(TokenType::RightCurlyBrace) || check(TokenType::Else)) {
+      if (isClosingToken()) {
         return addNode(Encodings::UnaryOp{.operand = {MAX_NODE}, .operation = UnaryOps::Return}, token);
       }
       return addNode(Encodings::UnaryOp{.operand = expression(), .operation = UnaryOps::Return}, token);
@@ -899,32 +937,11 @@ public:
     }
 
     if (auto token = match(TokenType::LeftParen)) {
-      // if (match(TokenType::RightParen)) {
-      //   return addNode(Encodings::Block{.elements = ChildSpan()}, toIndex(token));
-      // }
-      // NodeIndex grouping = expression();
-      // if (check(TokenType::Comma)) {
-      //   std::vector<NodeIndex> tupleElements{grouping};
-      //   while (!match(TokenType::RightParen)) {
-      //     consume(TokenType::Comma, "Tuples require commas to separate elements");
-      //     if (match(TokenType::RightParen)) {
-      //       break;
-      //     }
-      //     tupleElements.push_back(expression());
-      //   }
-      //   return addNode(Encodings::Block{.elements = ChildSpan(tupleElements)}, toIndex(token));
-      // }
-      // consume(TokenType::RightParen, "Expected a closing parenthesis");
-      // return grouping;
-      return argumentList();
-      // auto grouping = argumentList();
-      // auto argsList = getArgumentList(grouping);
-      // if (argsList.requiredArgs.size() == 1 && argsList.optionalArgs.empty() && previous(2)->type == TokenType::Comma) {
-      //   nodes.pop_back();
-      //   extraData.pop_back();
-      //   return argsList.requiredArgs[0];
-      // }
-      // return grouping;
+      return argumentList(TokenType::RightParen, true);
+    }
+
+    if (check(TokenType::Import)) {
+      return import();
     }
 
     if (auto token = match(TokenType::MultiPointer)) {
@@ -932,8 +949,7 @@ public:
       return addNode(Encodings::UnaryOp{.operand = elementType, .operation = UnaryOps::MultiPointerTo}, token);
     }
 
-    if (check(TokenType::LeftSquareBracket)) {
-      TokenPointer startToken = advance();
+    if (auto startToken = match(TokenType::LeftSquareBracket)) {
 
       // Slice
       if (check(TokenType::RightSquareBracket)) {
@@ -958,16 +974,8 @@ public:
 
         items.push_back(expression());
 
-        // TODO: update this as new closing tokens get added
-        static std::vector<TokenType> closingTokens = {
-          TokenType::StatementBreak,
-          TokenType::Comma,
-          TokenType::RightCurlyBrace,
-          TokenType::RightSquareBracket,
-          TokenType::RightParen,
-        };
         // Sized array
-        if (items.size() == 1 && check(TokenType::RightSquareBracket) && !check(std::span(closingTokens), {1})) {
+        if (items.size() == 1 && check(TokenType::RightSquareBracket) && !isClosingToken({1})) {
           advance();
           NodeIndex elementType = expression();
           return addNode(Encodings::BinaryOp{.left = items[0], .right = elementType, .operation = startToken});
@@ -1063,11 +1071,11 @@ public:
     return addNode(loop);
   }
 
-  // NodeIndex import() {
-  //   auto token = consume(TokenType::Import, "import token required for import expression");
-  //   auto fileNode = consume(TokenType::String, "import must be followed by a file path string");
-  //   return addNode(Encodings::UnaryOp({.operand = {toIndex(fileNode).value}, .operation = UnaryOps::Import}), token);
-  // }
+  NodeIndex import() {
+    auto token = consume(TokenType::Import, "import token required for import expression");
+    auto fileNode = consume(TokenType::String, "import must be followed by a file path string");
+    return addNode(Encodings::UnaryOp({.operand = {toIndex(fileNode).value}, .operation = UnaryOps::Import}), token);
+  }
 
   NodeIndex enumLiteral() {
     auto token = consume(TokenType::Enum, "enum token required for enum literal");
@@ -1077,20 +1085,24 @@ public:
       rawType = expression();
       consume(TokenType::RightParen, "Expected closing parenthesis after raw value for enum");
     }
-    std::vector<TokenIndex> enumValues;
-    consume(TokenType::LeftSquareBracket, "enum literals require values to be specified between '{' and '}'");
+    std::vector<Encodings::NamedValue> enumEntries;
+    consume(TokenType::LeftCurlyBrace, "enum literals require values to be specified between '{' and '}'");
     acceptN(TokenType::StatementBreak);
-    while (!match(TokenType::RightSquareBracket)) {
-      auto token = consume(TokenType::Identifier, "enum values must be valid identifiers");
-      enumValues.push_back(toIndex(token));
+    while (!match(TokenType::RightCurlyBrace)) {
+      auto name = consume(TokenType::Identifier, "enum values must be valid identifiers");
+      if (match(TokenType::Assign)) {
+        enumEntries.push_back({toIndex(name), expression()});
+      } else {
+        enumEntries.push_back({toIndex(name), {MAX_NODE}});
+      }
       if (!match(TokenType::Comma)) {
         acceptN(TokenType::StatementBreak);
-        consume(TokenType::RightSquareBracket, "Expected closing '}' after final enum value definition");
+        consume(TokenType::RightCurlyBrace, "Expected closing '}' after final enum value definition");
         break;
       }
       acceptN(TokenType::StatementBreak);
     }
-    return addNode(Encodings::Enum{.rawType = rawType, .values = std::span(enumValues)}, token);
+    return addNode(Encodings::Enum{.rawType = rawType, .entries = std::span(enumEntries)}, token);
   }
 
   NodeIndex generic() {
@@ -1125,8 +1137,8 @@ public:
 
   void dumpNodes() const {
     if (!(Logger::globalLevels & LogLevel::Parsing)) return;
-    for (i32 i = 0; i < nodes.size(); i++) {
-      fmt::println("Node type: {}", (i32)nodeType({i}));
+    for (u32 i = 0; i < nodes.size(); i++) {
+      fmt::println("Node type: {}", (u32)nodeType({i}));
       locationOf({i}).underline(std::cout);
     }
   }

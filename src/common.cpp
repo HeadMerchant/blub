@@ -5,15 +5,15 @@
   throw std::runtime_error(message);
 }
 
-i32 packInt(i8 a, i8 b, i8 c, i8 d) {
+u32 packInt(u8 a, u8 b, u8 c, u8 d) {
   return (a << 24) | (b << 16) | (c << 8) | (d);
 }
 
-std::tuple<i8, i8, i8, i8> unpackInt(i32 value) {
+std::tuple<u8, u8, u8, u8> unpackInt(u32 value) {
   return {(value >> 24) & 255, (value >> 16) & 255, (value >> 8) & 255, value & 255};
 }
 
 StringPool& StringPool::inst() {
-  static StringPool pool(64*4096);
+  static StringPool pool(64 * 4096);
   return pool;
 }
