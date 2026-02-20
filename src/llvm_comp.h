@@ -84,7 +84,7 @@ public:
   Reference toRegister(Reference* value, std::ostream& outputFile, Environment& environment) {
     if (value->isLiteral()) {
       return *value;
-    } else if (value->canReference()) {
+    } else if (auto lValue = value->lValue()) {
       auto type = value->getType();
       auto registerIndex = environment.makeTemporary(type);
       auto registerValue = Reference(registerIndex);
@@ -117,8 +117,8 @@ public:
       if (!dereferencedType.has_value()) {
         crash(node, "Unable to dereference non-pointer type '{}'", LlvmName(registerValue->type));
       }
-      return StackValue(registerValue->name, registerValue->type);
-    } else if (value->canReference()) {
+      return StackValue(registerValue->name, registerValue->type, registerValue->scope);
+    } else if (value->lValue()) {
       Types::OptionalType dereferencedType = Types::Pool().dereference(registerValue->type);
       if (!dereferencedType.has_value()) {
         crash(node, "Unable to dereference non-pointer type '{}'", LlvmName(registerValue->type));
@@ -160,10 +160,12 @@ public:
       case TokenType::LeftSquareBracket: {
         std::vector<Reference> elements;
         auto type = Types::Pool().infer;
+        bool canUseExpected = false;
         if (context.expectedType) {
           auto expected = context.expectedType.value();
           if (auto sizedArray = Types::Pool().sizedArray(expected)) {
             type = sizedArray->dereferencedType;
+            canUseExpected = true;
           }
         }
 
@@ -192,19 +194,9 @@ public:
         } else {
           crash(nodeIndex, "Unable to construct array of type {}", TypeName(type));
         }
-        auto resultType = Types::Pool().sizedArrayOf(type, elements.size());
+        auto resultType = canUseExpected ? context.expectedType.value() : Types::Pool().sizedArrayOf(type, elements.size());
         auto llvmType = LlvmName(resultType);
-        auto zeroStore = environment.addTemporary();
-        fmt::println(
-          outputFile,
-          "%{} = alloca {}, align {}\nstore {} zeroinitializer, ptr %{}",
-          zeroStore,
-          llvmType,
-          Types::Pool().getSizing(resultType).alignment.byteAlignment(),
-          llvmType,
-          zeroStore);
-        auto resultArray = environment.makeTemporary(resultType);
-        fmt::println(outputFile, "{} = load {}, ptr %{}", resultArray, llvmType, zeroStore);
+        auto resultArray = Reference(ZeroInit{});
         i = 0;
         for (auto element : elements) {
           auto loaded = toRegister(&element, outputFile, environment);
@@ -215,7 +207,7 @@ public:
           }
           auto newArray = environment.makeTemporary(resultType);
           fmt::println(outputFile, "{} = insertvalue {} {}, {} {}, {}", newArray, LlvmName(resultType), resultArray, LlvmName(type), loaded, i);
-          resultArray = newArray;
+          resultArray.value = newArray;
           i++;
         }
 
@@ -285,24 +277,23 @@ public:
             crash(nodeIndex, "Unable to assign value of type '{}' to to variable '{}' of type '{}'", TypeName(value.getType()), assignee->name, TypeName(assignee->type));
           }
           assignee->type = *assignedType;
-          fmt::println(outputFile, "{} = alloca {}, align {}", definition, LlvmName(*assignedType), Types::Pool().getSizing(*assignedType).alignment.byteAlignment());
-
-          auto loaded = toRegister(&value, outputFile, environment);
-          fmt::println(outputFile, "store {} {}, ptr {}", LlvmName(*assignedType), loaded, definition);
-        } else if (Global* assignee = std::get_if<Global>(&std::get<Reference*>(definition.value)->value)) {
-          TypeIndex expectedType = assignee->type;
-          StatementContext valueContext{.name = std::get<Identifier>(assignee->name), .expectedType = assignee->type};
-          log("Making value: '{}: {}'", assignee->name, TypeName(assignee->type));
-          auto value = interpret(node.value, environment, outputFile, valueContext);
-          auto assignedType = value.isAssignableTo(expectedType);
-          if (!assignedType) {
-            crash(nodeIndex, "Unable to assign value of type '{}' to to variable '{}' of type '{}'", TypeName(value.getType()), assignee->name, TypeName(assignee->type));
+          auto byteAlignment = Types::Pool().getSizing(*assignedType).alignment.byteAlignment();
+          switch (assignee->scope) {
+          case ValueScope::Local: {
+            fmt::println("wtf alignment: {} {}: {}", definition, TypeName(*assignedType), byteAlignment);
+            fmt::println(outputFile, "{} = alloca {}, align {}", definition, LlvmName(*assignedType), byteAlignment);
+            break;
+          }
+          case ValueScope::Global: {
+            globalsStack.push(fmt::format("{} = global {} undef align {}", definition, LlvmName(*assignedType), byteAlignment));
+            break;
+          }
           }
 
-          globalsStack.push(fmt::format("{} = global {} undef", definition, LlvmName(*assignedType)));
-          assignee->type = *assignedType;
           auto loaded = toRegister(&value, outputFile, environment);
           fmt::println(outputFile, "store {} {}, ptr {}", LlvmName(*assignedType), loaded, definition);
+        } else {
+          crash(nodeIndex, "Internal compiler error: definition didn't result in stack or global value");
         }
       }
 
@@ -323,7 +314,7 @@ public:
         }
       }
       std::optional<Reference*> definition =
-        environment.define(name, environment.envType == EnvType::Global ? Reference(Global(node.name->lexeme, type)) : Reference(StackValue(node.name->lexeme, type)));
+        environment.define(name, Reference(StackValue(node.name->lexeme, type, environment.envType == EnvType::Global ? ValueScope::Global : ValueScope::Local)));
       if (definition) {
         return Reference(*definition);
       }
@@ -346,16 +337,18 @@ public:
         globalsStack.push(instruction.str());
         auto sliceType = Types::Pool().sliceOf(Types::Pool()._u8);
         auto lengthValue = Reference(IntLiteral(length));
-        return makeSlice(global, lengthValue, outputFile, environment);
+        auto ref = Reference(global);
+        return makeSlice(ref, lengthValue, outputFile, environment);
       }
       if (token->type == TokenType::NullTerminatedString) {
         auto [stringValue, length] = escapeSourceString(token->lexeme, token);
-        auto global = environment.makeGlobal(Types::Pool().sizedArrayOf(Types::Pool()._u8, length));
+        auto global = environment.makeGlobal(Types::Pool()._u8);
+        // auto global = environment.makeGlobal(Types::Pool().sizedArrayOf(Types::Pool()._u8, length));
         static std::string nullByte = "\\00";
         std::stringstream instruction;
         instruction << fmt::format("{} = global [{} x i8] c\"{}{}\" align 1\n", global, length + 1, stringValue, nullByte);
         globalsStack.push(instruction.str());
-        return global;
+        return Reference(RegisterValue(global.name, Types::Pool().pointerTo(global.type), global.scope));
       }
       if (token->type == TokenType::Decimal) {
         float floatValue = std::stof(token->lexeme.data());
@@ -513,7 +506,7 @@ public:
           resultType = Types::Pool()._bool;
           if (Types::Pool().isSignedInt(operandType)) binaryOperator = "icmp slt";
           else if (Types::Pool().isInt(operandType)) binaryOperator = "icmp ult";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp olt";
+          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp uolt";
           else crashBinOp(node.operation, &leftVal, &rightVal);
           break;
         }
@@ -527,7 +520,7 @@ public:
           resultType = Types::Pool()._bool;
           if (Types::Pool().isSignedInt(operandType)) binaryOperator = "icmp sgt";
           else if (Types::Pool().isInt(operandType)) binaryOperator = "icmp ugt";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp ogt";
+          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp uogt";
           else crashBinOp(node.operation, &leftVal, &rightVal);
           break;
         }
@@ -541,7 +534,7 @@ public:
           resultType = Types::Pool()._bool;
           if (Types::Pool().isSignedInt(operandType)) binaryOperator = "icmp sle";
           else if (Types::Pool().isInt(operandType)) binaryOperator = "icmp ule";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp ole";
+          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp uole";
           else crashBinOp(node.operation, &leftVal, &rightVal);
           break;
         }
@@ -555,7 +548,7 @@ public:
           resultType = Types::Pool()._bool;
           if (Types::Pool().isSignedInt(operandType)) binaryOperator = "icmp sge";
           else if (Types::Pool().isInt(operandType)) binaryOperator = "icmp uge";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp oge";
+          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp uoge";
           else crashBinOp(node.operation, &leftVal, &rightVal);
           break;
         }
@@ -568,13 +561,13 @@ public:
           }
           resultType = Types::Pool()._bool;
           if (Types::Pool().isInt(operandType) || Types::Pool().isPointer(operandType)) binaryOperator = "icmp eq";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp eq";
+          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp ueq";
           else if (auto enumDef = Types::Pool().getEnum(operandType)) {
             auto rawType = (*enumDef)->rawType;
             if (Types::Pool().isInt(rawType)) {
               binaryOperator = "icmp eq";
             } else if (Types::Pool().isFloat(rawType)) {
-              binaryOperator = "fcmp eq";
+              binaryOperator = "fcmp ueq";
             } else {
               crashBinOp(node.operation, &leftVal, &rightVal);
             }
@@ -590,13 +583,13 @@ public:
           }
           resultType = Types::Pool()._bool;
           if (Types::Pool().isInt(operandType) || Types::Pool().isPointer(operandType)) binaryOperator = "icmp ne";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp ne";
+          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp une";
           else if (auto enumDef = Types::Pool().getEnum(operandType)) {
             auto rawType = (*enumDef)->rawType;
             if (Types::Pool().isInt(rawType)) {
               binaryOperator = "icmp ne";
             } else if (Types::Pool().isFloat(rawType)) {
-              binaryOperator = "fcmp ne";
+              binaryOperator = "fcmp une";
             } else {
               crashBinOp(node.operation, &leftVal, &rightVal);
             }
@@ -649,9 +642,6 @@ public:
         if (auto stackValue = assignee.lValue()) {
           lValue.value = stackValue.value();
           leftType = stackValue.value().type;
-        } else if (auto global = assignee.unbox<Global>()) {
-          lValue.value = *global;
-          leftType = global->type;
         } else {
           crash(nodeIndex, "Can't assign to literal");
         }
@@ -797,7 +787,7 @@ public:
         } else if (auto sizedArray = Types::Pool().sizedArray(leftType)) {
           auto length = IntLiteral(sizedArray->length);
           auto elementType = sizedArray->dereferencedType;
-          if (!leftVal.canReference()) {
+          if (!leftVal.lValue()) {
             TODO("Indexing sized array not in stack value");
           }
 
@@ -815,8 +805,6 @@ public:
             Reference dataPointer;
             if (auto stackVal = leftVal.unbox<StackValue>()) {
               dataPointer.value = StackValue(stackVal->name, elementType);
-            } else if (auto global = leftVal.unbox<Global>()) {
-              dataPointer.value = Global(global->name, elementType);
             } else {
               crash(nodeIndex, "Compiler state failure when slicing array");
             }
@@ -1012,6 +1000,29 @@ public:
         fmt::println(outputFile, "{} = phi i1 [{}, {}], [{}, {}]", result, leftRegister, labelStart, rightRegister, labelTrue);
         return Reference(result);
       }
+      case TokenType::BUILTIN_Align: {
+        auto boxedAlignment = interpret(node.left, environment, outputFile, context);
+        auto boxedType = interpret(node.right, environment, outputFile, context);
+
+        u64 byteAlign;
+        if (auto intLit = boxedAlignment.unbox<IntLiteral>()) {
+          byteAlign = intLit->value;
+          if ((byteAlign & (byteAlign - 1)) != 0) {
+            crash(node.left, "Alignment value must be a power-of-two, but was {}", byteAlign);
+          }
+        } else {
+          crash(node.left, "Alignment argument needs to be a compile-time known integer");
+        }
+
+        TypeIndex baseTypeIndex;
+        if (auto typeIndex = boxedType.unboxType()) {
+          baseTypeIndex = *typeIndex;
+        } else {
+          crash(node.right, "Type argument for @align must be a compile-time known type");
+        }
+        auto typeIndex = Types::Pool().alignType(baseTypeIndex, Types::Log2Alignment::fromByteSize(byteAlign));
+        return Reference(typeIndex);
+      }
       default:
         crash(nodeIndex, "Unknown binary operation {}", node.operation->lexeme);
       }
@@ -1020,6 +1031,7 @@ public:
       auto node = parser.getFunctionLiteral(nodeIndex);
       TypeIndex returnType = Types::Pool()._void;
       if (node.returnType.has_value()) {
+        StatementContext context;
         auto boxedReturnType = interpret(node.returnType.value(), environment, outputFile, context).unboxType();
         if (!boxedReturnType) {
           crash(nodeIndex, "Return type of function must be a compile-time known type");
@@ -1122,6 +1134,36 @@ public:
           return resultName;
           break;
         }
+        case TokenType::BUILITN_BitCast: {
+          auto arguments = argumentNodes | std::views::transform(
+                                             [this, &environment, &outputFile, &context](const NodeIndex x) { return interpret(x, environment, outputFile, context); });
+          if (!(arguments.size() == 1 || arguments.size() == 2)) {
+            crash(nodeIndex, "Expected 1 or 2 arguments for builtin @bitCast, but received {}", arguments.size());
+          }
+          auto object = arguments[0];
+          TypeIndex targetType;
+          if (arguments.size() == 2) {
+            if (auto type = arguments[1].unboxType()) {
+              targetType = *type;
+            } else {
+              crash(argumentNodes[1], "Second arguments for builtin extend needs to be a compile-time known type");
+            }
+          } else if (context.expectedType) {
+            targetType = context.expectedType.value();
+          } else {
+            crash(nodeIndex, "Builtin @numCast must either take a second argument for the target type, or have an inferrable target");
+          }
+
+          auto objectLiteral = toRegister(&object, outputFile, environment);
+
+          auto objectType = arguments[0].getType();
+
+          Reference resultName(environment.makeTemporary(targetType));
+          fmt::println(outputFile, "{} = bitcast {} {} to {}", resultName, LlvmName(objectType), objectLiteral, LlvmName(targetType));
+
+          return resultName;
+          break;
+        }
         case TokenType::BUILTIN_CImport: {
           if (argumentNodes.size() != 2) {
             crash(nodeIndex, "Builtin '@cImport' must take 2 literal arguments, but was given {}", argumentNodes.size());
@@ -1218,8 +1260,10 @@ public:
         auto value = interpret(node.operand, environment, outputFile, context);
         if (auto type = value.unboxType()) {
           return Reference(Types::Pool().pointerTo(*type));
-        } else if (auto stackVal = value.lValue()) {
-          return Reference(RegisterValue(stackVal->name, Types::Pool().pointerTo(stackVal->type)));
+        } else if (auto lValue = value.lValue()) {
+          auto address = Reference(RegisterValue(lValue->name, Types::Pool().pointerTo(lValue->type), lValue->scope));
+          parser.locationOf(node.operand).underline(std::cout);
+          return address;
         } else {
           crash(node.operand, "Unable to make reference to non-stack value or type");
         }
@@ -1266,7 +1310,7 @@ public:
         auto value = interpret(node.operand, environment, outputFile, context);
         auto type = value.getType();
         if (auto sizedArray = Types::Pool().sizedArray(type)) {
-          if (!value.canReference()) {
+          if (!value.lValue()) {
             crash(nodeIndex, "Unable to make slice from array stored in temporary value");
           }
           auto type = Types::Pool().multiPointerTo(sizedArray->dereferencedType);
@@ -1325,10 +1369,6 @@ public:
             auto copy = *stackVal;
             copy.type = sizedArray->dereferencedType;
             value.value = copy;
-          } else if (auto global = value.unbox<Global>()) {
-            auto copy = *global;
-            copy.type = sizedArray->dereferencedType;
-            value.value = copy;
           } else {
             crash(nodeIndex, "Unable to make slice from array stored in temporary value");
           }
@@ -1384,6 +1424,7 @@ public:
       if (conditionType != type) {
         crash(node.condition, "Condition of an 'if' statement needs to be of type 'bool'");
       }
+      auto loadedCondition = toRegister(&condition, outputFile, environment);
 
       auto comptime = condition.isComptime();
       auto blockIndex = environment.addTemporary();
@@ -1436,7 +1477,6 @@ public:
       // Results
       auto voidType = Types::Pool()._void;
       auto hasResultType = (resultType.value_or(voidType) != voidType) && node.elseValue.has_value();
-      auto loadedCondition = toRegister(&condition, outputFile, environment);
 
       if (node.elseValue.has_value()) {
         fmt::println(outputFile, "br i1 {}, label %{}, label %{}", loadedCondition, ifLabel, elseLabel);
@@ -1456,6 +1496,7 @@ public:
           fmt::println(outputFile, "br label %{}", endLabel);
         }
       }
+
       if (ifReturns && elseReturns) {
         environment.hasReturned = true;
         return Reference(Never{});
@@ -1463,12 +1504,10 @@ public:
 
       fmt::println(outputFile, "{}:", endLabel);
 
-      if (resultType) {
+      if (resultType && resultType != Types::Pool()._void) {
         auto type = resultType.value();
         auto phiResult = Reference(environment.makeTemporary(type));
-        fmt::println(
-          "Bruh we making {}; total {}; if {}; else {}", TypeName(type), TypeName(*context.expectedType), TypeName(ifResult.getType()), TypeName(elseResult.getType()));
-        fmt::println(outputFile, "{}  = phi {} [{}, %{}], [{}, %{}]", phiResult, LlvmName(type), ifLabel, ifResult, elseLabel, elseResult);
+        fmt::println(outputFile, "{}  = phi {} [{}, %{}], [{}, %{}]", phiResult, LlvmName(type), ifResult, ifLabel, elseResult, elseLabel);
         return phiResult;
       }
 
@@ -1586,7 +1625,7 @@ public:
       auto [fieldType, fieldIndex] = boxedField.value();
       auto fieldPointer = environment.addTemporary();
 
-      if (object.canReference()) {
+      if (object.lValue()) {
         auto result = Reference(StackValue(fieldPointer, fieldType));
         fmt::println(outputFile, "{} = getelementptr inbounds {}, ptr {}, i32 0, i32 {}", result, LlvmName(type), object, fieldIndex);
         return result;
@@ -1687,7 +1726,8 @@ public:
       globalsStack.push(instruction.str());
       auto sliceType = Types::Pool().sliceOf(Types::Pool()._u8);
       auto lengthValue = Reference(IntLiteral(totalLength));
-      return makeSlice(global, lengthValue, outputFile, environment);
+      Reference ref(global);
+      return makeSlice(ref, lengthValue, outputFile, environment);
     }
     case NodeType::ForLoop: {
       auto node = parser.getForLoop(nodeIndex);
@@ -2031,24 +2071,14 @@ public:
     std::vector<bool> setArguments(fieldTypes.size(), false);
 
     bool isInitialized = false;
-    auto zeroStore = environment.addTemporary();
-    fmt::println(
-      outputFile,
-      "%{} = alloca {}, align {}\nstore {} zeroinitializer, ptr %{}",
-      zeroStore,
-      structLlvmName,
-      Types::Pool().getSizing(type).alignment.byteAlignment(),
-      structLlvmName,
-      zeroStore);
-    RegisterValue structVal = environment.makeTemporary(type);
-    fmt::println(outputFile, "{} = load {}, ptr %{}", structVal, structLlvmName, zeroStore);
+    Reference structVal = Reference(ZeroInit{});
     // TODO: default values that aren't zero initialized; using 0 for now to avoid initializing all fields in C structs
     for (u32 i = 0; i < arguments.size(); i++) {
       auto fieldValue = toRegister(&arguments[i], outputFile, environment);
       auto fieldTypeLlvmName = LlvmName((*structDefinition)->fieldTypes[i]);
       setArguments[i] = true;
-      Reference prevStruct(RegisterValue(structVal.name));
-      structVal.name = environment.addTemporary();
+      Reference prevStruct = structVal;
+      structVal.value = environment.makeTemporary(type);
       Reference ref(structVal);
       fmt::println(outputFile, "{} = insertvalue {} {}, {} {}, {}", ref, structLlvmName, prevStruct, fieldTypeLlvmName, fieldValue, i);
     }
@@ -2087,8 +2117,8 @@ public:
         crash(argToken, "Duplicate assignment for field '{}'", name);
       }
       setArguments[i] = field->index;
-      RegisterValue prevStruct{structVal.name};
-      structVal.name = environment.addTemporary();
+      Reference prevStruct = structVal;
+      structVal.value = environment.makeTemporary(type);
       fmt::println(outputFile, "{} = insertvalue {} {}, {} {}, {}", structVal, structLlvmName, prevStruct, LlvmName(field->type), value, field->index);
     }
     return Reference(structVal);

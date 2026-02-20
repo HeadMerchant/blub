@@ -255,6 +255,10 @@ struct Environment {};
 // TODO: implement params and return type
 struct Generic {};
 struct RangeLiteral {};
+struct AlignedType {
+  TypeIndex baseType;
+  Log2Alignment newAlignment;
+};
 using UnderlyingType = std::variant<
   Void,
   SignedInt,
@@ -276,7 +280,8 @@ using UnderlyingType = std::variant<
   Type,
   Environment,
   Generic,
-  RangeLiteral>;
+  RangeLiteral,
+  AlignedType>;
 template <class... Ts> struct overloaded : Ts... {
   using Ts::operator()...;
 };
@@ -304,6 +309,7 @@ public:
   std::unordered_map<u32, std::unordered_map<TypeIndex, TypeIndex, TypeIndex::Hash>> sizedArrays;
   // TODO: function
   std::unordered_map<FunctionType, TypeIndex, FunctionType::Hash> functionCache;
+  std::unordered_map<TypeIndex, std::array<TypeIndex, 9>, TypeIndex::Hash> alignmentTypes;
 
   // TODO: enum
 
@@ -336,9 +342,6 @@ public:
 
   TypeIndex addType(UnderlyingType type) {
     u32 index = underlyingTypes.size();
-    if (auto bruh = std::get_if<SignedInt>(&type)) {
-      fmt::println("Int size {}", bruh->bitSize);
-    }
     underlyingTypes.push_back(type);
     return {index};
   }
@@ -604,6 +607,9 @@ public:
   }
 
   std::optional<SizedArray> sizedArray(TypeIndex type) {
+    if (auto boxed = std::get_if<AlignedType>(&getType(type))) {
+      return sizedArray(boxed->baseType);
+    }
     if (auto boxed = std::get_if<SizedArray>(&getType(type))) {
       return *boxed;
     }
@@ -752,7 +758,14 @@ public:
         [](RangeLiteral) {
           TODO("Error for sizing Range type");
           return Sizing{};
-        }},
+        },
+        [this](AlignedType x) {
+          Sizing sizing = getSizing(x.baseType);
+          sizing.alignment = x.newAlignment;
+          fmt::println("wtf sizing: {}", sizing.alignment.byteAlignment());
+          return sizing;
+        },
+      },
       getType(type));
   }
 
@@ -776,12 +789,28 @@ public:
   }
 
   OptionalType coerce(TypeIndex a, TypeIndex b) {
+    auto aType = getType(a);
+    auto bType = getType(b);
+    // {
+    //   auto unboxedA = a;
+    //   if (auto aAligned = std::get_if<AlignedType>(&aType)) {
+    //     unboxedA = aAligned->baseType;
+    //     aType = getType(aAligned->baseType);
+    //   }
+    //   auto unboxedB = b;
+    //   if (auto bAligned = std::get_if<AlignedType>(&bType)) {
+    //     unboxedB = bAligned->baseType;
+    //     bType = getType(bAligned->baseType);
+    //   }
+    //   if (unboxedA == unboxedB) {
+    //     return a;
+    //   }
+    // }
+
     if (a == b) {
       return a;
     }
 
-    auto aType = getType(a);
-    auto bType = getType(b);
     if (subTypes(aType, bType)) return b;
     if (subTypes(bType, aType)) return a;
 
@@ -813,6 +842,26 @@ public:
       fieldTypes.push_back(field.type);
     }
     structDefinition.sizing = getSizing(TypeSpan(fieldTypes));
+  }
+
+  TypeIndex alignType(TypeIndex baseType, Log2Alignment alignment) {
+    auto underlyingType = getType(baseType);
+    if (auto existingAligned = std::get_if<AlignedType>(&underlyingType)) {
+      baseType = existingAligned->baseType;
+    }
+    auto baseAlignment = getSizing(baseType).alignment.value;
+    if (baseAlignment == alignment.value) {
+      return baseType;
+    }
+
+    if (baseAlignment < alignment.value) {
+      auto index = alignment.value - 1;
+      auto typeIndex = addType(AlignedType{.baseType = baseType, .newAlignment = alignment});
+      alignmentTypes[baseType][index] = typeIndex;
+      return typeIndex;
+    } else {
+      TODO("Error for shrinking alignment");
+    }
   }
 
   void debugTypes();
@@ -876,7 +925,12 @@ struct TypeName {
         [&o](Types::Generic) { o << "generic"; },
         [&o](Types::Environment) { o << "environment"; },
         [&o](Types::Type) { o << "type"; },
-        [&o](Types::RangeLiteral) { o << "range"; }},
+        [&o](Types::RangeLiteral) { o << "range"; },
+        [&o](Types::AlignedType x) {
+          fmt::print(o, "@align({}) ", x.newAlignment.byteAlignment());
+          print(o, x.baseType);
+        },
+      },
       type);
   }
 
@@ -930,7 +984,9 @@ struct LlvmName {
         [&o](Types::Generic) { TODO("Error for llvm name for float literal type"); },
         [&o](Types::Environment) { TODO("Error for llvm name for float literal type"); },
         [&o](Types::Type) { TODO("Error for llvm name for type literal type"); },
-        [&o](Types::RangeLiteral) { TODO("Error for llvm name for range literal type"); }},
+        [&o](Types::RangeLiteral) { TODO("Error for llvm name for range literal type"); },
+        [&o](Types::AlignedType x) { format(o, x.baseType); },
+      },
       type);
   }
 

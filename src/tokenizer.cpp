@@ -3,6 +3,7 @@ using namespace Tokenization;
 std::unordered_map<std::string_view, TokenType> Tokenizer::builtinFunctions = {
   {"type",         TokenType::BUILTIN_Type        },
   {"numCast",      TokenType::BUILTIN_NumCast     },
+  {"bitCast",      TokenType::BUILITN_BitCast     },
   {"registerType", TokenType::BUILTIN_RegisterType},
   {"cDefine",      TokenType::BUILTIN_CDefine     },
   {"cInclude",     TokenType::BUILTIN_CInclude    },
@@ -10,6 +11,7 @@ std::unordered_map<std::string_view, TokenType> Tokenizer::builtinFunctions = {
   {"link",         TokenType::BUILTIN_Link        },
   {"linkDir",      TokenType::BUILTIN_LinkDir     },
   {"cImport",      TokenType::BUILTIN_CImport     },
+  {"align",        TokenType::BUILTIN_Align       },
 };
 
 std::unordered_map<std::string_view, TokenType> Tokenizer::keywords = {

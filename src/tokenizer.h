@@ -97,6 +97,7 @@ enum class TokenType {
 
   // Builtins
   BUILTIN_NumCast,
+  BUILITN_BitCast,
   BUILTIN_RegisterType,
   BUILTIN_CInclude,
   BUILTIN_CDefine,
@@ -105,6 +106,7 @@ enum class TokenType {
   BUILTIN_LinkDir,
   BUILTIN_CImport,
   BUILTIN_Type,
+  BUILTIN_Align,
 
   // CUDA
   CudaBlockIdxX,

@@ -68,12 +68,14 @@ template <class... Ts> struct overloaded : Ts... {
 };
 using RegisterName = std::variant<std::string_view, u32>;
 
+enum class ValueScope { Local, Global };
 struct RegisterValue {
   RegisterName name;
   TypeIndex type;
+  ValueScope scope;
 
   friend std::ostream& operator<<(std::ostream& o, const RegisterValue& x) {
-    fmt::print(o, "%{}", x.name);
+    fmt::print(o, "{}{}", x.scope == ValueScope::Local ? "%" : "@", x.name);
     return o;
   }
 };
@@ -83,9 +85,10 @@ class StackValue {
 public:
   RegisterName name;
   TypeIndex type;
+  ValueScope scope;
 
   friend std::ostream& operator<<(std::ostream& o, const StackValue& x) {
-    fmt::print(o, "%{}", x.name);
+    fmt::print(o, "{}{}", x.scope == ValueScope::Local ? "%" : "@", x.name);
     return o;
   }
 };
@@ -112,12 +115,6 @@ class BoundFunction {
 public:
   Reference& self;
   Function& method;
-};
-
-class Global {
-public:
-  RegisterName name;
-  TypeIndex type;
 };
 
 struct Never {};
@@ -149,8 +146,24 @@ struct Range {
 };
 
 struct Reference;
-using UnderlyingValue =
-  std::variant<TypeIndex, Environment*, Generic, bool, StackValue, FloatLiteral, RegisterValue, IntLiteral, Function, BoundFunction, Reference*, Global, Never, Range>;
+struct VoidRef {};
+struct ZeroInit {};
+using UnderlyingValue = std::variant<
+  TypeIndex,
+  Environment*,
+  Generic,
+  bool,
+  StackValue,
+  FloatLiteral,
+  RegisterValue,
+  IntLiteral,
+  Function,
+  BoundFunction,
+  Reference*,
+  Never,
+  Range,
+  VoidRef,
+  ZeroInit>;
 
 struct Reference {
   using Opt = Types::OptionalType;
@@ -168,7 +181,7 @@ struct Reference {
   }
 
   static Reference Void() {
-    return Reference(Types::Pool()._void);
+    return Reference(VoidRef{});
   }
 
   Opt unboxType() {
@@ -247,21 +260,21 @@ struct Reference {
         [](Generic) { return Types::Pool().generic; },
         [](Function x) { return Types::Pool().addFunction(x.type); },
         [](BoundFunction x) { return Types::Pool().addFunction(x.method.type); },
-        [](Global x) { return x.type; },
         [](Range x) { return Types::Pool().rangeLiteral; },
+        [](VoidRef x) { return Types::Pool()._void; },
+        [](ZeroInit) { return Types::Pool().never; },
       },
       value);
-  }
-
-  bool canReference() const {
-    return std::visit(
-      overloaded{[](StackValue x) { return true; }, [](Global x) { return true; }, [](Reference* x) { return x->canReference(); }, [](auto& x) { return false; }}, value);
   }
 
   using OptStack = std::optional<StackValue>;
   OptStack lValue() {
     return std::visit(
-      overloaded{[](StackValue x) -> OptStack { return x; }, [](Reference* x) -> OptStack { return x->lValue(); }, [](auto x) -> OptStack { return std::nullopt; }},
+      overloaded{
+        [](StackValue x) -> OptStack { return x; },
+        [](Reference* x) -> OptStack { return x->lValue(); },
+        [](auto x) -> OptStack { return std::nullopt; },
+      },
       value);
   }
 
@@ -336,27 +349,31 @@ struct Reference {
             TODO("Support f16/half-precision floats");
           }
           case Types::Float::Precision::f32: {
-            auto val = std::bit_cast<uint32_t>((float)x.value);
-            auto extended = static_cast<uint64_t>(val) << 32;
-            fmt::print(o, "0x{:X}", extended);
+            fmt::print(o, "{:a}", (float)x.value);
+            // auto val = std::bit_cast<uint32_t>((float)x.value);
+            // auto extended = static_cast<uint64_t>(val) << 32;
+            // fmt::print(o, "0x{:016X}", extended);
             break;
           }
-          case Types::Float::Precision::f64:
-            auto val = std::bit_cast<uint64_t>(x.value);
-            fmt::print(o, "0x{:X}", val);
+          case Types::Float::Precision::f64: {
+            fmt::print(o, "{:a}", x.value);
+            // auto val = std::bit_cast<uint64_t>(x.value);
+            // fmt::print(o, "0x{:016X}", val);
             break;
+          }
           }
         },
-        [&o](RegisterValue x) { fmt::print(o, "%{}", x.name); },
+        [&o](RegisterValue x) { o << x; },
         [&o](IntLiteral x) { o << x.value; },
         [&o](Function x) { o << x.globalName; },
         [&o](BoundFunction x) { o << x.method.globalName; },
         [&o](Reference* x) { o << *x; },
-        [&o](Global x) { fmt::print(o, "@{}", x.name); },
         [&o](Environment* x) { TODO("Can't convert environments into llvm names"); },
         [&o](Generic x) { TODO("Can't convert environments into llvm names"); },
         [&o](Never x) { o << "undef"; },
         [&o](Range x) { TODO("Can't convert ranges into llvm names"); },
+        [&o](VoidRef x) { TODO("Can't convert void into llvm name"); },
+        [&o](ZeroInit) { o << "zeroinitializer"; },
       },
       x.value);
     return o;
@@ -475,8 +492,8 @@ public:
     return fmt::format("{}{}{}", parent->prefix, name, index);
   }
 
-  Reference makeGlobal(TypeIndex type) {
-    return Reference(Global(globalIndex++, type));
+  StackValue makeGlobal(TypeIndex type) {
+    return StackValue(globalIndex++, type, ValueScope::Global);
   }
 
   std::string addConstant(std::string_view name) {

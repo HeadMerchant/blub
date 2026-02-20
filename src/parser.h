@@ -173,6 +173,23 @@ public:
       advance();
   }
 
+  TokenPointer acceptUntil(TokenType filler, TokenType expected) {
+    u32 ahead = 0;
+    auto c = peek({ahead});
+    while (!isAtEnd()) {
+      auto c = peek({ahead});
+      if (c.type == filler) {
+        ahead++;
+      } else if (c.type == expected) {
+        current.value += ahead;
+        return advance();
+      } else {
+        return nullptr;
+      }
+    }
+    crash(advance(), "End of file while searching for token type {}", static_cast<u32>(expected));
+  }
+
   bool check(TokenType type, TokenIndex ahead = {0}) {
     if (isAtEnd(ahead)) {
       return false;
@@ -510,8 +527,7 @@ public:
 
     NodeIndex expr = expression();
 
-    if (check(TokenType::Assign)) {
-      TokenPointer token = advance();
+    if (auto token = match(TokenType::Assign)) {
       auto value = expression();
       return addNode(Encodings::BinaryOp{.left = expr, .right = value, .operation = token});
     }
@@ -837,6 +853,7 @@ public:
     static std::vector<TokenType> builtinTokens = {
       TokenType::BUILTIN_RegisterType,
       TokenType::BUILTIN_NumCast,
+      TokenType::BUILITN_BitCast,
       TokenType::BUILTIN_CDefine,
       TokenType::BUILTIN_CInclude,
       TokenType::BUILTIN_CIncludeDir,
@@ -928,8 +945,7 @@ public:
 
       auto ifNode = Encodings::If{.condition = condition, .value = value};
       OptionalNode elseNode = std::nullopt;
-      if (check(TokenType::Else)) {
-        advance();
+      if (auto elseToken = acceptUntil(TokenType::StatementBreak, TokenType::Else)) {
         elseNode = assignment();
       }
       ifNode.elseValue = elseNode;
@@ -986,6 +1002,15 @@ public:
       consume(TokenType::RightSquareBracket, "Unclosed array literal; Expected ']'");
       auto node = Encodings::Block{.elements = ChildSpan(items)};
       return addNode(node, toIndex(startToken));
+    }
+
+    if (auto token = match(TokenType::BUILTIN_Align)) {
+      consume(TokenType::LeftParen, "Builtin '@align' must be called like a function with 1 argument");
+      auto alignmentValue = expression();
+      consume(TokenType::RightParen, "Builtin '@align' must be called like a function with 1 argument");
+      auto type = expression();
+
+      return addNode(Encodings::BinaryOp{.left = alignmentValue, .right = type, .operation = token});
     }
 
     crash(&latestToken(), "Unable to parse; ending");
