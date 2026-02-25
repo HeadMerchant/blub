@@ -27,7 +27,6 @@ template <> struct fmt::formatter<TypeIndex> : ostream_formatter {};
 
 void Types::TypePool::defineLLVMStruct(Types::StructIndex structIndex, std::queue<std::string>& globals) {
   Types::Struct& structDefinition = getStruct(structIndex);
-  auto typeNames = structDefinition.fieldTypes | std::views::transform([this](const auto x) { return LlvmName(x); });
   globals.push(
     fmt::format(
       "{} = type {{{}}}", structDefinition.llvmName, fmt::join(structDefinition.fieldTypes | std::views::transform([this](const auto x) { return LlvmName(x); }), ", ")));

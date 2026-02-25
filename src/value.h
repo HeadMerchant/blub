@@ -344,24 +344,22 @@ struct Reference {
         [&o](bool x) { o << x; },
         [&o](StackValue x) { o << x; },
         [&o](FloatLiteral x) {
+          double exactValue;
           switch (x.precision) {
           case Types::Float::Precision::f16: {
             TODO("Support f16/half-precision floats");
           }
           case Types::Float::Precision::f32: {
-            fmt::print(o, "{:a}", (float)x.value);
-            // auto val = std::bit_cast<uint32_t>((float)x.value);
-            // auto extended = static_cast<uint64_t>(val) << 32;
-            // fmt::print(o, "0x{:016X}", extended);
+            exactValue = (double) (float) x.value;
             break;
           }
           case Types::Float::Precision::f64: {
-            fmt::print(o, "{:a}", x.value);
-            // auto val = std::bit_cast<uint64_t>(x.value);
-            // fmt::print(o, "0x{:016X}", val);
+            exactValue = x.value;
             break;
           }
           }
+          auto val = std::bit_cast<u64>(exactValue);
+          fmt::print(o, "0x{:016X}", val);
         },
         [&o](RegisterValue x) { o << x; },
         [&o](IntLiteral x) { o << x.value; },

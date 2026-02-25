@@ -1,5 +1,4 @@
 #pragma once
-
 #include "common.h"
 #include "fmt/base.h"
 #include <algorithm>
@@ -259,6 +258,13 @@ struct AlignedType {
   TypeIndex baseType;
   Log2Alignment newAlignment;
 };
+
+// TODO: tagged unions
+struct Union {
+  std::vector<pair<TypeIndex, Identifier>> namedVariants;
+  std::vector<TypeIndex> anonymousVariants;
+};
+
 using UnderlyingType = std::variant<
   Void,
   SignedInt,
@@ -281,7 +287,8 @@ using UnderlyingType = std::variant<
   Environment,
   Generic,
   RangeLiteral,
-  AlignedType>;
+  AlignedType,
+  Union>;
 template <class... Ts> struct overloaded : Ts... {
   using Ts::operator()...;
 };
@@ -320,10 +327,12 @@ public:
   TypeIndex _u16;
   TypeIndex _u32;
   TypeIndex _u64;
+  TypeIndex _u128;
   TypeIndex _s8;
   TypeIndex _s16;
   TypeIndex _s32;
   TypeIndex _s64;
+  TypeIndex _s128;
   TypeIndex _f16;
   TypeIndex _f32;
   TypeIndex _f64;
@@ -355,10 +364,12 @@ public:
     _u16 = addType(UnsignedInt(16));
     _u32 = addType(UnsignedInt(32));
     _u64 = addType(UnsignedInt(64));
+    _u128 = addType(UnsignedInt(128));
     _s8 = addType(SignedInt(8));
     _s16 = addType(SignedInt(16));
     _s32 = addType(SignedInt(32));
     _s64 = addType(SignedInt(64));
+    _s128 = addType(SignedInt(128));
     // TODO: change based on target word size
     _usize = _u64;
     _isize = _s64;
@@ -452,20 +463,30 @@ public:
     return std::nullopt;
   }
 
-  std::optional<TypeField> getFieldIndex(TypeIndex typeIndex, std::string_view fieldName) {
+  std::optional<pair<TypeField, TypeIndex>> getFieldIndex(TypeIndex typeIndex, std::string_view fieldName) {
     auto structDefinition = getStruct(typeIndex);
     if (structDefinition) {
-      return (*structDefinition)->getField(fieldName);
+      if (auto fieldDef = (*structDefinition)->getField(fieldName)) {
+        return pair(*fieldDef, typeIndex);
+      }
+      return std::nullopt;
     }
 
     if (auto slice = std::get_if<Slice>(&getType(typeIndex))) {
       if (fieldName == "data") {
-        return TypeField{.type = multiPointerTo(slice->dereferencedType), .index = 0};
+        return pair(TypeField{.type = multiPointerTo(slice->dereferencedType), .index = 0}, typeIndex);
       }
       if (fieldName == "length") {
-        return TypeField{.type = _usize, .index = 1};
+        return pair(TypeField{.type = _usize, .index = 1}, typeIndex);
       }
     }
+
+    if (auto unionType = std::get_if<Union>(&getType(typeIndex))) {
+      for (auto variantType: unionType->anonymousVariants) {
+        if (auto fieldResult = getFieldIndex(variantType, fieldName)) return fieldResult;
+      }
+    }
+
     return std::nullopt;
   }
 
@@ -762,18 +783,40 @@ public:
         [this](AlignedType x) {
           Sizing sizing = getSizing(x.baseType);
           sizing.alignment = x.newAlignment;
-          fmt::println("wtf sizing: {}", sizing.alignment.byteAlignment());
+          sizing.byteSize = alignTo(sizing.byteSize, sizing.alignment.byteAlignment());
+          return sizing;
+        },
+        [this](Union& x) {
+          Sizing sizing;
+          for (auto [type, _]: x.namedVariants) {
+            auto variantSizing = getSizing(type);
+            sizing.alignment.value = std::max(variantSizing.alignment.value, sizing.alignment.value);
+            sizing.bitSize = std::max(variantSizing.bitSize, sizing.bitSize);
+            sizing.byteSize = std::max(variantSizing.byteSize, sizing.byteSize);
+          }
+
+          for (auto type: x.anonymousVariants) {
+            auto variantSizing = getSizing(type);
+            sizing.alignment.value = std::max(variantSizing.alignment.value, sizing.alignment.value);
+            sizing.bitSize = std::max(variantSizing.bitSize, sizing.bitSize);
+            sizing.byteSize = std::max(variantSizing.byteSize, sizing.byteSize);
+          }
+
+          sizing.byteSize = alignTo(sizing.byteSize, sizing.alignment.byteAlignment());
+          // TODO: How does bit sizing work here?
           return sizing;
         },
       },
       getType(type));
   }
 
+  u32 alignTo(u32 size, u32 alignment) {
+    return (size + alignment - 1) & ~(alignment - 1);
+  }
+
   Sizing getSizing(TypeSpan types) {
     u32 structSize = 0;
     u32 structAlignment = 1;
-
-    auto alignTo = [](u32 size, u32 alignment) { return (size + alignment - 1) & ~(alignment - 1); };
 
     for (auto field : types) {
       auto fieldSizing = getSizing(field);
@@ -930,6 +973,22 @@ struct TypeName {
           fmt::print(o, "@align({}) ", x.newAlignment.byteAlignment());
           print(o, x.baseType);
         },
+        [&o](Types::Union x) {
+          o << "(";
+          auto hasMultiple = false;
+          for (auto [type, fieldName]: x.namedVariants) {
+            if (hasMultiple) o << " | ";
+            hasMultiple = true;
+            fmt::print(o, "{}: ", fieldName);
+            print(o, type);
+          }
+          for (auto type: x.anonymousVariants) {
+            if (hasMultiple) o << " | ";
+            hasMultiple = true;
+            print(o, type);
+          }
+          o << ")";
+        },
       },
       type);
   }
@@ -946,7 +1005,8 @@ struct TypeName {
 
 struct LlvmName {
   TypeIndex type;
-  static void format(std::ostream& o, Types::UnderlyingType& type) {
+  static void format(std::ostream& o, TypeIndex type) {
+    auto underlyingType = Types::Pool().getType(type);
     std::visit(
       Types::overloaded{
         [&o](Types::Void x) { o << "void"; },
@@ -986,12 +1046,11 @@ struct LlvmName {
         [&o](Types::Type) { TODO("Error for llvm name for type literal type"); },
         [&o](Types::RangeLiteral) { TODO("Error for llvm name for range literal type"); },
         [&o](Types::AlignedType x) { format(o, x.baseType); },
+        [&o, type](Types::Union x) {
+          fmt::print(o, "[i8 x {}]", Types::Pool().getSizing(type).byteSize);
+         },
       },
-      type);
-  }
-
-  static void format(std::ostream& o, TypeIndex type) {
-    format(o, Types::Pool().getType(type));
+      underlyingType);
   }
 
   friend std::ostream& operator<<(std::ostream& o, const LlvmName& type) {

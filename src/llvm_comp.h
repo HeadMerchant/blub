@@ -1616,13 +1616,27 @@ public:
       } else {
         log("Accessing field for type {}", TypeName(type));
       }
+
+      if (auto unionType = std::get_if<Types::Union>(&Types::Pool().getType(type))) {
+        for (auto [type, name]: unionType->namedVariants) {
+          if (name == fieldName) {
+            if (auto lValue = object.unbox<StackValue>()) {
+              return Reference(StackValue(lValue->name, type, lValue->scope));
+            } else {
+              crash(nodeIndex, "Can't get union variant off of a temporary value");
+            }
+          }
+        }
+      }
+
       auto boxedField = Types::Pool().getFieldIndex(type, fieldName);
 
       if (!boxedField.has_value()) {
         crash(node.fieldName, "No field '{}' found in struct '{}'", fieldName, TypeName(type));
       }
 
-      auto [fieldType, fieldIndex] = boxedField.value();
+      auto [fieldType, fieldIndex] = boxedField->first;
+      type = boxedField->second;
       auto fieldPointer = environment.addTemporary();
 
       if (object.lValue()) {
