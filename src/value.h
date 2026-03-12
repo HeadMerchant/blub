@@ -264,7 +264,8 @@ struct Reference {
         [](VoidRef x) { return Types::Pool()._void; },
         [](ZeroInit) { return Types::Pool().never; },
       },
-      value);
+      value
+    );
   }
 
   using OptStack = std::optional<StackValue>;
@@ -275,7 +276,8 @@ struct Reference {
         [](Reference* x) -> OptStack { return x->lValue(); },
         [](auto x) -> OptStack { return std::nullopt; },
       },
-      value);
+      value
+    );
   }
 
   std::optional<u32*> structFieldIndex() {
@@ -350,7 +352,7 @@ struct Reference {
             TODO("Support f16/half-precision floats");
           }
           case Types::Float::Precision::f32: {
-            exactValue = (double) (float) x.value;
+            exactValue = (double)(float)x.value;
             break;
           }
           case Types::Float::Precision::f64: {
@@ -373,7 +375,8 @@ struct Reference {
         [&o](VoidRef x) { TODO("Can't convert void into llvm name"); },
         [&o](ZeroInit) { o << "zeroinitializer"; },
       },
-      x.value);
+      x.value
+    );
     return o;
   }
 
@@ -390,8 +393,10 @@ struct Reference {
         [](auto& x) -> RangeBound {
           TODO("Error for value that can't be used as a range bound");
           return IntLiteral(0);
-        }},
-      value);
+        }
+      },
+      value
+    );
   }
 
   static Reference unboxBound(RangeBound& bound) {
@@ -410,23 +415,23 @@ public:
   std::string prefix;
   // TODO: scoping
   std::vector<std::vector<std::string_view>> scope;
+  std::vector<Environment*> usings;
   EnvType envType;
 
   u32 nextTemporary = 1;
   bool quotePrefixedNames;
   static u32 nextGlobalTemporary;
-
-public:
+  RegisterName basicBlock;
   bool hasReturned = false;
 
-  // Optional
   Environment* parent;
 
   std::string_view getPrefix() {
     return prefix;
   }
 
-  Environment() : parent(Environment::baseEnvironment()), imports(), defs(), prefix(""), envType(EnvType::Global) {}
+  Environment() : parent(Environment::baseEnvironment()), imports(), defs(), prefix(""), envType(EnvType::Global), basicBlock(0u) {}
+
   Environment(Environment* parent, std::string_view prefix, bool quoteTemporaries = false)
       : parent(parent), imports(), defs(), quotePrefixedNames(quoteTemporaries | parent->quotePrefixedNames), envType(EnvType::Function) {
     std::stringstream ss;
@@ -445,6 +450,12 @@ public:
         return &env->defs[name];
       }
       env = env->parent;
+    }
+
+    for (auto imported : usings) {
+      if (auto result = imported->find(name)) {
+        return result;
+      }
     }
     return std::nullopt;
   }

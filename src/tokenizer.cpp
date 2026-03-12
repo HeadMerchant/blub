@@ -35,4 +35,5 @@ std::unordered_map<std::string_view, TokenType> Tokenizer::keywords = {
   {"gn",     TokenType::Generic },
   {"return", TokenType::Return  },
   {"Self",   TokenType::Self    },
+  {"using",  TokenType::Using   },
 };

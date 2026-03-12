@@ -80,6 +80,7 @@ enum class TokenType {
   Opaque,
   Generic,
   Self,
+  Using,
 
   // Literal
   Identifier,

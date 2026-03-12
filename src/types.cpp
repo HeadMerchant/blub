@@ -29,7 +29,11 @@ void Types::TypePool::defineLLVMStruct(Types::StructIndex structIndex, std::queu
   Types::Struct& structDefinition = getStruct(structIndex);
   globals.push(
     fmt::format(
-      "{} = type {{{}}}", structDefinition.llvmName, fmt::join(structDefinition.fieldTypes | std::views::transform([this](const auto x) { return LlvmName(x); }), ", ")));
+      "{} = type {{{}}}",
+      structDefinition.llvmName,
+      fmt::join(structDefinition.fieldTypes | std::views::transform([this](const auto x) { return LlvmName(x); }), ", ")
+    )
+  );
 }
 
 void Types::TypePool::debugTypes() {

@@ -174,7 +174,8 @@ struct Struct {
 
   bool defineField(Identifier name, TypeIndex type) {
     auto [_, success] = fields.insert({
-      name, TypeField{.type = type, .index = (u32)fields.size()}
+      name,
+      TypeField{.type = type, .index = (u32)fields.size()}
     });
     fieldTypes.push_back(type);
 
@@ -482,7 +483,7 @@ public:
     }
 
     if (auto unionType = std::get_if<Union>(&getType(typeIndex))) {
-      for (auto variantType: unionType->anonymousVariants) {
+      for (auto variantType : unionType->anonymousVariants) {
         if (auto fieldResult = getFieldIndex(variantType, fieldName)) return fieldResult;
       }
     }
@@ -788,14 +789,14 @@ public:
         },
         [this](Union& x) {
           Sizing sizing;
-          for (auto [type, _]: x.namedVariants) {
+          for (auto [type, _] : x.namedVariants) {
             auto variantSizing = getSizing(type);
             sizing.alignment.value = std::max(variantSizing.alignment.value, sizing.alignment.value);
             sizing.bitSize = std::max(variantSizing.bitSize, sizing.bitSize);
             sizing.byteSize = std::max(variantSizing.byteSize, sizing.byteSize);
           }
 
-          for (auto type: x.anonymousVariants) {
+          for (auto type : x.anonymousVariants) {
             auto variantSizing = getSizing(type);
             sizing.alignment.value = std::max(variantSizing.alignment.value, sizing.alignment.value);
             sizing.bitSize = std::max(variantSizing.bitSize, sizing.bitSize);
@@ -807,7 +808,8 @@ public:
           return sizing;
         },
       },
-      getType(type));
+      getType(type)
+    );
   }
 
   u32 alignTo(u32 size, u32 alignment) {
@@ -832,8 +834,9 @@ public:
   }
 
   OptionalType coerce(TypeIndex a, TypeIndex b) {
-    auto aType = getType(a);
-    auto bType = getType(b);
+    if (a == b) {
+      return a;
+    }
     // {
     //   auto unboxedA = a;
     //   if (auto aAligned = std::get_if<AlignedType>(&aType)) {
@@ -849,10 +852,8 @@ public:
     //     return a;
     //   }
     // }
-
-    if (a == b) {
-      return a;
-    }
+    auto aType = getType(a);
+    auto bType = getType(b);
 
     if (subTypes(aType, bType)) return b;
     if (subTypes(bType, aType)) return a;
@@ -908,6 +909,11 @@ public:
   }
 
   void debugTypes();
+
+  template <typename T> T* unbox(TypeIndex type) {
+    if (auto x = std::get_if<T>(&getType(type))) return x;
+    return nullptr;
+  }
 };
 
 TypePool& Pool();
@@ -976,13 +982,13 @@ struct TypeName {
         [&o](Types::Union x) {
           o << "(";
           auto hasMultiple = false;
-          for (auto [type, fieldName]: x.namedVariants) {
+          for (auto [type, fieldName] : x.namedVariants) {
             if (hasMultiple) o << " | ";
             hasMultiple = true;
             fmt::print(o, "{}: ", fieldName);
             print(o, type);
           }
-          for (auto type: x.anonymousVariants) {
+          for (auto type : x.anonymousVariants) {
             if (hasMultiple) o << " | ";
             hasMultiple = true;
             print(o, type);
@@ -990,7 +996,8 @@ struct TypeName {
           o << ")";
         },
       },
-      type);
+      type
+    );
   }
 
   static void print(std::ostream& o, TypeIndex type) {
@@ -1047,10 +1054,13 @@ struct LlvmName {
         [&o](Types::RangeLiteral) { TODO("Error for llvm name for range literal type"); },
         [&o](Types::AlignedType x) { format(o, x.baseType); },
         [&o, type](Types::Union x) {
-          fmt::print(o, "[i8 x {}]", Types::Pool().getSizing(type).byteSize);
-         },
+          // TODO: move to using largest type?
+          // fmt::print(o, "[i8 x {}]", Types::Pool().getSizing(type).byteSize);
+          format(o, x.anonymousVariants[0]);
+        },
       },
-      underlyingType);
+      underlyingType
+    );
   }
 
   friend std::ostream& operator<<(std::ostream& o, const LlvmName& type) {

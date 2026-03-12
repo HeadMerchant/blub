@@ -258,7 +258,8 @@ public:
             nodeIndex,
             "Unable to make comptime constant out of "
             "non-comptime value assigned to '{}'",
-            definitionName);
+            definitionName
+          );
         }
 
         // Allow double define because we checked earlier; functions are bound to environment for recursion
@@ -621,7 +622,8 @@ public:
             nodeIndex,
             "Condition for while loop must be of type 'bool', "
             "but was of type '{}'",
-            TypeName(condition.getType()));
+            TypeName(condition.getType())
+          );
         }
 
         interpret(node.right, environment, outputFile, context);
@@ -851,7 +853,8 @@ public:
                 argsNode.requiredArgs[i],
                 "Invalid argument in function call (can't pass argument of type {} to parameter of type {})",
                 TypeName(arguments[i].getType()),
-                TypeName(parameterTypes[i]));
+                TypeName(parameterTypes[i])
+              );
             }
             setArguments[i] = true;
           }
@@ -896,11 +899,15 @@ public:
           }
           return Reference(StackValue(resultIndex, returnType));
         } else if (auto type = function.unboxType()) {
-          auto structDefinition = Types::Pool().getStruct(*type);
-          if (!structDefinition.has_value()) {
-            crash(nodeIndex, "Can't construct non-struct type {}", TypeName(*type));
+          if (auto structDefinition = Types::Pool().getStruct(*type)) {
+            return constructStruct(nodeIndex, *type, argsNode, environment, outputFile);
+            // } else if (auto union = Types::Pool().getType()) {
+            //   return
+          } else {
+            if (!structDefinition.has_value()) {
+              crash(nodeIndex, "Can't construct non-struct type {}", TypeName(*type));
+            }
           }
-          return constructStruct(nodeIndex, *type, argsNode, environment, outputFile);
         } else {
           crash(nodeIndex, "Unable to call value of type '{}' as a function", TypeName(function.getType()));
         }
@@ -1072,7 +1079,8 @@ public:
           crash(
             nodeIndex,
             "Can't forward declare anoymnous function; Anonymous functions "
-            "require a body");
+            "require a body"
+          );
         }
         llvmName = StringPool::inst().copy(fmt::format("@{}{}", environment.prefix, environment.nextGlobalIndex()));
       }
@@ -1087,167 +1095,185 @@ public:
     }
     case NodeType::Unary: {
       auto node = parser.getUnary(nodeIndex);
-      if (node.operation == UnaryOps::CompilerBuiltin) {
-        auto builtinToken = parser.getToken(parser.getNode(nodeIndex).token);
-        auto argumentNodes = parser.getArgumentList(node.operand).requiredArgs;
-        switch (builtinToken->type) {
-        case TokenType::BUILTIN_NumCast: {
-          auto arguments = argumentNodes | std::views::transform(
-                                             [this, &environment, &outputFile, &context](const NodeIndex x) { return interpret(x, environment, outputFile, context); });
-          if (!(arguments.size() == 1 || arguments.size() == 2)) {
-            crash(nodeIndex, "Expected 1 or 2 arguments for builtin @numCast, but received {}", arguments.size());
-          }
-          auto object = arguments[0];
-          TypeIndex targetType;
-          if (arguments.size() == 2) {
-            if (auto type = arguments[1].unboxType()) {
-              targetType = *type;
-            } else {
-              crash(argumentNodes[1], "Second arguments for builtin extend needs to be a compile-time known type");
+
+      switch (node.operation) {
+      case UnaryOps::CompilerBuiltin:
+        if (node.operation == UnaryOps::CompilerBuiltin) {
+          auto builtinToken = parser.getToken(parser.getNode(nodeIndex).token);
+          auto argList = parser.getArgumentList(node.operand);
+          auto argumentNodes = argList.requiredArgs;
+          auto namedArgs = argList.optionalArgs;
+          switch (builtinToken->type) {
+          case TokenType::BUILTIN_NumCast: {
+            auto arguments = argumentNodes | std::views::transform([this, &environment, &outputFile, &context](const NodeIndex x) {
+                               return interpret(x, environment, outputFile, context);
+                             });
+            if (!(arguments.size() == 1 || arguments.size() == 2)) {
+              crash(nodeIndex, "Expected 1 or 2 arguments for builtin @numCast, but received {}", arguments.size());
             }
-          } else if (context.expectedType) {
-            targetType = context.expectedType.value();
-          } else {
-            crash(nodeIndex, "Builtin @numCast must either take a second argument for the target type, or have an inferrable target");
-          }
-
-          auto objectLiteral = toRegister(&object, outputFile, environment);
-
-          auto objectType = arguments[0].getType();
-          Reference resultName(environment.makeTemporary(targetType));
-          bool isTrunc = objectType.value > targetType.value;
-          std::string_view instructionName = isTrunc ? "trunc" : "ext";
-          auto downcast = objectType.value > targetType.value;
-          std::string_view typePrefix;
-
-          if (Types::Pool().isFloat(objectType) && Types::Pool().isFloat(targetType)) {
-            typePrefix = "fp";
-          } else if (Types::Pool().isSignedInt(objectType) && Types::Pool().isSignedInt(objectType)) {
-            typePrefix = isTrunc ? "" : "s";
-          } else if (Types::Pool().isUnsignedInt(objectType) && Types::Pool().isUnsignedInt(targetType)) {
-            typePrefix = isTrunc ? "" : "z";
-          } else {
-            crash(nodeIndex, "Unable to cast from {} to {}", TypeName(objectType), TypeName(targetType));
-          }
-          fmt::println(outputFile, "{} = {}{} {} {} to {}", resultName, typePrefix, instructionName, LlvmName(objectType), objectLiteral, LlvmName(targetType));
-
-          return resultName;
-          break;
-        }
-        case TokenType::BUILITN_BitCast: {
-          auto arguments = argumentNodes | std::views::transform(
-                                             [this, &environment, &outputFile, &context](const NodeIndex x) { return interpret(x, environment, outputFile, context); });
-          if (!(arguments.size() == 1 || arguments.size() == 2)) {
-            crash(nodeIndex, "Expected 1 or 2 arguments for builtin @bitCast, but received {}", arguments.size());
-          }
-          auto object = arguments[0];
-          TypeIndex targetType;
-          if (arguments.size() == 2) {
-            if (auto type = arguments[1].unboxType()) {
-              targetType = *type;
+            auto object = arguments[0];
+            TypeIndex targetType;
+            if (arguments.size() == 2) {
+              if (auto type = arguments[1].unboxType()) {
+                targetType = *type;
+              } else {
+                crash(argumentNodes[1], "Second arguments for builtin extend needs to be a compile-time known type");
+              }
+            } else if (context.expectedType) {
+              targetType = context.expectedType.value();
             } else {
-              crash(argumentNodes[1], "Second arguments for builtin extend needs to be a compile-time known type");
+              crash(nodeIndex, "Builtin @numCast must either take a second argument for the target type, or have an inferrable target");
             }
-          } else if (context.expectedType) {
-            targetType = context.expectedType.value();
-          } else {
-            crash(nodeIndex, "Builtin @numCast must either take a second argument for the target type, or have an inferrable target");
+
+            auto objectLiteral = toRegister(&object, outputFile, environment);
+
+            auto objectType = arguments[0].getType();
+            Reference resultName(environment.makeTemporary(targetType));
+            bool isTrunc = objectType.value > targetType.value;
+            std::string_view instructionName = isTrunc ? "trunc" : "ext";
+            if (objectType == targetType) {
+              crash(nodeIndex, "Unnecessary cast from {} to {}", TypeName(objectType), TypeName(targetType));
+            }
+            auto downcast = objectType.value > targetType.value;
+            std::string_view typePrefix;
+
+            if (Types::Pool().isFloat(objectType) && Types::Pool().isFloat(targetType)) {
+              typePrefix = "fp";
+            } else if (Types::Pool().isSignedInt(objectType) && Types::Pool().isSignedInt(objectType)) {
+              typePrefix = isTrunc ? "" : "s";
+            } else if (Types::Pool().isUnsignedInt(objectType) && Types::Pool().isUnsignedInt(targetType)) {
+              typePrefix = isTrunc ? "" : "z";
+            } else {
+              crash(nodeIndex, "Unable to cast from {} to {}", TypeName(objectType), TypeName(targetType));
+            }
+            fmt::println(outputFile, "{} = {}{} {} {} to {}", resultName, typePrefix, instructionName, LlvmName(objectType), objectLiteral, LlvmName(targetType));
+
+            return resultName;
+            break;
           }
+          case TokenType::BUILITN_BitCast: {
+            auto arguments = argumentNodes | std::views::transform([this, &environment, &outputFile, &context](const NodeIndex x) {
+                               return interpret(x, environment, outputFile, context);
+                             });
+            if (!(arguments.size() == 1 || arguments.size() == 2)) {
+              crash(nodeIndex, "Expected 1 or 2 arguments for builtin @bitCast, but received {}", arguments.size());
+            }
+            auto object = arguments[0];
+            TypeIndex targetType;
+            if (arguments.size() == 2) {
+              if (auto type = arguments[1].unboxType()) {
+                targetType = *type;
+              } else {
+                crash(argumentNodes[1], "Second arguments for builtin extend needs to be a compile-time known type");
+              }
+            } else if (context.expectedType) {
+              targetType = context.expectedType.value();
+            } else {
+              crash(nodeIndex, "Builtin @numCast must either take a second argument for the target type, or have an inferrable target");
+            }
 
-          auto objectLiteral = toRegister(&object, outputFile, environment);
+            auto objectLiteral = toRegister(&object, outputFile, environment);
 
-          auto objectType = arguments[0].getType();
+            auto objectType = arguments[0].getType();
 
-          Reference resultName(environment.makeTemporary(targetType));
-          fmt::println(outputFile, "{} = bitcast {} {} to {}", resultName, LlvmName(objectType), objectLiteral, LlvmName(targetType));
+            Reference resultName(environment.makeTemporary(targetType));
+            fmt::println(outputFile, "{} = bitcast {} {} to {}", resultName, LlvmName(objectType), objectLiteral, LlvmName(targetType));
 
-          return resultName;
-          break;
-        }
-        case TokenType::BUILTIN_CImport: {
-          if (argumentNodes.size() != 2) {
-            crash(nodeIndex, "Builtin '@cImport' must take 2 literal arguments, but was given {}", argumentNodes.size());
+            return resultName;
+            break;
           }
+          case TokenType::BUILTIN_CImport: {
+            if (argumentNodes.size() != 2) {
+              crash(nodeIndex, "Builtin '@cImport' must take 2 literal arguments, but was given {}", argumentNodes.size());
+            }
 
-          auto includeFile = fs::weakly_canonical(inputFilePath.parent_path().append(parser.getToken(argumentNodes[0])->lexeme));
-          auto fileName = includeFile.string();
-          auto fileNameView = StringPool::inst().copy(std::string_view(fileName));
-          CompilerContext::inst().c.clangArgs.push_back("-include");
-          CompilerContext::inst().c.clangArgs.push_back(std::move(fileName));
-
-          auto prefix = std::string(parser.getToken(argumentNodes[1])->lexeme);
-
-          return Reference(cBindings(fileNameView, prefix, globalsStack));
-          break;
-        }
-        case TokenType::BUILTIN_CDefine: {
-          if (argumentNodes.empty() || argumentNodes.size() > 2) {
-            crash(nodeIndex, "Builtin '@cDefine' must have 1 or 2 arguments, but {}", argumentNodes.size());
-          }
-          std::string arg = fmt::format("-D{}", parser.getToken(argumentNodes[0])->lexeme);
-          if (argumentNodes.size() == 2) {
-            arg = fmt::format("{}={}", arg, parser.getToken(argumentNodes[1])->lexeme);
-          }
-          CompilerContext::inst().c.clangArgs.push_back(std::move(arg));
-          return Reference::Void();
-        }
-        case TokenType::BUILTIN_CInclude: {
-          if (argumentNodes.size() == 1 && parser.nodeType(argumentNodes[0]) == NodeType::Literal) {
-            auto fileName = parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
+            auto includeFile = fs::weakly_canonical(inputFilePath.parent_path().append(parser.getToken(argumentNodes[0])->lexeme));
+            auto fileName = includeFile.string();
+            auto fileNameView = StringPool::inst().copy(std::string_view(fileName));
+            std::unordered_map<std::string_view, TypeIndex> definedTypes;
+            StatementContext typeContext;
+            for (auto [name, value] : namedArgs) {
+              auto valueType = interpret(value, environment, outputFile, typeContext);
+              if (auto type = valueType.unboxType()) {
+                definedTypes[parser.getToken(name)->lexeme] = *type;
+              } else {
+                TODO("Error for passing non-type into types");
+              }
+            }
             CompilerContext::inst().c.clangArgs.push_back("-include");
-            CompilerContext::inst().c.clangArgs.push_back(concatPath(fileName).string());
-          } else {
-            crash(nodeIndex, "Builtin '@cInclude' must take one literal argument");
+            CompilerContext::inst().c.clangArgs.push_back(std::move(fileName));
+
+            auto prefix = std::string(parser.getToken(argumentNodes[1])->lexeme);
+            return Reference(cBindings(std::move(includeFile), prefix, globalsStack, definedTypes));
+            break;
           }
-          return Reference::Void();
-        }
-        case TokenType::BUILTIN_CIncludeDir: {
-          if (argumentNodes.size() == 1 && parser.nodeType(argumentNodes[0]) == NodeType::Literal) {
-            auto fileName = parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
-            CompilerContext::inst().c.clangArgs.push_back("-I" + concatPath(fileName).string());
-          } else {
-            crash(nodeIndex, "Builtin '@cIncludeDir' must take one literal argument");
+          case TokenType::BUILTIN_CDefine: {
+            if (argumentNodes.empty() || argumentNodes.size() > 2) {
+              crash(nodeIndex, "Builtin '@cDefine' must have 1 or 2 arguments, but {}", argumentNodes.size());
+            }
+            std::string arg = fmt::format("-D{}", parser.getToken(argumentNodes[0])->lexeme);
+            if (argumentNodes.size() == 2) {
+              arg = fmt::format("{}={}", arg, parser.getToken(argumentNodes[1])->lexeme);
+            }
+            CompilerContext::inst().c.clangArgs.push_back(std::move(arg));
+            return Reference::Void();
           }
-          return Reference::Void();
-        }
-        case TokenType::BUILTIN_Link: {
-          if (argumentNodes.size() == 1 && parser.nodeType(argumentNodes[0]) == NodeType::Literal) {
-            auto libName = parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
-            CompilerContext::inst().c.linkedLibraries.push_back(fmt::format("-l{}", libName));
-          } else {
-            crash(nodeIndex, "Builtin '@link' must take one literal argument");
+          case TokenType::BUILTIN_CInclude: {
+            if (argumentNodes.size() == 1 && parser.nodeType(argumentNodes[0]) == NodeType::Literal) {
+              auto fileName = parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
+              CompilerContext::inst().c.clangArgs.push_back("-include");
+              CompilerContext::inst().c.clangArgs.push_back(concatPath(fileName).string());
+            } else {
+              crash(nodeIndex, "Builtin '@cInclude' must take one literal argument");
+            }
+            return Reference::Void();
           }
-          return Reference::Void();
-        }
-        case TokenType::BUILTIN_LinkDir: {
-          if (argumentNodes.size() == 1 && parser.nodeType(argumentNodes[0]) == NodeType::Literal) {
-            auto libName = parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
-            CompilerContext::inst().c.linkedLibraries.push_back(fmt::format("-L{}", libName));
-          } else {
-            crash(nodeIndex, "Builtin '@linkDir' must take one literal argument");
+          case TokenType::BUILTIN_CIncludeDir: {
+            if (argumentNodes.size() == 1 && parser.nodeType(argumentNodes[0]) == NodeType::Literal) {
+              auto fileName = parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
+              CompilerContext::inst().c.clangArgs.push_back("-I" + concatPath(fileName).string());
+            } else {
+              crash(nodeIndex, "Builtin '@cIncludeDir' must take one literal argument");
+            }
+            return Reference::Void();
           }
-          return Reference::Void();
-        }
-        case TokenType::BUILTIN_Type: {
-          if (argumentNodes.size() != 1) {
-            crash(nodeIndex, "Builtin '@type' must take one expression argument, but {} were provided", argumentNodes.size());
+          case TokenType::BUILTIN_Link: {
+            if (argumentNodes.size() == 1 && parser.nodeType(argumentNodes[0]) == NodeType::Literal) {
+              auto libName = parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
+              CompilerContext::inst().c.linkedLibraries.push_back(fmt::format("-l{}", libName));
+            } else {
+              crash(nodeIndex, "Builtin '@link' must take one literal argument");
+            }
+            return Reference::Void();
           }
-          auto arg = interpret(argumentNodes[0], environment, outputFile, context);
-          return Reference(arg.getType());
+          case TokenType::BUILTIN_LinkDir: {
+            if (argumentNodes.size() == 1 && parser.nodeType(argumentNodes[0]) == NodeType::Literal) {
+              auto libName = parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
+              CompilerContext::inst().c.linkedLibraries.push_back(fmt::format("-L{}", libName));
+            } else {
+              crash(nodeIndex, "Builtin '@linkDir' must take one literal argument");
+            }
+            return Reference::Void();
+          }
+          case TokenType::BUILTIN_Type: {
+            if (argumentNodes.size() != 1) {
+              crash(nodeIndex, "Builtin '@type' must take one expression argument, but {} were provided", argumentNodes.size());
+            }
+            auto arg = interpret(argumentNodes[0], environment, outputFile, context);
+            return Reference(arg.getType());
+          }
+          default: {
+            crash(nodeIndex, "Malformed builtin '@{}'", builtinToken->lexeme);
+          }
+          }
         }
-        default: {
-          crash(nodeIndex, "Malformed builtin '@{}'", builtinToken->lexeme);
-        }
-        }
-      }
-      if (node.operation == UnaryOps::Import) {
+      case UnaryOps::Import: {
         auto fileName = parser.getToken(TokenIndex{node.operand.value})->lexeme;
         auto filePath = inputFilePath.parent_path().append(fileName);
         fmt::println("Importing: {}", filePath.string());
         Environment* import = compile(filePath, outputFileStream, targetType);
         return Reference(import);
       }
-      switch (node.operation) {
       case UnaryOps::Dereference: {
         auto value = interpret(node.operand, environment, outputFile, context);
         auto type = value.getType();
@@ -1303,7 +1329,8 @@ public:
           crash(
             node.operand,
             "Element type for array type (slice, fixed-size, etc) must be a compile-time known type, or a non-temporary value, but was a '{}'",
-            TypeName(value.getType()));
+            TypeName(value.getType())
+          );
         }
       }
       case UnaryOps::MultiPointerFrom: {
@@ -1380,7 +1407,7 @@ public:
           crash(nodeIndex, "Unable to make slice from value of type '{}'; Can only slice sized arrays", TypeName(type));
         }
       }
-      case UnaryOps::Return:
+      case UnaryOps::Return: {
         auto returnValue = parser.readOptional(node.operand.value);
         if (!context.returnType) {
           crash(nodeIndex, "Return can only be used inside a function");
@@ -1412,16 +1439,31 @@ public:
         environment.hasReturned = true;
         return Reference(Never{});
       }
+      case UnaryOps::Using: {
+        auto value = interpret(node.operand, environment, outputFile, context);
+        if (auto env = value.unboxEnv()) {
+          environment.usings.push_back(*env);
+          for (auto import : (*env)->usings) {
+            environment.usings.push_back(import);
+            fmt::println("Pushing in some shit");
+          }
+        } else {
+          TODO("using for non-environment objects");
+        }
+        return Reference::Void();
+      }
+      }
+      break;
     }
     case NodeType::If: {
       auto node = parser.getIf(nodeIndex);
       // TODO: add br instruction
       StatementContext conditionContext(context);
-      auto type = Types::Pool()._bool;
-      conditionContext.expectedType = type;
+      auto expectedConditionType = Types::Pool()._bool;
+      conditionContext.expectedType = expectedConditionType;
       auto condition = interpret(node.condition, environment, outputFile, conditionContext);
       auto conditionType = condition.getType();
-      if (conditionType != type) {
+      if (conditionType != expectedConditionType) {
         crash(node.condition, "Condition of an 'if' statement needs to be of type 'bool'");
       }
       auto loadedCondition = toRegister(&condition, outputFile, environment);
@@ -1438,8 +1480,10 @@ public:
       if (!comptime) {
         ifInstruction << ifLabel << ":\n";
       }
+      environment.basicBlock = ifLabel;
       auto ifResult = interpret(node.value, environment, ifInstruction, context);
       auto ifReturns = environment.hasReturned;
+      auto ifBlock = environment.basicBlock;
       environment.hasReturned = false;
       std::optional<TypeIndex> resultType = ifResult.getType();
 
@@ -1447,14 +1491,20 @@ public:
       auto hasElse = node.elseValue.has_value();
       std::stringstream elseInstruction;
       auto elseContext(context);
-      elseContext.expectedType = resultType;
+      if (!context.expectedType) {
+        elseContext.expectedType = resultType;
+      }
+      environment.basicBlock = elseLabel;
       Reference elseResult = node.elseValue.has_value() ? interpret(node.elseValue.value(), environment, elseInstruction, elseContext) : Reference::Void();
       auto elseReturns = environment.hasReturned;
       environment.hasReturned = false;
+      auto elseBlock = environment.basicBlock;
 
       if (hasElse && resultType) {
         auto elseType = elseResult.getType();
+        log("Result type: {}", TypeName(*resultType));
         resultType = Types::Pool().coerce(*resultType, elseType);
+        log("Result type 2: {}", TypeName(*resultType));
       }
 
       if (resultType && context.expectedType) {
@@ -1497,6 +1547,9 @@ public:
         }
       }
 
+      // TODO: when does this need to be copied?
+      environment.basicBlock = StringPool::inst().copy(endLabel);
+
       if (ifReturns && elseReturns) {
         environment.hasReturned = true;
         return Reference(Never{});
@@ -1507,7 +1560,20 @@ public:
       if (resultType && resultType != Types::Pool()._void) {
         auto type = resultType.value();
         auto phiResult = Reference(environment.makeTemporary(type));
-        fmt::println(outputFile, "{}  = phi {} [{}, %{}], [{}, %{}]", phiResult, LlvmName(type), ifResult, ifLabel, elseResult, elseLabel);
+        if (auto floatType = Types::Pool().unbox<Types::Float>(type)) {
+          fmt::println(
+            outputFile,
+            "{}  = phi {} [{}, %{}], [{}, %{}]",
+            phiResult,
+            LlvmName(type),
+            ifResult.coerceFloat(floatType->precision),
+            ifBlock,
+            elseResult.coerceFloat(floatType->precision),
+            elseBlock
+          );
+        } else {
+          fmt::println(outputFile, "{}  = phi {} [{}, %{}], [{}, %{}]", phiResult, LlvmName(type), ifResult, ifBlock, elseResult, elseBlock);
+        }
         return phiResult;
       }
 
@@ -1563,93 +1629,7 @@ public:
       return Reference(typeIndex);
     }
     case NodeType::DotAccess: {
-      auto node = parser.getDotAccess(nodeIndex);
-      if (!node.object && !context.expectedType) {
-        log("Index for object: {} vs {}", parser.getNode(nodeIndex).left, nodeIndex.value);
-        crash(nodeIndex, "Prefix '.' operator requires that statement has an expected type");
-      }
-      Reference object = node.object ? interpret(node.object.value(), environment, outputFile, context) : Reference(context.expectedType.value());
-
-      std::string_view fieldName = node.fieldName->lexeme;
-
-      if (auto type = object.unboxType()) {
-        {
-          auto sizing = Types::Pool().getSizing(*type);
-          if (fieldName == "size") {
-            return Reference(IntLiteral(sizing.byteSize));
-          } else if (fieldName == "alignment") {
-            return Reference(IntLiteral(sizing.alignment.byteAlignment()));
-          } else if (fieldName == "bitSize") {
-            return Reference(IntLiteral(sizing.bitSize));
-          }
-        }
-
-        if (auto enumDefinition = Types::Pool().getEnum(*type)) {
-          if (auto value = (*enumDefinition)->get(fieldName)) {
-            return Reference(IntLiteral(*value, *type));
-          }
-          crash(nodeIndex, "Unknown variant '{}' in enum '{}'", fieldName, TypeName(*type));
-        }
-        TODO("Static member variables");
-      }
-
-      if (auto import = object.unboxEnv()) {
-        auto fileEnv = *import;
-        if (auto value = fileEnv->find(fieldName)) {
-          return Reference(*value);
-        }
-        // auto members = fileEnv->defs | std::views::transform([](const auto& x) { return TypeName(x.second.getType()); });
-        auto members = fileEnv->defs | std::views::transform([](const auto& x) { return x.first; });
-        for (auto [name, value] : fileEnv->defs) {
-          log("{}: {}", name, TypeName(value.getType()));
-        }
-        crash(node.fieldName, "Unable to find member '{}' in module\nAvailable fields are {}", fieldName, fmt::join(members, ", "));
-      }
-
-      // TODO: auto dereference pointers
-      auto type = object.getType();
-      Types::OptionalType dereferenced = Types::Pool().dereference(type);
-      if (dereferenced.has_value()) {
-        StackValue dereffed = dereference(&object, outputFile, environment, node.object.value());
-        object.value = dereffed;
-        type = *dereferenced;
-      } else {
-        log("Accessing field for type {}", TypeName(type));
-      }
-
-      if (auto unionType = std::get_if<Types::Union>(&Types::Pool().getType(type))) {
-        for (auto [type, name]: unionType->namedVariants) {
-          if (name == fieldName) {
-            if (auto lValue = object.unbox<StackValue>()) {
-              return Reference(StackValue(lValue->name, type, lValue->scope));
-            } else {
-              crash(nodeIndex, "Can't get union variant off of a temporary value");
-            }
-          }
-        }
-      }
-
-      auto boxedField = Types::Pool().getFieldIndex(type, fieldName);
-
-      if (!boxedField.has_value()) {
-        crash(node.fieldName, "No field '{}' found in struct '{}'", fieldName, TypeName(type));
-      }
-
-      auto [fieldType, fieldIndex] = boxedField->first;
-      type = boxedField->second;
-      auto fieldPointer = environment.addTemporary();
-
-      if (object.lValue()) {
-        auto result = Reference(StackValue(fieldPointer, fieldType));
-        fmt::println(outputFile, "{} = getelementptr inbounds {}, ptr {}, i32 0, i32 {}", result, LlvmName(type), object, fieldIndex);
-        return result;
-      } else if (auto registerValue = object.unbox<RegisterValue>()) {
-        auto result = Reference(RegisterValue(fieldPointer, fieldType));
-        fmt::println(outputFile, "{} = extractvalue {} {}, {}", result, LlvmName(type), object, fieldIndex);
-        return result;
-      } else {
-        TODO("error for getting struct field");
-      }
+      return dotAccess(nodeIndex, outputFile, environment, context);
     }
     case NodeType::ArgumentList: {
       if (!context.expectedType) {
@@ -1785,7 +1765,14 @@ public:
 
         fmt::println(outputFile, "br %{}\n{}:", loopUpdate, loopUpdate);
         fmt::println(
-          outputFile, "{} = getelementptr {}, ptr {}, i64 1\nbr %{}\n{}:", nextIterationVar, LlvmName(*elementType), iterationVariable, loopCondition, endLabel);
+          outputFile,
+          "{} = getelementptr {}, ptr {}, i64 1\nbr %{}\n{}:",
+          nextIterationVar,
+          LlvmName(*elementType),
+          iterationVariable,
+          loopCondition,
+          endLabel
+        );
 
         return Reference::Void();
       } else {
@@ -1962,8 +1949,14 @@ public:
     return Reference(result);
   }
 
-  Reference
-  sliceRange(Range& range, NodeIndex rangeNode, std::ostream& outputFile, Environment& environment, std::optional<RangeBound> baseLength, Reference& dataPointer) {
+  Reference sliceRange(
+    Range& range,
+    NodeIndex rangeNode,
+    std::ostream& outputFile,
+    Environment& environment,
+    std::optional<RangeBound> baseLength,
+    Reference& dataPointer
+  ) {
     if (!(range.hasUpper() || baseLength)) {
       crash(rangeNode, "Ranges for slicing multipointers must have an upper bound");
     }
@@ -2071,6 +2064,7 @@ public:
   }
 
   Reference constructStruct(NodeIndex nodeIndex, TypeIndex type, Parser::ArgumentList& argsNode, Environment& environment, std::ostream& outputFile) {
+    // TODO: unions: named and unnamed
     auto structDefinition = Types::Pool().getStruct(type);
     if (!structDefinition.has_value()) {
       crash(nodeIndex, "Can't construct non-struct type {}", TypeName(type));
@@ -2138,8 +2132,13 @@ public:
     return Reference(structVal);
   }
 
-  pair<std::vector<Reference>, std::unordered_map<Identifier, Reference>>
-  getArguments(Types::TypeSpan paramTypes, Parser::ArgumentList& argsNode, Environment& environment, std::ostream& outputFile, Types::FieldMap& fieldNames) {
+  pair<std::vector<Reference>, std::unordered_map<Identifier, Reference>> getArguments(
+    Types::TypeSpan paramTypes,
+    Parser::ArgumentList& argsNode,
+    Environment& environment,
+    std::ostream& outputFile,
+    Types::FieldMap& fieldNames
+  ) {
     std::vector<Reference> arguments;
     u32 i = 0;
     for (auto arg : argsNode.requiredArgs) {
@@ -2155,7 +2154,8 @@ public:
           TypeName(argument.getType()),
           TypeName(paramType),
           argument.getType().value,
-          paramType.value);
+          paramType.value
+        );
       }
       if (auto floatType = Types::Pool().getFloat(paramType)) {
         arguments.push_back(argument.coerceFloat(floatType->precision));
@@ -2294,5 +2294,95 @@ public:
     }
     // TODO: ensure return value
     instruction << "}\n\n";
+  }
+
+  Reference dotAccess(NodeIndex nodeIndex, std::ostream& outputFile, Environment& environment, StatementContext& context) {
+    auto node = parser.getDotAccess(nodeIndex);
+    if (!node.object && !context.expectedType) {
+      log("Index for object: {} vs {}", parser.getNode(nodeIndex).left, nodeIndex.value);
+      crash(nodeIndex, "Prefix '.' operator requires that statement has an expected type");
+    }
+    Reference object = node.object ? interpret(node.object.value(), environment, outputFile, context) : Reference(context.expectedType.value());
+
+    std::string_view fieldName = node.fieldName->lexeme;
+
+    if (auto type = object.unboxType()) {
+      {
+        auto sizing = Types::Pool().getSizing(*type);
+        if (fieldName == "size") {
+          return Reference(IntLiteral(sizing.byteSize));
+        } else if (fieldName == "alignment") {
+          return Reference(IntLiteral(sizing.alignment.byteAlignment()));
+        } else if (fieldName == "bitSize") {
+          return Reference(IntLiteral(sizing.bitSize));
+        }
+      }
+
+      if (auto enumDefinition = Types::Pool().getEnum(*type)) {
+        if (auto value = (*enumDefinition)->get(fieldName)) {
+          return Reference(IntLiteral(*value, *type));
+        }
+        crash(nodeIndex, "Unknown variant '{}' in enum '{}'", fieldName, TypeName(*type));
+      }
+      TODO("Static member variables");
+    }
+
+    if (auto import = object.unboxEnv()) {
+      auto fileEnv = *import;
+      if (auto value = fileEnv->find(fieldName)) {
+        return Reference(*value);
+      }
+      // auto members = fileEnv->defs | std::views::transform([](const auto& x) { return TypeName(x.second.getType()); });
+      auto members = fileEnv->defs | std::views::transform([](const auto& x) { return x.first; });
+      for (auto [name, value] : fileEnv->defs) {
+        log("{}: {}", name, TypeName(value.getType()));
+      }
+      crash(node.fieldName, "Unable to find member '{}' in module\nAvailable fields are {}", fieldName, fmt::join(members, ", "));
+    }
+
+    // TODO: auto dereference pointers
+    auto type = object.getType();
+    Types::OptionalType dereferenced = Types::Pool().dereference(type);
+    if (dereferenced.has_value()) {
+      StackValue dereffed = dereference(&object, outputFile, environment, node.object.value());
+      object.value = dereffed;
+      type = *dereferenced;
+    } else {
+      log("Accessing field for type {}", TypeName(type));
+    }
+
+    if (auto unionType = std::get_if<Types::Union>(&Types::Pool().getType(type))) {
+      for (auto [type, name] : unionType->namedVariants) {
+        if (name == fieldName) {
+          if (auto lValue = object.unbox<StackValue>()) {
+            return Reference(StackValue(lValue->name, type, lValue->scope));
+          } else {
+            crash(nodeIndex, "Can't get union variant off of a temporary value");
+          }
+        }
+      }
+    }
+
+    auto boxedField = Types::Pool().getFieldIndex(type, fieldName);
+
+    if (!boxedField.has_value()) {
+      crash(node.fieldName, "No field '{}' found in struct '{}'", fieldName, TypeName(type));
+    }
+
+    auto [fieldType, fieldIndex] = boxedField->first;
+    type = boxedField->second;
+    auto fieldPointer = environment.addTemporary();
+
+    if (object.lValue()) {
+      auto result = Reference(StackValue(fieldPointer, fieldType));
+      fmt::println(outputFile, "{} = getelementptr inbounds {}, ptr {}, i32 0, i32 {}", result, LlvmName(type), object, fieldIndex);
+      return result;
+    } else if (auto registerValue = object.unbox<RegisterValue>()) {
+      auto result = Reference(RegisterValue(fieldPointer, fieldType));
+      fmt::println(outputFile, "{} = extractvalue {} {}, {}", result, LlvmName(type), object, fieldIndex);
+      return result;
+    } else {
+      TODO("error for getting struct field");
+    }
   }
 };

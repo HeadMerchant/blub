@@ -1,3 +1,4 @@
+#include "cimport.h"
 #include "common.h"
 #include "fmt/base.h"
 #include "fmt/format.h"
@@ -7,15 +8,16 @@
 #include <charconv>
 #include <cstdlib>
 #include <filesystem>
-#include <map>
+#include <optional>
+#include <queue>
 #include <simdjson.h>
 #include <stdexcept>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 using namespace simdjson;
 namespace fs = std::filesystem;
-using TypeCache = std::map<std::string_view, TypeIndex>;
 
 TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std::string>& globals) {
   Logger log(LogLevel::CImport);
@@ -130,57 +132,135 @@ u32 longestPrefixEndingIn(std::span<std::string_view> strings, char lastChar) {
   return prevLength;
 }
 
-TypeIndex parseStruct(ondemand::value& node, Identifier unprefixedValueName, Identifier valueName, TypeCache& cTypes, std::queue<std::string>& globals) {
-  auto [typeIndex, structIndex] = Types::Pool().makeStruct(std::string(unprefixedValueName), fmt::format("%.cstruct.{}", valueName));
+TypeIndex parseRecord(ondemand::value& node, Identifier cName, Identifier unprefixedName, TypeCache& cTypes, std::queue<std::string>& globals) {
+  Logger log(LogLevel::CImport);
+  std::string_view tagUsed;
+  node["tagUsed"].get(tagUsed);
+  TypeIndex resultTypeIndex;
+  if (tagUsed == "struct") {
+    static u32 anonIndex;
+    auto [typeIndex, structIndex] =
+      Types::Pool().makeStruct(std::string(unprefixedName), cName.empty() ? fmt::format("%.cstruct.{}", anonIndex++) : fmt::format("%.cstruct.{}", cName));
 
-  ondemand::array structFields;
-  if (node["inner"].get_array().get(structFields)) {
-    throw std::invalid_argument(fmt::format("Error parsing fields for C struct '{}'", valueName));
+    ondemand::array structFields;
+    if (node["inner"].get_array().get(structFields)) {
+      throw std::invalid_argument(fmt::format("Error parsing fields for C struct '{}'", unprefixedName));
+    }
+
+    Types::OptionalType anonType;
+    for (auto structField : structFields) {
+      std::string_view fieldKind;
+      structField["kind"].get(fieldKind);
+      if (fieldKind == "FieldDecl") {
+        std::string_view fieldName;
+        structField["name"].get(fieldName);
+        fieldName = StringPool::inst().copy(fieldName);
+
+        TypeIndex fieldType;
+        if (anonType) {
+          fieldType = anonType.value();
+        } else {
+          std::string_view fieldTypeName;
+          structField["type"]["qualType"].get(fieldTypeName);
+          fieldType = parseType(fieldTypeName, cTypes, globals);
+        }
+        Types::Pool().getStruct(structIndex).defineField(fieldName, fieldType);
+      } else if (fieldKind == "RecordDecl") {
+        anonType = parseRecord(structField.value(), "", "", cTypes, globals);
+      } else {
+        log("Skipping inner node for struct of kind {}", fieldKind);
+      }
+    }
+
+    Types::Pool().setStructSizing(structIndex);
+    Types::Pool().defineLLVMStruct(structIndex, globals);
+    resultTypeIndex = typeIndex;
+  } else if (tagUsed == "union") {
+    std::vector<TypeIndex> anonymousVariants;
+    std::vector<pair<TypeIndex, Identifier>> namedVariants;
+    ondemand::array variants;
+    if (node["inner"].get_array().get(variants)) {
+      throw std::invalid_argument(fmt::format("Error parsing variants for C union '{}'", cName));
+    }
+
+    Types::OptionalType anonType;
+    for (ondemand::value variant : variants) {
+      std::string_view variantKind;
+      variant["kind"].get(variantKind);
+      if (variantKind == "RecordDecl") {
+        anonType = parseRecord(variant, "", "", cTypes, globals);
+      } else if (variantKind != "FieldDecl") {
+        log("Skipping inner node for union {} of kind {}", cName, variantKind);
+      } else {
+        log("Defining union variant kind: {}", variantKind);
+        std::string_view variantName;
+        std::string_view fieldTypeName;
+        TypeIndex variantType;
+        variant["type"]["qualType"].get(fieldTypeName);
+        if (fieldTypeName.starts_with("union ") || fieldTypeName.starts_with("struct ")) {
+          if (anonType) {
+            variantType = anonType.value();
+            anonType = std::nullopt;
+          } else {
+            throw std::invalid_argument("Unknown type for union variant");
+          }
+        } else {
+          variantType = parseType(fieldTypeName, cTypes, globals);
+        }
+
+        if (variant["name"].get(variantName)) {
+          variantName = StringPool::inst().copy(variantName);
+          namedVariants.push_back({variantType, variantName});
+        } else {
+          anonymousVariants.push_back(variantType);
+        }
+      }
+    }
+
+    auto typeIndex = Types::Pool().addType(Types::Union{.namedVariants = namedVariants, .anonymousVariants = anonymousVariants});
+    resultTypeIndex = typeIndex;
+  } else {
+    log("Unknown tag '{}' for C RecordDecl '{}'; skipping", tagUsed, cName);
+    TODO("Error for parsing C record: invalid tag");
   }
 
-  for (auto structField : structFields) {
-    std::string_view fieldName;
-    std::string_view fieldTypeName;
-    structField["name"].get(fieldName);
-    fieldName = StringPool::inst().copy(fieldName);
-    structField["type"]["qualType"].get(fieldTypeName);
+  if (!cName.empty()) cTypes[cName] = resultTypeIndex;
 
-    auto fieldType = parseType(fieldTypeName, cTypes, globals);
-    Types::Pool().getStruct(structIndex).defineField(fieldName, fieldType);
-  }
-
-  Types::Pool().setStructSizing(structIndex);
-  Types::Pool().defineLLVMStruct(structIndex, globals);
-  cTypes[valueName] = typeIndex;
-  return typeIndex;
+  return resultTypeIndex;
 }
 
-Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::string>& globals) {
+Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::string>& globals, TypeCache& definedTypes) {
   auto fileName = cFile.string();
-  static u32 nextGlobal = 0;
   static std::unordered_map<fs::path, Environment> importedFiles;
   static TypeCache cTypes = {
-    {"uint8_t",    Types::Pool()._u8   },
-    {"uint16_t",   Types::Pool()._u16  },
-    {"uint32_t",   Types::Pool()._u32  },
-    {"uint64_t",   Types::Pool()._u64  },
-    {"int8_t",     Types::Pool()._s8   },
-    {"int16_t",    Types::Pool()._s16  },
-    {"int32_t",    Types::Pool()._s32  },
-    {"int64_t",    Types::Pool()._s64  },
-    {"__uint64_t", Types::Pool()._u64  },
-    {"__uint128_t", Types::Pool()._u128  },
-    {"int",        Types::Pool()._s32  },
-    {"char",       Types::Pool()._u8   },
-    {"size_t",     Types::Pool()._usize},
-    {"void",       Types::Pool()._void },
-    {"intptr_t",   Types::Pool()._usize},
-    {"uintptr_t",  Types::Pool()._usize},
-    {"bool",       Types::Pool()._bool },
-    {"char",       Types::Pool()._u8   },
-    {"float",      Types::Pool()._f32  },
-    {"double",     Types::Pool()._f64  },
+    {"uint8_t",     Types::Pool()._u8   },
+    {"uint16_t",    Types::Pool()._u16  },
+    {"uint32_t",    Types::Pool()._u32  },
+    {"uint64_t",    Types::Pool()._u64  },
+    {"int8_t",      Types::Pool()._s8   },
+    {"int16_t",     Types::Pool()._s16  },
+    {"int32_t",     Types::Pool()._s32  },
+    {"int64_t",     Types::Pool()._s64  },
+    {"__uint64_t",  Types::Pool()._u64  },
+    {"__uint128_t", Types::Pool()._u128 },
+    {"int",         Types::Pool()._s32  },
+    {"char",        Types::Pool()._u8   },
+    {"size_t",      Types::Pool()._usize},
+    {"void",        Types::Pool()._void },
+    {"intptr_t",    Types::Pool()._usize},
+    {"uintptr_t",   Types::Pool()._usize},
+    {"bool",        Types::Pool()._bool },
+    {"char",        Types::Pool()._u8   },
+    {"float",       Types::Pool()._f32  },
+    {"double",      Types::Pool()._f64  },
+    // TODO: vector types
+    {"__m128",      Types::Pool()._void },
   };
+
+  for (auto [typeName, type] : definedTypes) {
+    cTypes[typeName] = type;
+  }
+
   if (importedFiles.contains(cFile)) {
     return &importedFiles[cFile];
   }
@@ -205,7 +285,9 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
     std::string_view unprefixedValueName = valueName.substr(prefix.size());
 
     Reference blubInterface;
-    if (kind == "EnumDecl") {
+    if (cTypes.contains(valueName)) {
+      blubInterface.value = cTypes[valueName];
+    } else if (kind == "EnumDecl") {
       u32 currentValue = 0;
       log("Making enum '{}' with raw value '{}'", unprefixedValueName, TypeName(Types::Pool()._s32));
       auto [typeIndex, enumIndex] = Types::Pool().addEnum(Types::Pool()._s32, std::string(unprefixedValueName));
@@ -282,61 +364,7 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
       functionType.forwardDeclare(declareName, globals);
       blubInterface.value = Function(functionType, declareName);
     } else if (kind == "RecordDecl") {
-      std::string_view tag;
-      node["tagUsed"].get(tag);
-      if (tag == "struct") {
-        auto typeIndex = parseStruct(
-          node.value(),
-          unprefixedValueName,
-          valueName,
-          cTypes,
-          globals);
-        blubInterface.value = typeIndex;
-      } else if (tag == "union") {
-        std::vector<TypeIndex> anonymousVariants;
-        std::vector<pair<TypeIndex, Identifier>> namedVariants;
-        ondemand::array variants;
-        if (node["inner"].get_array().get(variants)) {
-          throw std::invalid_argument(fmt::format("Error parsing variants for C struct '{}'", valueName));
-        }
-
-        for (ondemand::value variant : variants) {
-          if (variant["kind"] == "RecordDecl") {
-            u32 line;
-            u32 col;
-            variant["loc"]["line"].get(line);
-            variant["loc"]["col"].get(col);
-            parseStruct(
-              variant,
-              fmt::format("anon.{}", nextGlobal++),
-              fmt::format("struct {}::(anonymous at {}:{}:{})", valueName, fileName, line, col),
-              cTypes,
-              globals);
-          } else if (variant["kind"] != "FieldDecl") {
-            std::string_view nodeKind;
-            variant["kind"].get(nodeKind);
-            log("Skipping inner node for union {} of kind {}", valueName, nodeKind);
-            continue;
-          }
-          std::string_view variantName;
-          std::string_view fieldTypeName;
-          auto variantType = parseType(fieldTypeName, cTypes, globals);
-          variant["type"]["qualType"].get(fieldTypeName);
-          if (variant["name"].get(variantName)) {
-            variantName = StringPool::inst().copy(variantName);
-            namedVariants.push_back({variantType, variantName});
-          } else {
-            anonymousVariants.push_back(variantType);
-          }
-        }
-
-        auto typeIndex = Types::Pool().addType(Types::Union{.namedVariants = namedVariants, .anonymousVariants = anonymousVariants});
-        cTypes[valueName] = typeIndex;
-        blubInterface.value = typeIndex;
-      } else {
-        log("Unknown tag '{}' for C RecordDecl '{}'; skipping", tag, valueName);
-        continue;
-      }
+      blubInterface.value = parseRecord(node.value(), valueName, unprefixedValueName, cTypes, globals);
     } else {
       log("Skipping clang ast node of kind '{}'; name: '{}'", kind, unprefixedValueName);
     }

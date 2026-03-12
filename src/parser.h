@@ -30,7 +30,7 @@ enum class NodeType {
   ForLoop,
 };
 
-enum class UnaryOps { Not, Reference, Dereference, SliceType, MakeSlice, MultiPointerTo, MultiPointerFrom, CompilerBuiltin, Import, Minus, BitNot, Return };
+enum class UnaryOps { Not, Reference, Dereference, SliceType, MakeSlice, MultiPointerTo, MultiPointerFrom, CompilerBuiltin, Import, Minus, BitNot, Return, Using };
 
 struct NodeIndex {
   u32 value;
@@ -353,7 +353,8 @@ public:
         .right = node.value.value,
         .token = token,
         .nodeType = NodeType::Declaration,
-      });
+      }
+    );
   }
 
   Encodings::Declaration getDeclaration(NodeIndex index) {
@@ -850,6 +851,10 @@ public:
       return block();
     }
 
+    if (auto token = match(TokenType::Using)) {
+      return addNode(Encodings::UnaryOp{.operand = expression(), .operation = UnaryOps::Using}, token);
+    }
+
     static std::vector<TokenType> builtinTokens = {
       TokenType::BUILTIN_RegisterType,
       TokenType::BUILTIN_NumCast,
@@ -935,12 +940,14 @@ public:
       consume(
         TokenType::LeftParen,
         "Condition for 'if' statement needs to be "
-        "surrounded by parentheses '('");
+        "surrounded by parentheses '('"
+      );
       auto condition = expression();
       consume(
         TokenType::RightParen,
         "Condition for 'if' statement needs to be "
-        "surrounded by parentheses ')'");
+        "surrounded by parentheses ')'"
+      );
       auto value = assignment();
 
       auto ifNode = Encodings::If{.condition = condition, .value = value};
