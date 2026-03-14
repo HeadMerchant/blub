@@ -17,6 +17,7 @@
 #include <fmt/ostream.h>
 #include <fmt/ranges.h>
 #include <iostream>
+#include <optional>
 #include <ostream>
 #include <queue>
 #include <ranges>
@@ -25,7 +26,9 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <variant>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -229,6 +232,141 @@ public:
         }
         auto [typeIndex, _] = Types::Pool().tupleOf(std::move(elementTypes));
         return Reference(typeIndex);
+      }
+      case TokenType::When: {
+        StatementContext conditionContext(context);
+        conditionContext.expectedType = std::nullopt;
+        auto condition = interpret(node.elements[0], environment, outputFile, conditionContext);
+
+        // Always odd number in encoded children, so floor division is fine
+        auto caseNodes = std::bit_cast<span<pair<NodeIndex, NodeIndex>>>(node.elements.subspan(1, node.elements.size() / 2));
+        auto loadedCondition = toRegister(&condition, outputFile, environment);
+        auto blockIndex = environment.addTemporary();
+        auto caseType = condition.getType();
+        struct SwitchCase {
+          stringstream instructions;
+          Reference condition;
+          Reference result;
+          u32 entryBlock;
+          RegisterName exitBlock;
+          struct {
+            bool returns : 1;
+            bool breaks : 1;
+            bool isNamed : 1;
+            bool isDefault : 1;
+          };
+        };
+
+        // TODO: Exhaustiveness checking
+        if (auto enumType = Types::Pool().getEnum(caseType)) {
+        }
+
+        vector<SwitchCase> cases;
+        cases.reserve(caseNodes.size());
+        StatementContext caseConditionContext{.expectedType = caseType};
+        StatementContext caseBodyContext(context);
+        bool hasDefault;
+        for (auto [condition, body] : caseNodes) {
+          stringstream instruction;
+          // Reserve one for loading stack values
+          environment.addTemporary();
+          u32 block = environment.addTemporary();
+          environment.basicBlock = block;
+          if (condition.value == body.value) {
+            hasDefault = true;
+            cases.push_back({
+              .result = interpret(body, environment, instruction, caseBodyContext),
+              .entryBlock = block,
+              .exitBlock = environment.basicBlock,
+              .returns = environment.hasReturned,
+              .isDefault = true,
+            });
+            cases.back().instructions = std::move(instruction);
+            environment.hasReturned = false;
+            break;
+          }
+          cases.push_back({
+            .condition = interpret(condition, environment, outputFile, caseConditionContext),
+            .result = interpret(body, environment, instruction, caseBodyContext),
+            .entryBlock = block,
+            .exitBlock = environment.basicBlock,
+            .returns = environment.hasReturned,
+          });
+          environment.hasReturned = false;
+          SwitchCase& switchCase = cases.back();
+          switchCase.instructions = std::move(instruction);
+
+          if (switchCase.condition.getType() != caseType) {
+            crash(condition, "Expected type for case condition was {}, but was given {}", TypeName(caseType), TypeName(switchCase.condition.getType()));
+          }
+
+          // TODO: non-comptime cases
+          if (!switchCase.condition.isComptime()) {
+            crash(condition, "Condition for switch case conditions must be comptime known");
+          }
+
+          // TODO: default
+        }
+
+        // Reserve one for loading stack values
+        environment.addTemporary();
+        auto endBlock = environment.addTemporary();
+        auto defaultBlock = hasDefault ? cases.back().entryBlock : endBlock;
+
+        // TODO: mix named and unnamed values
+        // auto lValueResult =
+
+        fmt::print(outputFile, "switch {} {}, label %{} [", LlvmName(caseType), loadedCondition, defaultBlock);
+        for (auto& caseBlock : cases) {
+          if (caseBlock.isDefault) break;
+          fmt::print(outputFile, " {} {}, label %{}", LlvmName(caseType), caseBlock.condition, caseBlock.entryBlock);
+        }
+        outputFile << "]\n";
+
+        bool allStackValues = true;
+        bool hasResults = false;
+        optional<TypeIndex> resultType = Types::Pool().infer;
+        for (auto& caseBlock : cases) {
+          fmt::print(outputFile, "{}:\n{}", caseBlock.entryBlock, caseBlock.instructions.str());
+          if (!caseBlock.returns) {
+            fmt::println(outputFile, "br label %{}", endBlock);
+          }
+          auto blockType = caseBlock.result.getType();
+          if (resultType) {
+            resultType = Types::Pool().coerce(*resultType, blockType);
+          }
+          allStackValues = allStackValues && (caseBlock.returns || caseBlock.result.lValue());
+          hasResults = hasResults || !(caseBlock.returns || Types::Pool().isVoid(blockType));
+        }
+
+        fmt::println(outputFile, "{}:", endBlock);
+
+        if (hasResults && resultType && !Types::Pool().isVoid(*resultType)) {
+          auto type = *resultType;
+          auto resultRegister = environment.addTemporary();
+          if (allStackValues) {
+            fmt::println(outputFile, "%{} = phi ptr ", resultRegister);
+          } else {
+            fmt::println(outputFile, "%{} = phi {} ", resultRegister, LlvmName(type));
+          }
+
+          bool hasMultiple = false;
+          for (auto& caseBlock : cases) {
+            if (caseBlock.returns) {
+              continue;
+            }
+            if (hasMultiple) {
+              outputFile << ", ";
+            }
+            hasMultiple = true;
+            fmt::print(outputFile, "[{}, %{}]", caseBlock.result, caseBlock.exitBlock);
+          }
+          outputFile << '\n';
+
+          return allStackValues ? Reference(StackValue(resultRegister, type)) : Reference(RegisterValue(resultRegister, type));
+        }
+
+        return Reference::Void();
       }
       default:
         TODO("Default for block nodes");
@@ -564,7 +702,7 @@ public:
           if (Types::Pool().isInt(operandType) || Types::Pool().isPointer(operandType)) binaryOperator = "icmp eq";
           else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp ueq";
           else if (auto enumDef = Types::Pool().getEnum(operandType)) {
-            auto rawType = (*enumDef)->rawType;
+            auto rawType = enumDef->rawType;
             if (Types::Pool().isInt(rawType)) {
               binaryOperator = "icmp eq";
             } else if (Types::Pool().isFloat(rawType)) {
@@ -586,7 +724,7 @@ public:
           if (Types::Pool().isInt(operandType) || Types::Pool().isPointer(operandType)) binaryOperator = "icmp ne";
           else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp une";
           else if (auto enumDef = Types::Pool().getEnum(operandType)) {
-            auto rawType = (*enumDef)->rawType;
+            auto rawType = enumDef->rawType;
             if (Types::Pool().isInt(rawType)) {
               binaryOperator = "icmp ne";
             } else if (Types::Pool().isFloat(rawType)) {
@@ -2096,7 +2234,8 @@ public:
       auto name = argToken->lexeme;
       assert(namedArguments.contains(name));
       auto value = toRegister(&namedArguments[name], outputFile, environment);
-      // auto argToken = std::find_if(args.optionalArgs.begin(), args.optionalArgs.end(), [this, name](auto x){return parser.toPointer(x.token)->lexeme == name;})->token;
+      // auto argToken = std::find_if(args.optionalArgs.begin(), args.optionalArgs.end(), [this, name](auto x){return parser.toPointer(x.token)->lexeme ==
+      // name;})->token;
       auto field = definition.getField(name);
       if (!field) {
         crash(argToken, "Unknown field '{}' for type '{}'", name, TypeName(type));
@@ -2319,7 +2458,7 @@ public:
       }
 
       if (auto enumDefinition = Types::Pool().getEnum(*type)) {
-        if (auto value = (*enumDefinition)->get(fieldName)) {
+        if (auto value = enumDefinition->get(fieldName)) {
           return Reference(IntLiteral(*value, *type));
         }
         crash(nodeIndex, "Unknown variant '{}' in enum '{}'", fieldName, TypeName(*type));

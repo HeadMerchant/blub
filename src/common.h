@@ -6,9 +6,11 @@
 #include <filesystem>
 #include <iostream>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <tuple>
 #include <variant>
+#include <vector>
 
 using u8 = uint8_t;
 using u16 = uint16_t;
@@ -41,7 +43,12 @@ template <typename... Ts> struct fmt::formatter<std::variant<Ts...>> {
 
 using std::optional;
 using std::pair;
+using std::stringstream;
+using std::tuple;
+using std::vector;
 using Identifier = std::string_view;
+using std::span;
+using std::views::transform;
 namespace fs = std::filesystem;
 
 struct StringPool {

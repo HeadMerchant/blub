@@ -685,11 +685,11 @@ public:
     return addEnum(Enum(name, std::move(rawType)));
   }
 
-  std::optional<Enum*> getEnum(TypeIndex type) {
+  Enum* getEnum(TypeIndex type) {
     if (auto enumIndex = std::get_if<EnumIndex>(&getType(type))) {
       return &getEnum(*enumIndex);
     }
-    return std::nullopt;
+    return nullptr;
   }
 
   Enum& getEnum(EnumIndex type) {

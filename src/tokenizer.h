@@ -81,6 +81,9 @@ enum class TokenType {
   Generic,
   Self,
   Using,
+  When,
+  // TODO
+  Wildcard,
 
   // Literal
   Identifier,
@@ -318,6 +321,9 @@ struct Tokenizer {
       if (peek() == '=') {
         advance();
         addToken(TokenType::DoubleEqual);
+      } else if (peek() == '>') {
+        advance();
+        addToken(TokenType::FatArrow);
       } else {
         addToken(TokenType::Assign);
       }

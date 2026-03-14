@@ -843,6 +843,38 @@ public:
   }
 
   NodeIndex primary() {
+    if (auto token = match(TokenType::When)) {
+      consume(TokenType::LeftParen, "Condition for switch statement must be preceeded by a '('");
+      std::vector<NodeIndex> cases;
+      cases.push_back(expression());
+      consume(TokenType::RightParen, "Condition for switch statement must be followed by a ')'");
+      consume(TokenType::LeftCurlyBrace, "Expected '{' before cases for 'switch'");
+      bool hasMultiple = false;
+      while (!acceptUntil(TokenType::StatementBreak, TokenType::RightCurlyBrace)) {
+        if (hasMultiple) {
+          consumeN(TokenType::StatementBreak, "Expected newline between cases for 'switch'");
+        } else {
+          hasMultiple = true;
+          acceptN(TokenType::StatementBreak);
+        }
+        auto caseCondition = expression();
+        consume(TokenType::FatArrow, "Expected '=>' between case condition and body");
+        auto caseBody = expression();
+        cases.push_back(caseCondition);
+        cases.push_back(caseBody);
+
+        if (auto elseToken = acceptUntil(TokenType::StatementBreak, TokenType::Else)) {
+          auto caseBlock = expression();
+          cases.push_back(caseBlock);
+          cases.push_back(caseBlock);
+          acceptN(TokenType::StatementBreak);
+          consume(TokenType::RightCurlyBrace, "Expected closing '}' after default 'else' case in switch statement");
+          break;
+        }
+      }
+      return addNode(Encodings::Block{.elements = cases}, toIndex(token));
+    }
+
     if (check(TokenType::While)) {
       return whileLoop();
     }
