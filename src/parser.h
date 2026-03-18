@@ -28,6 +28,7 @@ enum class NodeType {
   ArgumentList,
   ParameterList,
   ForLoop,
+  Assignment,
 };
 
 enum class UnaryOps { Not, Reference, Dereference, SliceType, MakeSlice, MultiPointerTo, MultiPointerFrom, CompilerBuiltin, Import, Minus, BitNot, Return, Using };
@@ -140,13 +141,14 @@ struct ForLoop {
 using namespace Tokenization;
 class Parser {
 public:
-  Parser(Tokenizer& tokenizer) : tokenizer(tokenizer), tokens(tokenizer.tokens), log(LogLevel::Parsing) {}
+  Parser(Tokenizer& tokenizer) : tokenizer(tokenizer), tokens(tokenizer.tokens), log(LogLevel::Parsing), endLocation(tokens.size()) {}
   const Tokenizer& tokenizer;
   const std::vector<Token>& tokens;
   std::vector<u32> extraData;
   std::vector<ASTNode> nodes;
   TokenIndex current = {0};
   Logger log;
+  u32 endLocation;
 
   const Token& peek(TokenIndex ahead = {0}) {
     return tokens[current.value + ahead.value];
@@ -227,7 +229,7 @@ public:
   }
 
   bool isAtEnd(TokenIndex ahead = {0}) {
-    return current.value + ahead.value >= tokens.size() || peek(ahead).type == TokenType::EndOfFile;
+    return current.value + ahead.value >= endLocation || peek(ahead).type == TokenType::EndOfFile;
   }
 
   const TokenPointer previous(u32 behind = 1) {
@@ -512,7 +514,8 @@ public:
   NodeIndex statement() {
     acceptN(TokenType::StatementBreak);
 
-    NodeIndex node = assignment();
+    bool isDeclaration = check(TokenType::Identifier) && check(TokenType::Colon, {1});
+    NodeIndex node = isDeclaration ? declaration() : assignment();
 
     if (!isAtEnd()) {
       consumeN(TokenType::StatementBreak, "Expected a breaking statement");
@@ -520,20 +523,17 @@ public:
     return node;
   }
 
-  NodeIndex assignment() {
-    bool isDefinition = check(TokenType::Identifier) && check(TokenType::Colon, {1});
-    if (isDefinition) {
-      return declaration();
+  NodeIndex definition() {
+    TokenPointer name = consume(TokenType::Identifier, "Expected an identifier for a definition");
+    consume(TokenType::Colon, "Expected a ':' for type declaration");
+    TokenPointer token = previous();
+    bool infer = check(TokenType::Colon) || check(TokenType::Assign);
+    if (infer) {
+      return addNode(Encodings::Definition{.name = name, .type = std::nullopt}, token);
     }
 
-    NodeIndex expr = expression();
-
-    if (auto token = match(TokenType::Assign)) {
-      auto value = expression();
-      return addNode(Encodings::BinaryOp{.left = expr, .right = value, .operation = token});
-    }
-
-    return expr;
+    NodeIndex type = expression();
+    return addNode(Encodings::Definition{.name = name, .type = type}, token);
   }
 
   NodeIndex declaration() {
@@ -549,17 +549,38 @@ public:
     return name;
   }
 
-  NodeIndex definition() {
-    TokenPointer name = consume(TokenType::Identifier, "Expected an identifier for a definition");
-    consume(TokenType::Colon, "Expected a ':' for type declaration");
-    TokenPointer token = previous();
-    bool infer = check(TokenType::Colon) || check(TokenType::Assign);
-    if (infer) {
-      return addNode(Encodings::Definition{.name = name, .type = std::nullopt}, token);
+  NodeIndex addAssignment(NodeIndex left, NodeIndex right, TokenPointer token) {
+    return addNode(ASTNode{.left = left.value, .right = right.value, .token = toIndex(token), .nodeType = NodeType::Assignment});
+  }
+
+  NodeIndex assignment() {
+    auto startToken = current;
+    while (!check(TokenType::StatementBreak)) {
+      if (peek().isArithmeticOperation() && check(TokenType::Assign, {1})) {
+        endLocation = current.value;
+        break;
+      } else advance();
+    }
+    current = startToken;
+    NodeIndex expr = expression();
+
+    endLocation = tokens.size();
+    if (auto token = match(TokenType::Assign)) {
+      auto value = expression();
+      return addAssignment(expr, value, token);
     }
 
-    NodeIndex type = expression();
-    return addNode(Encodings::Definition{.name = name, .type = type}, token);
+    // +=, -=, etc
+    if (peek().isArithmeticOperation() && check(TokenType::Assign, {1})) {
+      auto token = advance();
+      fmt::println("Homie: {}", token->lexeme);
+      auto dummy = advance();
+      fmt::println("ese: {}", dummy->lexeme);
+      auto value = expression();
+      return addAssignment(expr, value, token);
+    }
+
+    return expr;
   }
 
   NodeIndex expression() {
@@ -859,12 +880,14 @@ public:
         }
         auto caseCondition = expression();
         consume(TokenType::FatArrow, "Expected '=>' between case condition and body");
-        auto caseBody = expression();
+        auto caseBody = assignment();
         cases.push_back(caseCondition);
         cases.push_back(caseBody);
 
         if (auto elseToken = acceptUntil(TokenType::StatementBreak, TokenType::Else)) {
-          auto caseBlock = expression();
+          // Use fat arrow to diambiguate against if/else from previous case
+          consume(TokenType::FatArrow, "Expected '=>' between else case and body");
+          auto caseBlock = assignment();
           cases.push_back(caseBlock);
           cases.push_back(caseBlock);
           acceptN(TokenType::StatementBreak);
@@ -984,8 +1007,13 @@ public:
 
       auto ifNode = Encodings::If{.condition = condition, .value = value};
       OptionalNode elseNode = std::nullopt;
-      if (auto elseToken = acceptUntil(TokenType::StatementBreak, TokenType::Else)) {
+
+      // Disambiguate when/else
+      auto lastToken = current;
+      if (auto elseToken = acceptUntil(TokenType::StatementBreak, TokenType::Else); elseToken && !check(TokenType::FatArrow)) {
         elseNode = assignment();
+      } else {
+        current = lastToken;
       }
       ifNode.elseValue = elseNode;
       return addNode(ifNode, ifToken);
@@ -1214,7 +1242,7 @@ public:
     consume(TokenType::Colon, "Expected ':' between capture variable and iterator");
     auto iterator = expression();
     consume(TokenType::RightParen, "For loop's header must be within parentheses; Expected ')'");
-    auto body = expression();
+    auto body = assignment();
     return addNode(Encodings::ForLoop{.capture = capture, .iterator = iterator, .body = body}, keyword);
   }
 };

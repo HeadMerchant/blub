@@ -1,4 +1,5 @@
 #pragma once
+#include "common.h"
 #include "fmt/format.h"
 #include "fmt/ostream.h"
 #include "parser.h"
@@ -409,6 +410,7 @@ enum class EnvType { Global, Function };
 
 class Environment {
 public:
+  Logger log;
   static u32 globalIndex;
   std::unordered_map<std::string_view, Reference> defs;
   std::vector<Environment*> imports;
@@ -430,10 +432,10 @@ public:
     return prefix;
   }
 
-  Environment() : parent(Environment::baseEnvironment()), imports(), defs(), prefix(""), envType(EnvType::Global), basicBlock(0u) {}
+  Environment() : parent(Environment::baseEnvironment()), imports(), defs(), prefix(""), envType(EnvType::Global), basicBlock(0u), log(LogLevel::Compile) {}
 
   Environment(Environment* parent, std::string_view prefix, bool quoteTemporaries = false)
-      : parent(parent), imports(), defs(), quotePrefixedNames(quoteTemporaries | parent->quotePrefixedNames), envType(EnvType::Function) {
+      : parent(parent), imports(), defs(), quotePrefixedNames(quoteTemporaries | parent->quotePrefixedNames), envType(EnvType::Function), log(LogLevel::Compile) {
     std::stringstream ss;
     ss << parent->prefix << prefix << ".";
     this->prefix = ss.str();
@@ -443,21 +445,23 @@ public:
       : parent(parent), prefix(prefix), imports(), defs(), quotePrefixedNames(quoteTemporaries | parent->quotePrefixedNames) {}
   Environment(std::unordered_map<std::string_view, Reference> defs, Environment* parent = nullptr) : parent(parent), defs(defs), imports() {}
 
-  std::optional<Reference*> find(std::string_view name) {
+  Reference* find(std::string_view name) {
     Environment* env = this;
     while (env) {
-      if (env->defs.contains(name)) {
-        return &env->defs[name];
+      auto it = env->defs.find(name);
+      if (it != env->defs.end()) {
+        return &it->second;
+      }
+      for (auto imported : env->usings) {
+        auto it = imported->defs.find(name);
+        if (it != imported->defs.end()) {
+          return &it->second;
+        }
       }
       env = env->parent;
     }
 
-    for (auto imported : usings) {
-      if (auto result = imported->find(name)) {
-        return result;
-      }
-    }
-    return std::nullopt;
+    return nullptr;
   }
 
   bool isDefined(std::string_view name) {
@@ -522,4 +526,17 @@ public:
   }
 
   static Environment* baseEnvironment();
+
+  void debug(u32 depth = 0) {
+    if (!(log.logLevel & log.globalLevels)) return;
+    if (depth == 0) fmt::println("Symbols:");
+    for (auto& [name, _] : defs) {
+      fmt::println("{: >{}}{}", "", depth * 2, name);
+    }
+    if (usings.empty()) return;
+    if (depth == 0) log("Using:");
+    for (auto x : usings) {
+      x->debug(depth + 1);
+    }
+  }
 };

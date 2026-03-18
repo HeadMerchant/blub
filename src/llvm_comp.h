@@ -419,7 +419,6 @@ public:
           auto byteAlignment = Types::Pool().getSizing(*assignedType).alignment.byteAlignment();
           switch (assignee->scope) {
           case ValueScope::Local: {
-            fmt::println("wtf alignment: {} {}: {}", definition, TypeName(*assignedType), byteAlignment);
             fmt::println(outputFile, "{} = alloca {}, align {}", definition, LlvmName(*assignedType), byteAlignment);
             break;
           }
@@ -509,11 +508,11 @@ public:
       }
       if (token->type == TokenType::Identifier) {
         auto name = node.token->lexeme;
-        std::optional<Reference*> value = environment.find(name);
-        if (!value.has_value()) {
-          crash(nodeIndex, "Identifier \"{}\" not defined", name);
+        if (auto value = environment.find(name)) {
+          return Reference(*value);
         }
-        return Reference(*value);
+        environment.debug();
+        crash(nodeIndex, "Identifier \"{}\" not defined", name);
       }
       if (token->type == TokenType::Opaque) {
         TypeIndex type = Types::Pool().addOpaque(std::string(context.name.value_or("Anonymous Opaque")));
@@ -553,6 +552,48 @@ public:
         return Reference(result);
       }
       crash(nodeIndex, "Unable to create literal from value");
+    }
+    case NodeType::Assignment: {
+      auto node = parser.getNode(nodeIndex);
+      NodeIndex assigneeNode(node.left), valueNode{node.right};
+      TokenPointer token = parser.getToken(node.token);
+      if (token->isArithmeticOperation()) {
+        auto rValue = parser.addNode(Encodings::BinaryOp{.left = assigneeNode, .right = valueNode, .operation = token});
+        fmt::println("Operator: {}", token->lexeme);
+        auto node = parser.addAssignment(assigneeNode, rValue, &token[1]);
+        fmt::println("Equals: {}", token[1].lexeme);
+        return interpret(node, environment, outputFile, context);
+      } else if (token->type != TokenType::Assign) {
+        crash(token, "Unknown compound assignment operator");
+      }
+
+      auto assignee = interpret(assigneeNode, environment, outputFile, context);
+      StatementContext valueContext(context);
+      valueContext.expectedType = assignee.getType();
+      auto value = interpret(valueNode, environment, outputFile, valueContext);
+
+      Reference lValue;
+      TypeIndex leftType;
+      if (auto stackValue = assignee.lValue()) {
+        lValue.value = stackValue.value();
+        leftType = stackValue.value().type;
+      } else {
+        crash(nodeIndex, "Can't assign to literal");
+      }
+      Types::OptionalType valueType = value.isAssignableTo(leftType);
+      if (!valueType) {
+        crash(nodeIndex, "Can't assign value of type {} to symbol of type {}", TypeName(value.getType()), TypeName(leftType));
+      }
+      if (Types::Pool().isFloat(*valueType)) {
+        if (auto literal = value.unbox<IntLiteral>()) {
+          value.value = FloatLiteral(literal->value);
+        }
+      }
+      auto loaded = toRegister(&value, outputFile, environment);
+      fmt::println(outputFile, "store {} {}, ptr {}", LlvmName(*valueType), loaded, assignee);
+
+      // TODO: consider value
+      return Reference::Void();
     }
     case NodeType::BinaryOp: {
       auto node = parser.getBinaryOp(nodeIndex);
@@ -769,35 +810,6 @@ public:
         fmt::println(outputFile, "br label %{}\n{}:", loopHeader, endLabel);
         // TODO: consider value expression (see
         // https://ziglang.org/documentation/master/#while)
-        return Reference::Void();
-      }
-      case TokenType::Assign: {
-        auto assignee = interpret(node.left, environment, outputFile, context);
-        StatementContext valueContext(context);
-        valueContext.expectedType = assignee.getType();
-        auto value = interpret(node.right, environment, outputFile, valueContext);
-
-        Reference lValue;
-        TypeIndex leftType;
-        if (auto stackValue = assignee.lValue()) {
-          lValue.value = stackValue.value();
-          leftType = stackValue.value().type;
-        } else {
-          crash(nodeIndex, "Can't assign to literal");
-        }
-        Types::OptionalType valueType = value.isAssignableTo(leftType);
-        if (!valueType) {
-          crash(nodeIndex, "Can't assign value of type {} to symbol of type {}", TypeName(value.getType()), TypeName(leftType));
-        }
-        if (Types::Pool().isFloat(*valueType)) {
-          if (auto literal = value.unbox<IntLiteral>()) {
-            value.value = FloatLiteral(literal->value);
-          }
-        }
-        auto loaded = toRegister(&value, outputFile, environment);
-        fmt::println(outputFile, "store {} {}, ptr {}", LlvmName(*valueType), loaded, assignee);
-
-        // TODO: consider value
         return Reference::Void();
       }
 
@@ -1039,12 +1051,8 @@ public:
         } else if (auto type = function.unboxType()) {
           if (auto structDefinition = Types::Pool().getStruct(*type)) {
             return constructStruct(nodeIndex, *type, argsNode, environment, outputFile);
-            // } else if (auto union = Types::Pool().getType()) {
-            //   return
           } else {
-            if (!structDefinition.has_value()) {
-              crash(nodeIndex, "Can't construct non-struct type {}", TypeName(*type));
-            }
+            crash(nodeIndex, "Can't construct non-struct type {}", TypeName(*type));
           }
         } else {
           crash(nodeIndex, "Unable to call value of type '{}' as a function", TypeName(function.getType()));
@@ -1583,8 +1591,9 @@ public:
           environment.usings.push_back(*env);
           for (auto import : (*env)->usings) {
             environment.usings.push_back(import);
-            fmt::println("Pushing in some shit");
           }
+          fmt::println("New symbols");
+          environment.debug();
         } else {
           TODO("using for non-environment objects");
         }
@@ -1595,7 +1604,6 @@ public:
     }
     case NodeType::If: {
       auto node = parser.getIf(nodeIndex);
-      // TODO: add br instruction
       StatementContext conditionContext(context);
       auto expectedConditionType = Types::Pool()._bool;
       conditionContext.expectedType = expectedConditionType;
@@ -2234,8 +2242,6 @@ public:
       auto name = argToken->lexeme;
       assert(namedArguments.contains(name));
       auto value = toRegister(&namedArguments[name], outputFile, environment);
-      // auto argToken = std::find_if(args.optionalArgs.begin(), args.optionalArgs.end(), [this, name](auto x){return parser.toPointer(x.token)->lexeme ==
-      // name;})->token;
       auto field = definition.getField(name);
       if (!field) {
         crash(argToken, "Unknown field '{}' for type '{}'", name, TypeName(type));

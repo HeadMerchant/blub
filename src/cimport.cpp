@@ -341,13 +341,11 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
 
       blubInterface.value = typeIndex;
     } else if (kind == "FunctionDecl") {
+      log("Making function: {}", unprefixedValueName);
       std::string_view qualType;
       bool error = node["type"]["qualType"].get(qualType);
       if (error) {
         throw std::invalid_argument(fmt::format("Unable to get qualified type for C function '{}'", valueName));
-      }
-      if (valueName == "sglue_environment") {
-        log("{}: {}", valueName, qualType);
       }
 
       // TODO: factor out to Types module?

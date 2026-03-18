@@ -65,6 +65,7 @@ enum class TokenType {
   ShiftLeft,
   ShiftRight,
   ThinArrow,
+
   FatArrow,
   ExclusiveRange,
 
