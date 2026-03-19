@@ -151,9 +151,78 @@ public:
       TokenType::Mult,
       TokenType::Div,
       TokenType::Remainder,
+      TokenType::LogicAnd,
+      TokenType::LogicOr,
+      TokenType::BitAnd,
+      TokenType::BitOr,
+      TokenType::Xor,
     };
 
     return ops.contains(type);
+  }
+
+  bool isBinaryOp() const {
+    static unordered_set<TokenType> ops{
+      TokenType::Dot,
+      TokenType::LeftParen,
+      TokenType::LeftSquareBracket,
+      TokenType::ExclusiveRange,
+    };
+
+    return isArithmeticOperation() || ops.contains(this->type);
+  }
+
+  bool isClosingToken() const {
+    // TODO: update this as new closing tokens get added
+    static std::unordered_set<TokenType> closingTokens{
+      TokenType::StatementBreak,
+      TokenType::Comma,
+      TokenType::RightCurlyBrace,
+      TokenType::RightSquareBracket,
+      TokenType::RightParen,
+      TokenType::Else,
+      TokenType::Assign,
+      TokenType::Colon,
+      TokenType::FatArrow,
+      TokenType::ThinArrow,
+      TokenType::Subtype,
+      TokenType::LeftCurlyBrace,
+    };
+    return closingTokens.contains(this->type);
+  }
+
+  bool canApply() const {
+    return !(isClosingToken() || isBinaryOp());
+  }
+
+  bool isBuiltin() const {
+    static unordered_set<TokenType> builtinTokens = {
+      TokenType::BUILTIN_RegisterType,
+      TokenType::BUILTIN_NumCast,
+      TokenType::BUILITN_BitCast,
+      TokenType::BUILTIN_CDefine,
+      TokenType::BUILTIN_CInclude,
+      TokenType::BUILTIN_CIncludeDir,
+      TokenType::BUILTIN_Link,
+      TokenType::BUILTIN_LinkDir,
+      TokenType::BUILTIN_CImport,
+      TokenType::BUILTIN_Type,
+    };
+
+    return builtinTokens.contains(this->type);
+  }
+
+  bool isLiteral() const {
+    static unordered_set<TokenType> literals = {
+      TokenType::String,         TokenType::Decimal,       TokenType::Integer,        TokenType::NullTerminatedString,
+      TokenType::True,           TokenType::False,         TokenType::Identifier,     TokenType::Opaque,
+      TokenType::CudaBlockIdxX,  TokenType::CudaBlockIdxY, TokenType::CudaBlockIdxZ,  TokenType::CudaBlockDimX,
+      TokenType::CudaBlockDimY,  TokenType::CudaBlockDimZ, TokenType::CudaThreadIdxX, TokenType::CudaThreadIdxY,
+      TokenType::CudaThreadIdxZ, TokenType::CudaGridDimX,  TokenType::CudaGridDimY,   TokenType::CudaGridDimZ,
+      TokenType::Char,           TokenType::Self,          TokenType::HexInt,         TokenType::Undef,
+    };
+
+    return literals.contains(this->type);
   }
 };
 

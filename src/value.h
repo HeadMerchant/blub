@@ -191,10 +191,10 @@ struct Reference {
     return std::nullopt;
   }
 
-  std::optional<Function*> unboxFunction() {
+  Function* unboxFunction() {
     if (auto func = std::get_if<Function>(&value)) return func;
     if (auto func = std::get_if<Reference*>(&value)) return (*func)->unboxFunction();
-    return std::nullopt;
+    return nullptr;
   }
 
   bool isLiteral() {

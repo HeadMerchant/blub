@@ -1,5 +1,6 @@
 #pragma once
 #include "fmt/base.h"
+#include <bit>
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
@@ -9,6 +10,8 @@
 #include <ranges>
 #include <string>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -47,7 +50,10 @@ using std::stringstream;
 using std::tuple;
 using std::vector;
 using Identifier = std::string_view;
+using std::bit_cast;
 using std::span;
+using std::unordered_map;
+using std::unordered_set;
 using std::views::transform;
 namespace fs = std::filesystem;
 

@@ -29,6 +29,7 @@ enum class NodeType {
   ParameterList,
   ForLoop,
   Assignment,
+  Apply,
 };
 
 enum class UnaryOps { Not, Reference, Dereference, SliceType, MakeSlice, MultiPointerTo, MultiPointerFrom, CompilerBuiltin, Import, Minus, BitNot, Return, Using };
@@ -197,25 +198,6 @@ public:
       return false;
     }
     return peek(ahead).type == type;
-  }
-
-  bool isClosingToken(TokenIndex ahead = {0}) {
-    // TODO: update this as new closing tokens get added
-    static std::vector<TokenType> closingTokens = {
-      TokenType::StatementBreak,
-      TokenType::Comma,
-      TokenType::RightCurlyBrace,
-      TokenType::RightSquareBracket,
-      TokenType::RightParen,
-      TokenType::RightSquareBracket,
-      TokenType::Else,
-    };
-
-    for (auto token : closingTokens) {
-      if (check(token, ahead)) return true;
-    }
-
-    return false;
   }
 
   bool check(std::span<TokenType> types, TokenIndex ahead = {0}) {
@@ -573,9 +555,7 @@ public:
     // +=, -=, etc
     if (peek().isArithmeticOperation() && check(TokenType::Assign, {1})) {
       auto token = advance();
-      fmt::println("Homie: {}", token->lexeme);
-      auto dummy = advance();
-      fmt::println("ese: {}", dummy->lexeme);
+      consume(TokenType::Assign, "Expected '=' in compound assignment operator");
       auto value = expression();
       return addAssignment(expr, value, token);
     }
@@ -584,7 +564,12 @@ public:
   }
 
   NodeIndex expression() {
-    return logicalOr();
+    auto expr = logicalOr();
+    // while (!peek().isClosingToken()) {
+    //   auto arg = logicalOr();
+    //   expr =
+    // }
+    return expr;
   }
 
   NodeIndex logicalOr() {
@@ -600,7 +585,7 @@ public:
         auto node = Encodings::BinaryOp{.left = expr, .right = logicalAnd(), .operation = op};
         expr = addNode(node);
       } else if (auto op = match(TokenType::ExclusiveRange)) {
-        if (isClosingToken()) {
+        if (peek().isClosingToken()) {
           auto node = Encodings::BinaryOp{.left = expr, .right = {MAX_NODE}, .operation = op};
           expr = addNode(node);
         } else {
@@ -665,10 +650,16 @@ public:
   NodeIndex multiplication() {
     static std::vector<TokenType> types = {TokenType::Mult, TokenType::Div, TokenType::ShiftRight, TokenType::ShiftLeft, TokenType::Remainder};
     auto expr = unary();
-    while (match(types)) {
-      TokenPointer op = previous();
-      auto node = Encodings::BinaryOp{.left = expr, .right = unary(), .operation = op};
-      expr = addNode(node);
+    while (true) {
+      if (match(types)) {
+        TokenPointer op = previous();
+        auto node = Encodings::BinaryOp{.left = expr, .right = unary(), .operation = op};
+        expr = addNode(node);
+      } else if (!(peek().isClosingToken() || peek().isBinaryOp())) {
+        auto token = current;
+        auto applicant = expression();
+        expr = addNode(ASTNode{.left = expr.value, .right = applicant.value, .token = token, .nodeType = NodeType::Apply});
+      } else break;
     }
     return expr;
   }
@@ -910,36 +901,15 @@ public:
       return addNode(Encodings::UnaryOp{.operand = expression(), .operation = UnaryOps::Using}, token);
     }
 
-    static std::vector<TokenType> builtinTokens = {
-      TokenType::BUILTIN_RegisterType,
-      TokenType::BUILTIN_NumCast,
-      TokenType::BUILITN_BitCast,
-      TokenType::BUILTIN_CDefine,
-      TokenType::BUILTIN_CInclude,
-      TokenType::BUILTIN_CIncludeDir,
-      TokenType::BUILTIN_Link,
-      TokenType::BUILTIN_LinkDir,
-      TokenType::BUILTIN_CImport,
-      TokenType::BUILTIN_Type,
-    };
-
-    if (auto builtin = match(builtinTokens)) {
+    if (peek().isBuiltin()) {
+      auto builtin = advance();
       consume(TokenType::LeftParen, "Compiler builtins must be called like functions");
       auto args = argumentList();
       return addNode(Encodings::UnaryOp{.operand = args, .operation = UnaryOps::CompilerBuiltin}, builtin);
     }
 
-    static std::vector<TokenType> literals = {
-      TokenType::String,         TokenType::Decimal,       TokenType::Integer,        TokenType::NullTerminatedString,
-      TokenType::True,           TokenType::False,         TokenType::Identifier,     TokenType::Opaque,
-      TokenType::CudaBlockIdxX,  TokenType::CudaBlockIdxY, TokenType::CudaBlockIdxZ,  TokenType::CudaBlockDimX,
-      TokenType::CudaBlockDimY,  TokenType::CudaBlockDimZ, TokenType::CudaThreadIdxX, TokenType::CudaThreadIdxY,
-      TokenType::CudaThreadIdxZ, TokenType::CudaGridDimX,  TokenType::CudaGridDimY,   TokenType::CudaGridDimZ,
-      TokenType::Char,           TokenType::Self,          TokenType::HexInt,         TokenType::Undef,
-    };
-
-    if (auto token = match(literals)) {
-      auto node = Encodings::Literal{.token = token};
+    if (peek().isLiteral()) {
+      auto node = Encodings::Literal{.token = advance()};
       return addNode(node);
     }
 
@@ -984,7 +954,7 @@ public:
     }
 
     if (auto token = match(TokenType::Return)) {
-      if (isClosingToken()) {
+      if (peek().isClosingToken()) {
         return addNode(Encodings::UnaryOp{.operand = {MAX_NODE}, .operation = UnaryOps::Return}, token);
       }
       return addNode(Encodings::UnaryOp{.operand = expression(), .operation = UnaryOps::Return}, token);
@@ -1039,36 +1009,36 @@ public:
         advance();
         NodeIndex elementType = expression();
         return addNode(Encodings::UnaryOp{.operand = elementType, .operation = UnaryOps::SliceType}, startToken);
+      } else {
+        std::vector<NodeIndex> items;
+
+        // Array literal
+        while (!check(TokenType::RightSquareBracket)) {
+          if (items.size() > 0) {
+            consume(TokenType::Comma, "Expected separating comma between elements of array literal");
+          }
+          acceptN(TokenType::StatementBreak);
+
+          // Allow trailing comma
+          if (check(TokenType::RightSquareBracket)) {
+            break;
+          }
+
+          items.push_back(expression());
+
+          // Sized array
+          if (items.size() == 1 && check(TokenType::RightSquareBracket) && !peek({1}).isClosingToken()) {
+            advance();
+            NodeIndex elementType = expression();
+            return addNode(Encodings::BinaryOp{.left = items[0], .right = elementType, .operation = startToken});
+          }
+          acceptN(TokenType::StatementBreak);
+        }
+
+        consume(TokenType::RightSquareBracket, "Unclosed array literal; Expected ']'");
+        auto node = Encodings::Block{.elements = ChildSpan(items)};
+        return addNode(node, toIndex(startToken));
       }
-
-      std::vector<NodeIndex> items;
-
-      // Array literal
-      while (!check(TokenType::RightSquareBracket)) {
-        if (items.size() > 0) {
-          consume(TokenType::Comma, "Expected separating comma between elements of array literal");
-        }
-        acceptN(TokenType::StatementBreak);
-
-        // Allow trailing comma
-        if (check(TokenType::RightSquareBracket)) {
-          break;
-        }
-
-        items.push_back(expression());
-
-        // Sized array
-        if (items.size() == 1 && check(TokenType::RightSquareBracket) && !isClosingToken({1})) {
-          advance();
-          NodeIndex elementType = expression();
-          return addNode(Encodings::BinaryOp{.left = items[0], .right = elementType, .operation = startToken});
-        }
-        acceptN(TokenType::StatementBreak);
-      }
-
-      consume(TokenType::RightSquareBracket, "Unclosed array literal; Expected ']'");
-      auto node = Encodings::Block{.elements = ChildSpan(items)};
-      return addNode(node, toIndex(startToken));
     }
 
     if (auto token = match(TokenType::BUILTIN_Align)) {

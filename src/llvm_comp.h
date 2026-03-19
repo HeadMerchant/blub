@@ -601,187 +601,7 @@ public:
       auto leftVal = interpret(node.left, environment, outputFile, context);
 
       if (node.operation->isArithmeticOperation()) {
-        StatementContext context{.expectedType = leftVal.getType()};
-        auto rightVal = interpret(node.right, environment, outputFile, context);
-        auto coercedType = Reference::coerceType(&leftVal, &rightVal);
-        if (!coercedType.has_value()) {
-          crash(nodeIndex, "Unable to perform binary operation on incompatible types");
-        }
-        auto [operandType, coercedLeft, coeredRight] = coercedType.value();
-        auto leftLiteral = toRegister(&coercedLeft, outputFile, environment);
-        auto rightLiteral = toRegister(&coeredRight, outputFile, environment);
-        auto resultType = operandType;
-        std::string binaryOperator;
-        switch (opType) {
-        case TokenType::Plus: {
-          if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
-            return Reference(IntLiteral(left->value + right->value));
-          }
-          if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
-            return Reference(FloatLiteral(left->value + right->value));
-          }
-          if (Types::Pool().isInt(operandType)) binaryOperator = "add";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fadd";
-          else crashBinOp(node.operation, &leftVal, &rightVal);
-          break;
-        }
-        case TokenType::Minus: {
-          if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
-            return Reference(IntLiteral(left->value - right->value));
-          }
-          if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
-            return Reference(FloatLiteral(left->value - right->value));
-          }
-          if (Types::Pool().isInt(operandType)) binaryOperator = "sub";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fsub";
-          else crashBinOp(node.operation, &leftVal, &rightVal);
-          break;
-        }
-        case TokenType::Div: {
-          if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
-            return Reference(IntLiteral(left->value / right->value));
-          }
-          if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
-            return Reference(FloatLiteral(left->value / right->value));
-          }
-          if (Types::Pool().isSignedInt(operandType)) binaryOperator = "sdiv";
-          else if (Types::Pool().isInt(operandType)) binaryOperator = "udiv";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fdiv";
-          else crashBinOp(node.operation, &leftVal, &rightVal);
-          break;
-        }
-        case TokenType::Mult: {
-          if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
-            return Reference(IntLiteral(left->value * right->value));
-          }
-          if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
-            return Reference(FloatLiteral(left->value * right->value));
-          }
-          if (Types::Pool().isInt(operandType)) binaryOperator = "mul";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fmul";
-          else crashBinOp(node.operation, &leftVal, &rightVal);
-          break;
-        }
-        case TokenType::Remainder: {
-          if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
-            return Reference(IntLiteral(left->value % right->value));
-          }
-          if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
-            auto result = std::remainder(left->value, right->value);
-            return Reference(FloatLiteral(result));
-          }
-          if (Types::Pool().isSignedInt(operandType)) binaryOperator = "srem";
-          else if (Types::Pool().isUnsignedInt(operandType)) binaryOperator = "urem";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "frem";
-          else crashBinOp(node.operation, &leftVal, &rightVal);
-          break;
-        }
-        case TokenType::Lt: {
-          if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
-            return Reference(left->value < right->value);
-          }
-          if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
-            return Reference(left->value < right->value);
-          }
-          resultType = Types::Pool()._bool;
-          if (Types::Pool().isSignedInt(operandType)) binaryOperator = "icmp slt";
-          else if (Types::Pool().isInt(operandType)) binaryOperator = "icmp ult";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp uolt";
-          else crashBinOp(node.operation, &leftVal, &rightVal);
-          break;
-        }
-        case TokenType::Gt: {
-          if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
-            return Reference(left->value > right->value);
-          }
-          if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
-            return Reference(left->value > right->value);
-          }
-          resultType = Types::Pool()._bool;
-          if (Types::Pool().isSignedInt(operandType)) binaryOperator = "icmp sgt";
-          else if (Types::Pool().isInt(operandType)) binaryOperator = "icmp ugt";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp uogt";
-          else crashBinOp(node.operation, &leftVal, &rightVal);
-          break;
-        }
-        case TokenType::Leq: {
-          if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
-            return Reference(left->value <= right->value);
-          }
-          if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
-            return Reference(left->value <= right->value);
-          }
-          resultType = Types::Pool()._bool;
-          if (Types::Pool().isSignedInt(operandType)) binaryOperator = "icmp sle";
-          else if (Types::Pool().isInt(operandType)) binaryOperator = "icmp ule";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp uole";
-          else crashBinOp(node.operation, &leftVal, &rightVal);
-          break;
-        }
-        case TokenType::Geq: {
-          if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
-            return Reference(left->value >= right->value);
-          }
-          if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
-            return Reference(left->value >= right->value);
-          }
-          resultType = Types::Pool()._bool;
-          if (Types::Pool().isSignedInt(operandType)) binaryOperator = "icmp sge";
-          else if (Types::Pool().isInt(operandType)) binaryOperator = "icmp uge";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp uoge";
-          else crashBinOp(node.operation, &leftVal, &rightVal);
-          break;
-        }
-        case TokenType::DoubleEqual: {
-          if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
-            return Reference(left->value == right->value);
-          }
-          if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
-            return Reference(left->value == right->value);
-          }
-          resultType = Types::Pool()._bool;
-          if (Types::Pool().isInt(operandType) || Types::Pool().isPointer(operandType)) binaryOperator = "icmp eq";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp ueq";
-          else if (auto enumDef = Types::Pool().getEnum(operandType)) {
-            auto rawType = enumDef->rawType;
-            if (Types::Pool().isInt(rawType)) {
-              binaryOperator = "icmp eq";
-            } else if (Types::Pool().isFloat(rawType)) {
-              binaryOperator = "fcmp ueq";
-            } else {
-              crashBinOp(node.operation, &leftVal, &rightVal);
-            }
-          } else crashBinOp(node.operation, &leftVal, &rightVal);
-          break;
-        }
-        case TokenType::NotEqual: {
-          if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
-            return Reference(left->value != right->value);
-          }
-          if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
-            return Reference(left->value != right->value);
-          }
-          resultType = Types::Pool()._bool;
-          if (Types::Pool().isInt(operandType) || Types::Pool().isPointer(operandType)) binaryOperator = "icmp ne";
-          else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp une";
-          else if (auto enumDef = Types::Pool().getEnum(operandType)) {
-            auto rawType = enumDef->rawType;
-            if (Types::Pool().isInt(rawType)) {
-              binaryOperator = "icmp ne";
-            } else if (Types::Pool().isFloat(rawType)) {
-              binaryOperator = "fcmp une";
-            } else {
-              crashBinOp(node.operation, &leftVal, &rightVal);
-            }
-          } else crashBinOp(node.operation, &leftVal, &rightVal);
-          break;
-        }
-        default:
-          crash(nodeIndex, "Unknown binary operation: {}", parser.getToken(nodeIndex)->lexeme);
-        }
-        auto resultName = Reference(environment.makeTemporary(resultType));
-        fmt::println(outputFile, "{} = {} {} {}, {}", resultName, binaryOperator, LlvmName(operandType), leftLiteral, rightLiteral);
-        return resultName;
+        return arithmeticOperation(opType, node, leftVal, nodeIndex, environment, outputFile);
       }
 
       auto leftType = leftVal.getType();
@@ -972,82 +792,7 @@ public:
         std::span<TypeIndex> expectedTypes;
 
         if (auto func = function.unboxFunction()) {
-          fmt::println("Calling function {} with return type {}", func.value()->globalName, TypeName(func.value()->type.returnType));
-          std::vector<std::string> parameters;
-
-          auto funcType = (*func)->type;
-          auto returnType = funcType.returnType;
-          auto parameterTypes = Types::Pool().tupleElements(funcType.parameters);
-          std::vector<bool> setArguments(parameterTypes.size(), false);
-
-          bool literalReturn = Types::Pool().isLiteralReturn(returnType);
-          bool hasReturn = !Types::Pool().isVoid(returnType);
-
-          static Types::FieldMap namedArgs;
-          if (hasReturn && !literalReturn) {
-            // Add dummy param for now
-            parameters.push_back("");
-          }
-          auto [arguments, namedArguments] = getArguments(parameterTypes, argsNode, environment, outputFile, namedArgs);
-          for (u32 i = 0; i < arguments.size(); i++) {
-            if (auto argType = arguments[i].isAssignableTo(parameterTypes[i])) {
-              if (Types::Pool().isLlvmLiteralType(*argType)) {
-                auto value = toRegister(&arguments[i], outputFile, environment);
-                parameters.push_back(fmt::format("{} {}", LlvmName(*argType), value));
-              } else {
-                auto value = toByValPointer(arguments[i], outputFile, environment, argsNode.requiredArgs[i]);
-                parameters.push_back(fmt::format("ptr byval({}) {}", LlvmName(*argType), value));
-              }
-            } else {
-              crash(
-                argsNode.requiredArgs[i],
-                "Invalid argument in function call (can't pass argument of type {} to parameter of type {})",
-                TypeName(arguments[i].getType()),
-                TypeName(parameterTypes[i])
-              );
-            }
-            setArguments[i] = true;
-          }
-
-          // TODO: optional arguments
-          for (auto [name, value] : namedArguments) {
-            TODO("Named arguments for function calls");
-          }
-
-          if (arguments.size() != parameterTypes.size()) {
-            crash(nodeIndex, "Passed {} arguments, but expected {}", arguments.size(), parameterTypes.size());
-          }
-
-          u32 resultIndex;
-          if (hasReturn) {
-            resultIndex = environment.addTemporary();
-            if (!literalReturn) {
-              auto result = Reference(StackValue(resultIndex, returnType));
-              auto align = Types::Pool().getSizing(returnType).alignment.byteAlignment();
-              fmt::println(outputFile, "{} = alloca {}, align {}", result, LlvmName(returnType), align);
-              parameters[0] = fmt::format("ptr sret({}) align {} {}", LlvmName(returnType), align, result);
-            }
-          }
-
-          if (hasReturn && literalReturn) {
-            auto result = Reference(RegisterValue(resultIndex, returnType));
-            fmt::print(outputFile, "{} = ", result);
-          }
-          outputFile << "call ";
-          if (literalReturn) {
-            fmt::print(outputFile, "{} ", LlvmName(returnType));
-          } else {
-            outputFile << "void ";
-          }
-          fmt::println(outputFile, "{}({})", (*func)->globalName, fmt::join(parameters, ", "));
-
-          if (Types::Pool().isVoid(returnType)) {
-            return Reference::Void();
-          }
-          if (literalReturn) {
-            return Reference(RegisterValue(resultIndex, returnType));
-          }
-          return Reference(StackValue(resultIndex, returnType));
+          return callFunction(func, argsNode, nodeIndex, environment, outputFile);
         } else if (auto type = function.unboxType()) {
           if (auto structDefinition = Types::Pool().getStruct(*type)) {
             return constructStruct(nodeIndex, *type, argsNode, environment, outputFile);
@@ -1933,6 +1678,27 @@ public:
       // https://ziglang.org/documentation/master/#while)
       return Reference::Void();
     }
+    case NodeType::Apply: {
+      auto node = parser.getNode(nodeIndex);
+      auto function = interpret({node.left}, environment, outputFile, context);
+      Parser::ArgumentList argsNode{.requiredArgs = span((NodeIndex*)&node.right, 1)};
+      fmt::println("Applying!!!");
+      parser.locationOf(nodeIndex).underline(std::cout);
+      if (auto func = function.unboxFunction()) {
+        return callFunction(func, argsNode, nodeIndex, environment, outputFile);
+      } else if (auto type = function.unboxType()) {
+        if (auto structDefinition = Types::Pool().getStruct(*type)) {
+          return constructStruct(nodeIndex, *type, argsNode, environment, outputFile);
+        } else {
+          crash(nodeIndex, "Can't construct non-struct type {}", TypeName(*type));
+        }
+      } else {
+        fmt::println("Applying");
+
+        Encodings::BinaryOp binOp{.left = {node.left}, .right = {node.right}, .operation = parser.toPointer(node.token)};
+        return arithmeticOperation(TokenType::Mult, binOp, function, nodeIndex, environment, outputFile);
+      }
+    }
     }
     crash(nodeIndex, "Unknown node type");
   }
@@ -2529,5 +2295,284 @@ public:
     } else {
       TODO("error for getting struct field");
     }
+  }
+
+  Reference arithmeticOperation(
+    TokenType opType,
+    Encodings::BinaryOp& node,
+    Reference& leftVal,
+    NodeIndex nodeIndex,
+    Environment& environment,
+    std::ostream& outputFile
+  ) {
+
+    StatementContext context{.expectedType = leftVal.getType()};
+    auto rightVal = interpret(node.right, environment, outputFile, context);
+    auto coercedType = Reference::coerceType(&leftVal, &rightVal);
+    if (!coercedType.has_value()) {
+      crash(nodeIndex, "Unable to perform binary operation on incompatible types");
+    }
+    auto [operandType, coercedLeft, coeredRight] = coercedType.value();
+    auto leftLiteral = toRegister(&coercedLeft, outputFile, environment);
+    auto rightLiteral = toRegister(&coeredRight, outputFile, environment);
+    auto resultType = operandType;
+    std::string binaryOperator;
+    switch (opType) {
+    case TokenType::Plus: {
+      if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
+        return Reference(IntLiteral(left->value + right->value));
+      }
+      if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
+        return Reference(FloatLiteral(left->value + right->value));
+      }
+      if (Types::Pool().isInt(operandType)) binaryOperator = "add";
+      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fadd";
+      else crashBinOp(node.operation, &leftVal, &rightVal);
+      break;
+    }
+    case TokenType::Minus: {
+      if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
+        return Reference(IntLiteral(left->value - right->value));
+      }
+      if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
+        return Reference(FloatLiteral(left->value - right->value));
+      }
+      if (Types::Pool().isInt(operandType)) binaryOperator = "sub";
+      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fsub";
+      else crashBinOp(node.operation, &leftVal, &rightVal);
+      break;
+    }
+    case TokenType::Div: {
+      if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
+        return Reference(IntLiteral(left->value / right->value));
+      }
+      if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
+        return Reference(FloatLiteral(left->value / right->value));
+      }
+      if (Types::Pool().isSignedInt(operandType)) binaryOperator = "sdiv";
+      else if (Types::Pool().isInt(operandType)) binaryOperator = "udiv";
+      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fdiv";
+      else crashBinOp(node.operation, &leftVal, &rightVal);
+      break;
+    }
+    case TokenType::Mult: {
+      fmt::println("Multiplying a:");
+      parser.locationOf(node.left).underline(std::cout);
+      fmt::println("Multiplying b:");
+      parser.locationOf(node.right).underline(std::cout);
+
+      if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
+        fmt::println("Two int literals");
+        return Reference(IntLiteral(left->value * right->value));
+      }
+      if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
+        fmt::println("Two float literals");
+        return Reference(FloatLiteral(left->value * right->value));
+      }
+      fmt::println("Two ints or floats");
+      if (Types::Pool().isInt(operandType)) binaryOperator = "mul";
+      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fmul";
+      else crashBinOp(node.operation, &leftVal, &rightVal);
+      break;
+    }
+    case TokenType::Remainder: {
+      if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
+        return Reference(IntLiteral(left->value % right->value));
+      }
+      if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
+        auto result = std::remainder(left->value, right->value);
+        return Reference(FloatLiteral(result));
+      }
+      if (Types::Pool().isSignedInt(operandType)) binaryOperator = "srem";
+      else if (Types::Pool().isUnsignedInt(operandType)) binaryOperator = "urem";
+      else if (Types::Pool().isFloat(operandType)) binaryOperator = "frem";
+      else crashBinOp(node.operation, &leftVal, &rightVal);
+      break;
+    }
+    case TokenType::Lt: {
+      if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
+        return Reference(left->value < right->value);
+      }
+      if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
+        return Reference(left->value < right->value);
+      }
+      resultType = Types::Pool()._bool;
+      if (Types::Pool().isSignedInt(operandType)) binaryOperator = "icmp slt";
+      else if (Types::Pool().isInt(operandType)) binaryOperator = "icmp ult";
+      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp uolt";
+      else crashBinOp(node.operation, &leftVal, &rightVal);
+      break;
+    }
+    case TokenType::Gt: {
+      if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
+        return Reference(left->value > right->value);
+      }
+      if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
+        return Reference(left->value > right->value);
+      }
+      resultType = Types::Pool()._bool;
+      if (Types::Pool().isSignedInt(operandType)) binaryOperator = "icmp sgt";
+      else if (Types::Pool().isInt(operandType)) binaryOperator = "icmp ugt";
+      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp uogt";
+      else crashBinOp(node.operation, &leftVal, &rightVal);
+      break;
+    }
+    case TokenType::Leq: {
+      if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
+        return Reference(left->value <= right->value);
+      }
+      if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
+        return Reference(left->value <= right->value);
+      }
+      resultType = Types::Pool()._bool;
+      if (Types::Pool().isSignedInt(operandType)) binaryOperator = "icmp sle";
+      else if (Types::Pool().isInt(operandType)) binaryOperator = "icmp ule";
+      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp uole";
+      else crashBinOp(node.operation, &leftVal, &rightVal);
+      break;
+    }
+    case TokenType::Geq: {
+      if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
+        return Reference(left->value >= right->value);
+      }
+      if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
+        return Reference(left->value >= right->value);
+      }
+      resultType = Types::Pool()._bool;
+      if (Types::Pool().isSignedInt(operandType)) binaryOperator = "icmp sge";
+      else if (Types::Pool().isInt(operandType)) binaryOperator = "icmp uge";
+      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp uoge";
+      else crashBinOp(node.operation, &leftVal, &rightVal);
+      break;
+    }
+    case TokenType::DoubleEqual: {
+      if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
+        return Reference(left->value == right->value);
+      }
+      if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
+        return Reference(left->value == right->value);
+      }
+      resultType = Types::Pool()._bool;
+      if (Types::Pool().isInt(operandType) || Types::Pool().isPointer(operandType)) binaryOperator = "icmp eq";
+      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp ueq";
+      else if (auto enumDef = Types::Pool().getEnum(operandType)) {
+        auto rawType = enumDef->rawType;
+        if (Types::Pool().isInt(rawType)) {
+          binaryOperator = "icmp eq";
+        } else if (Types::Pool().isFloat(rawType)) {
+          binaryOperator = "fcmp ueq";
+        } else {
+          crashBinOp(node.operation, &leftVal, &rightVal);
+        }
+      } else crashBinOp(node.operation, &leftVal, &rightVal);
+      break;
+    }
+    case TokenType::NotEqual: {
+      if (auto left = leftLiteral.unbox<IntLiteral>(), right = rightLiteral.unbox<IntLiteral>(); left && right) {
+        return Reference(left->value != right->value);
+      }
+      if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
+        return Reference(left->value != right->value);
+      }
+      resultType = Types::Pool()._bool;
+      if (Types::Pool().isInt(operandType) || Types::Pool().isPointer(operandType)) binaryOperator = "icmp ne";
+      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp une";
+      else if (auto enumDef = Types::Pool().getEnum(operandType)) {
+        auto rawType = enumDef->rawType;
+        if (Types::Pool().isInt(rawType)) {
+          binaryOperator = "icmp ne";
+        } else if (Types::Pool().isFloat(rawType)) {
+          binaryOperator = "fcmp une";
+        } else {
+          crashBinOp(node.operation, &leftVal, &rightVal);
+        }
+      } else crashBinOp(node.operation, &leftVal, &rightVal);
+      break;
+    }
+    default:
+      crash(nodeIndex, "Unknown binary operation: {}", parser.getToken(nodeIndex)->lexeme);
+    }
+    auto resultName = Reference(environment.makeTemporary(resultType));
+    fmt::println(outputFile, "{} = {} {} {}, {}", resultName, binaryOperator, LlvmName(operandType), leftLiteral, rightLiteral);
+    return resultName;
+  }
+
+  Reference callFunction(Function* func, Parser::ArgumentList& argsNode, NodeIndex nodeIndex, Environment& environment, std::ostream& outputFile) {
+    fmt::println("Calling function {} with return type {}", func->globalName, TypeName(func->type.returnType));
+    std::vector<std::string> parameters;
+
+    auto funcType = func->type;
+    auto returnType = funcType.returnType;
+    auto parameterTypes = Types::Pool().tupleElements(funcType.parameters);
+    std::vector<bool> setArguments(parameterTypes.size(), false);
+
+    bool literalReturn = Types::Pool().isLiteralReturn(returnType);
+    bool hasReturn = !Types::Pool().isVoid(returnType);
+
+    static Types::FieldMap namedArgs;
+    if (hasReturn && !literalReturn) {
+      // Add dummy param for now
+      parameters.push_back("");
+    }
+    auto [arguments, namedArguments] = getArguments(parameterTypes, argsNode, environment, outputFile, namedArgs);
+    for (u32 i = 0; i < arguments.size(); i++) {
+      if (auto argType = arguments[i].isAssignableTo(parameterTypes[i])) {
+        if (Types::Pool().isLlvmLiteralType(*argType)) {
+          auto value = toRegister(&arguments[i], outputFile, environment);
+          parameters.push_back(fmt::format("{} {}", LlvmName(*argType), value));
+        } else {
+          auto value = toByValPointer(arguments[i], outputFile, environment, argsNode.requiredArgs[i]);
+          parameters.push_back(fmt::format("ptr byval({}) {}", LlvmName(*argType), value));
+        }
+      } else {
+        crash(
+          argsNode.requiredArgs[i],
+          "Invalid argument in function call (can't pass argument of type {} to parameter of type {})",
+          TypeName(arguments[i].getType()),
+          TypeName(parameterTypes[i])
+        );
+      }
+      setArguments[i] = true;
+    }
+
+    // TODO: optional arguments
+    for (auto [name, value] : namedArguments) {
+      TODO("Named arguments for function calls");
+    }
+
+    if (arguments.size() != parameterTypes.size()) {
+      crash(nodeIndex, "Passed {} arguments, but expected {}", arguments.size(), parameterTypes.size());
+    }
+
+    u32 resultIndex;
+    if (hasReturn) {
+      resultIndex = environment.addTemporary();
+      if (!literalReturn) {
+        auto result = Reference(StackValue(resultIndex, returnType));
+        auto align = Types::Pool().getSizing(returnType).alignment.byteAlignment();
+        fmt::println(outputFile, "{} = alloca {}, align {}", result, LlvmName(returnType), align);
+        parameters[0] = fmt::format("ptr sret({}) align {} {}", LlvmName(returnType), align, result);
+      }
+    }
+
+    if (hasReturn && literalReturn) {
+      auto result = Reference(RegisterValue(resultIndex, returnType));
+      fmt::print(outputFile, "{} = ", result);
+    }
+    outputFile << "call ";
+    if (literalReturn) {
+      fmt::print(outputFile, "{} ", LlvmName(returnType));
+    } else {
+      outputFile << "void ";
+    }
+    fmt::println(outputFile, "{}({})", func->globalName, fmt::join(parameters, ", "));
+
+    if (Types::Pool().isVoid(returnType)) {
+      return Reference::Void();
+    }
+    if (literalReturn) {
+      return Reference(RegisterValue(resultIndex, returnType));
+    }
+    return Reference(StackValue(resultIndex, returnType));
   }
 };
