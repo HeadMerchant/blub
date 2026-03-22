@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <string_view>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -101,7 +102,6 @@ public:
   std::string_view globalName;
 
   void llvmDeclaration(std::ostream& o, std::optional<std::span<std::string_view>> paramNames) {
-    TypeIndex returnType = type.returnType;
     auto paramTypes = Types::Pool().tupleElements(type.parameters);
 
     auto forwardDeclare = !paramNames.has_value();
@@ -114,7 +114,7 @@ public:
 
 class BoundFunction {
 public:
-  Reference& self;
+  StackValue self;
   Function& method;
 };
 
@@ -427,6 +427,16 @@ public:
   bool hasReturned = false;
 
   Environment* parent;
+  using WitnessTable = unordered_map<TypeIndex, unordered_map<Identifier, Reference>, TypeIndex::Hash>;
+  struct Impls {
+    WitnessTable witnesses;
+
+    ~Impls() {
+      fmt::println("killing witnesses");
+    }
+  };
+  Impls impls;
+  vector<Impls*> importedImpls;
 
   std::string_view getPrefix() {
     return prefix;
@@ -538,5 +548,50 @@ public:
     for (auto x : usings) {
       x->debug(depth + 1);
     }
+  }
+
+  Reference* getStatic(Impls& impl, TypeIndex type, Identifier name) {
+    auto typeAssociates = impl.witnesses.find(type);
+    if (typeAssociates == impl.witnesses.end()) return nullptr;
+    auto testValue = typeAssociates->second.find(name);
+    if (testValue != typeAssociates->second.end()) {
+      return &testValue->second;
+    }
+    log("Failed to find {}.{}; available statics:", TypeName(type), name);
+    for (auto& [name, value] : typeAssociates->second) {
+      log("\t{} = {}", name, value);
+    }
+    return nullptr;
+  }
+
+  Reference* getStatic(TypeIndex type, Identifier name) {
+    log("Testing local impl for {}.{}", TypeName(type), name);
+    if (auto val = getStatic(impls, type, name)) {
+      log("Using local or parent definition");
+      return val;
+    }
+
+    u32 debugI = 0;
+    log("#imported impls: {}", importedImpls.size());
+    for (auto impl : importedImpls) {
+      log("Testing {}th imported impl", debugI);
+      if (auto val = getStatic(*impl, type, name)) {
+        log("Using imported definition: {}", *val);
+        return val;
+      }
+      debugI++;
+    }
+
+    if (parent) {
+      log("Testing parent");
+      return parent->getStatic(type, name);
+    }
+
+    return nullptr;
+  }
+
+  bool hasLocalImpl(TypeIndex type) {
+    auto typeAssociates = impls.witnesses.find(type);
+    return typeAssociates != impls.witnesses.end();
   }
 };

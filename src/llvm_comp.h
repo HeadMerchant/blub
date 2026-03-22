@@ -102,7 +102,7 @@ public:
     }
   }
 
-  Reference toByValPointer(Reference value, std::ostream& outputFile, Environment& environment, NodeIndex node) {
+  Reference toByValPointer(Reference value, std::ostream& outputFile, Environment& environment) {
     auto loadedValue = std::get<RegisterValue>(toRegister(&value, outputFile, environment).value);
     auto stackPointer = Reference(environment.makeTemporary(loadedValue.type));
 
@@ -198,7 +198,6 @@ public:
           crash(nodeIndex, "Unable to construct array of type {}", TypeName(type));
         }
         auto resultType = canUseExpected ? context.expectedType.value() : Types::Pool().sizedArrayOf(type, elements.size());
-        auto llvmType = LlvmName(resultType);
         auto resultArray = Reference(ZeroInit{});
         i = 0;
         for (auto element : elements) {
@@ -223,7 +222,6 @@ public:
         for (auto element : node.elements) {
           elements.push_back(interpret(element, environment, outputFile, context));
         }
-        bool isType = false;
         std::vector<TypeIndex> elementTypes;
         for (auto element : elements) {
           auto elementType = element.unboxType();
@@ -241,7 +239,6 @@ public:
         // Always odd number in encoded children, so floor division is fine
         auto caseNodes = std::bit_cast<span<pair<NodeIndex, NodeIndex>>>(node.elements.subspan(1, node.elements.size() / 2));
         auto loadedCondition = toRegister(&condition, outputFile, environment);
-        auto blockIndex = environment.addTemporary();
         auto caseType = condition.getType();
         struct SwitchCase {
           stringstream instructions;
@@ -403,6 +400,7 @@ public:
         // Allow double define because we checked earlier; functions are bound to environment for recursion
         // TODO: stubbing for mutual recursion
         environment.define(definitionName, value);
+        return Reference(value);
       } else {
         Reference definition = interpret(node.definition, environment, outputFile, context);
 
@@ -473,7 +471,6 @@ public:
         std::stringstream instruction;
         instruction << fmt::format("{} = global [{} x i8] c\"{}\" align 1\n", global, length, stringValue);
         globalsStack.push(instruction.str());
-        auto sliceType = Types::Pool().sliceOf(Types::Pool()._u8);
         auto lengthValue = Reference(IntLiteral(length));
         auto ref = Reference(global);
         return makeSlice(ref, lengthValue, outputFile, environment);
@@ -686,7 +683,7 @@ public:
           }
 
           for (auto param : arguments.optionalArgs) {
-            TODO("Named generic parameters");
+            Todo(parser.getToken(param.token), "Named generic parameters");
           }
 
           auto [tupleType, tupleIndex] = Types::TypePool().tupleOf(std::move(argTypes));
@@ -713,7 +710,6 @@ public:
         // Bracket access
         auto rightVal = interpret(node.right, environment, outputFile, context);
         auto rightType = rightVal.getType();
-        Types::OptionalType arrayElement;
 
         // TODO: pointers to slice?
         if (auto dereffedType = Types::Pool().unboxReference(leftType)) {
@@ -789,10 +785,12 @@ public:
       case TokenType::LeftParen: {
         auto function = interpret(node.left, environment, outputFile, context);
         auto argsNode = parser.getArgumentList(node.right);
-        std::span<TypeIndex> expectedTypes;
 
         if (auto func = function.unboxFunction()) {
-          return callFunction(func, argsNode, nodeIndex, environment, outputFile);
+          return callFunction(func, argsNode, nodeIndex, environment, outputFile, nullptr);
+        } else if (auto bound = function.unbox<BoundFunction>()) {
+          auto ref = Reference(bound->self);
+          return callFunction(&bound->method, argsNode, nodeIndex, environment, outputFile, &ref);
         } else if (auto type = function.unboxType()) {
           if (auto structDefinition = Types::Pool().getStruct(*type)) {
             return constructStruct(nodeIndex, *type, argsNode, environment, outputFile);
@@ -921,6 +919,47 @@ public:
         auto typeIndex = Types::Pool().alignType(baseTypeIndex, Types::Log2Alignment::fromByteSize(byteAlign));
         return Reference(typeIndex);
       }
+      case TokenType::Impl: {
+        TypeIndex targetType;
+        auto boxedType = interpret(node.left, environment, outputFile, context);
+        if (auto type = boxedType.unboxType()) {
+          targetType = *type;
+        } else {
+          crash(nodeIndex, "'impl' block must operate on comptime-known type, but was given '{}' value", TypeName());
+        }
+
+        if (environment.hasLocalImpl(targetType)) {
+          crash(nodeIndex, "Existing 'impl' block in current scope for type '{}'", TypeName(targetType));
+        }
+
+        log("impl for {}", TypeName(targetType));
+        auto block = parser.getBlock(node.right);
+        auto envPrefix = fmt::format("{}", TypeName(targetType));
+        Environment implEnv(&environment, envPrefix);
+        implEnv.envType = EnvType::Global;
+        StatementContext implContext{.selfType = targetType};
+        for (auto index : block.elements) {
+          auto declaration = parser.getDeclaration(index);
+          auto nameToken = parser.getDefinition(declaration.definition).name;
+          auto name = nameToken->lexeme;
+          implContext.name = name;
+          auto value = interpret(declaration.value, implEnv, outputFile, implContext);
+          log("impl {}.{} = {}", TypeName(targetType), name, value);
+          if (implEnv.defs.contains(name)) crash(nameToken, "Duplicate member in impl block '{}'", name);
+          if (parser.getToken(index)->type != TokenType::Colon || !value.isComptime()) crash(index, "TODO: non-comptime values");
+          implEnv.define(name, value);
+        }
+
+        // TODO: figure out if we can do a move here
+        environment.impls.witnesses[targetType] = std::move(implEnv.defs);
+        if (log.logLevel & log.globalLevels) {
+          for (auto& [name, value] : environment.impls.witnesses[targetType]) {
+            log("impl {}.{} = {}", TypeName(targetType), name, value);
+          }
+        }
+
+        return Reference(targetType);
+      }
       default:
         crash(nodeIndex, "Unknown binary operation {}", node.operation->lexeme);
       }
@@ -1025,7 +1064,6 @@ public:
             if (objectType == targetType) {
               crash(nodeIndex, "Unnecessary cast from {} to {}", TypeName(objectType), TypeName(targetType));
             }
-            auto downcast = objectType.value > targetType.value;
             std::string_view typePrefix;
 
             if (Types::Pool().isFloat(objectType) && Types::Pool().isFloat(targetType)) {
@@ -1080,7 +1118,6 @@ public:
 
             auto includeFile = fs::weakly_canonical(inputFilePath.parent_path().append(parser.getToken(argumentNodes[0])->lexeme));
             auto fileName = includeFile.string();
-            auto fileNameView = StringPool::inst().copy(std::string_view(fileName));
             std::unordered_map<std::string_view, TypeIndex> definedTypes;
             StatementContext typeContext;
             for (auto [name, value] : namedArgs) {
@@ -1163,6 +1200,9 @@ public:
         auto filePath = inputFilePath.parent_path().append(fileName);
         fmt::println("Importing: {}", filePath.string());
         Environment* import = compile(filePath, outputFileStream, targetType);
+        if (!import->impls.witnesses.empty()) {
+          environment.importedImpls.push_back(&import->impls);
+        }
         return Reference(import);
       }
       case UnaryOps::Dereference: {
@@ -1415,10 +1455,6 @@ public:
         }
       }
 
-      // Results
-      auto voidType = Types::Pool()._void;
-      auto hasResultType = (resultType.value_or(voidType) != voidType) && node.elseValue.has_value();
-
       if (node.elseValue.has_value()) {
         fmt::println(outputFile, "br i1 {}, label %{}, label %{}", loadedCondition, ifLabel, elseLabel);
         outputFile << ifInstruction.str();
@@ -1510,12 +1546,7 @@ public:
       typeInstruction << "}";
       globalsStack.push(typeInstruction.str());
       if (node.implBlock) {
-        auto impl = parser.getBlock(node.implBlock.value());
-        Environment implEnv(environment);
-        implEnv.define("Self", Reference(typeIndex));
-        TODO("Impl blocks");
-        for (auto definition : impl.elements) {
-        }
+        Todo(*node.implBlock, "Remove 'impl' block inside structs");
       }
       return Reference(typeIndex);
     }
@@ -1609,7 +1640,6 @@ public:
       std::stringstream instruction;
       instruction << fmt::format("{} = global [{} x i8] c\"{}\" align 1\n", global, totalLength, fmt::join(escapedLines, "\\0A"));
       globalsStack.push(instruction.str());
-      auto sliceType = Types::Pool().sliceOf(Types::Pool()._u8);
       auto lengthValue = Reference(IntLiteral(totalLength));
       Reference ref(global);
       return makeSlice(ref, lengthValue, outputFile, environment);
@@ -1680,23 +1710,30 @@ public:
     }
     case NodeType::Apply: {
       auto node = parser.getNode(nodeIndex);
-      auto function = interpret({node.left}, environment, outputFile, context);
+      auto object = interpret({node.left}, environment, outputFile, context);
+      auto objectType = object.getType();
       Parser::ArgumentList argsNode{.requiredArgs = span((NodeIndex*)&node.right, 1)};
       fmt::println("Applying!!!");
       parser.locationOf(nodeIndex).underline(std::cout);
-      if (auto func = function.unboxFunction()) {
-        return callFunction(func, argsNode, nodeIndex, environment, outputFile);
-      } else if (auto type = function.unboxType()) {
+      if (auto function = object.unboxFunction()) {
+        return callFunction(function, argsNode, nodeIndex, environment, outputFile);
+      } else if (auto type = object.unboxType()) {
         if (auto structDefinition = Types::Pool().getStruct(*type)) {
           return constructStruct(nodeIndex, *type, argsNode, environment, outputFile);
         } else {
           crash(nodeIndex, "Can't construct non-struct type {}", TypeName(*type));
         }
+      } else if (auto methodTest = environment.getStatic(objectType, "multiply")) {
+        // TODO: calling multiply method in arithmeticOperation
+        auto lValue = object.lValue();
+        if (!lValue) TODO("Calling methods on non-lvalues");
+        auto method = findMethod(nodeIndex, "multiply", objectType, environment);
+        return callFunction(method, argsNode, nodeIndex, environment, outputFile, &object);
       } else {
         fmt::println("Applying");
 
         Encodings::BinaryOp binOp{.left = {node.left}, .right = {node.right}, .operation = parser.toPointer(node.token)};
-        return arithmeticOperation(TokenType::Mult, binOp, function, nodeIndex, environment, outputFile);
+        return arithmeticOperation(TokenType::Mult, binOp, object, nodeIndex, environment, outputFile);
       }
     }
     }
@@ -1834,7 +1871,7 @@ public:
     return &env->second;
   }
 
-  template <typename... Args> void crash(TokenPointer token, fmt::format_string<Args...> fmt, Args&&... args) {
+  template <typename... Args> [[noreturn]] void crash(TokenPointer token, fmt::format_string<Args...> fmt, Args&&... args) {
     auto& out = std::cerr;
     auto location = parser.tokenizer.locationOf(token->lexeme);
     fmt::println(out, "Compiler error in file {} at line {}:{}", inputFilePath.string(), location.line, location.column);
@@ -1844,7 +1881,23 @@ public:
     abort();
   }
 
-  template <typename... Args> void crash(NodeIndex node, fmt::format_string<Args...> fmt, Args&&... args) {
+  template <typename... Args> [[noreturn]] void Todo(TokenPointer token, fmt::format_string<Args...> fmt, Args&&... args) {
+    auto& out = std::cerr;
+    auto location = parser.tokenizer.locationOf(token->lexeme);
+    fmt::println(out, "TODO: file {} at line {}:{}", inputFilePath.string(), location.line, location.column);
+    location.underline(out);
+    fmt::println(out, fmt, std::forward<Args>(args)...);
+    dumpStatements();
+    abort();
+  }
+
+  template <typename... Args> [[noreturn]] void Todo(NodeIndex node, fmt::format_string<Args...> fmt, Args&&... args) {
+    auto token = parser.getToken(node);
+    fmt::println(std::cerr, "Crashing on substring {} for node {}", token->lexeme, (u32)parser.getNode(node).nodeType);
+    Todo(token, fmt, std::forward<Args>(args)...);
+  }
+
+  template <typename... Args> [[noreturn]] void crash(NodeIndex node, fmt::format_string<Args...> fmt, Args&&... args) {
     auto token = parser.getToken(node);
     fmt::println(std::cerr, "Crashing on substring {} for node {}", token->lexeme, (u32)parser.getNode(node).nodeType);
     crash(token, fmt, std::forward<Args>(args)...);
@@ -1929,7 +1982,6 @@ public:
   }
 
   void guardIndexInBounds(Reference& index, RangeBound& baseLength, Environment& environment, std::ostream& outputFile) {
-    auto indexType = index.getType();
     Reference usedIndex = index;
     extendToUsize(usedIndex, environment, outputFile);
 
@@ -1946,7 +1998,6 @@ public:
   RegisterValue guardNonnegativeLength(Reference& lower, RangeBound& upper, Environment& environment, std::ostream& outputFile) {
     auto usize = Types::Pool()._usize;
     auto length = environment.makeTemporary(usize);
-    auto validLength = environment.makeTemporary(Types::Pool()._bool);
     fmt::println(outputFile, "{} = sub {} {}, {}", length, LlvmName(usize), upper, lower);
 
     auto lengthIsNegative = environment.makeTemporary(Types::Pool()._bool);
@@ -1987,10 +2038,9 @@ public:
     Types::Struct& definition = **structDefinition;
     auto fieldTypes = Types::TypeSpan(definition.fieldTypes);
 
-    auto [arguments, namedArguments] = getArguments(fieldTypes, argsNode, environment, outputFile, (*structDefinition)->fields);
+    auto [arguments, namedArguments] = getArguments(fieldTypes, argsNode, environment, outputFile, (*structDefinition)->fields, nullptr);
     std::vector<bool> setArguments(fieldTypes.size(), false);
 
-    bool isInitialized = false;
     Reference structVal = Reference(ZeroInit{});
     // TODO: default values that aren't zero initialized; using 0 for now to avoid initializing all fields in C structs
     for (u32 i = 0; i < arguments.size(); i++) {
@@ -2029,7 +2079,6 @@ public:
         }
       }
       if (setArguments[i]) {
-        auto originalToken = parser.getToken(argsNode.requiredArgs[i]);
         auto location = parser.locationOf(argsNode.requiredArgs[i]);
         fmt::println(std::cerr, "Field '{}' originally assigned here", name);
         location.underline(std::cerr);
@@ -2048,13 +2097,14 @@ public:
     Parser::ArgumentList& argsNode,
     Environment& environment,
     std::ostream& outputFile,
-    Types::FieldMap& fieldNames
+    Types::FieldMap& fieldNames,
+    Reference* firstArg
   ) {
-    std::vector<Reference> arguments;
-    u32 i = 0;
+    vector<Reference> arguments;
+    if (firstArg) arguments.push_back(*firstArg);
+    u32 i = arguments.size();
     for (auto arg : argsNode.requiredArgs) {
       auto paramType = paramTypes[i];
-      i++;
       StatementContext context{.expectedType = paramType};
       auto argument = interpret(arg, environment, outputFile, context);
       auto targetType = argument.isAssignableTo(paramType);
@@ -2073,10 +2123,10 @@ public:
       } else {
         arguments.push_back(argument);
       }
+      i++;
     }
 
     std::unordered_map<Identifier, Reference> namedArgs;
-    StatementContext context;
     for (auto [name, value] : argsNode.optionalArgs) {
       auto nameToken = parser.getToken(name);
       if (!fieldNames.contains(nameToken->lexeme)) {
@@ -2184,7 +2234,7 @@ public:
     }
 
     for (NodeIndex parameterIndex : parameters.optionalParameters) {
-      TODO("Named parameters/default values");
+      Todo(parameterIndex, "Named parameters/default values");
     }
     instruction << ")";
     // TODO: attributes
@@ -2235,7 +2285,12 @@ public:
         }
         crash(nodeIndex, "Unknown variant '{}' in enum '{}'", fieldName, TypeName(*type));
       }
-      TODO("Static member variables");
+
+      if (auto staticVal = environment.getStatic(*type, fieldName)) {
+        return Reference(staticVal);
+      }
+
+      crash(nodeIndex, "Unknown associated value '{}.{}'", TypeName(*type), fieldName);
     }
 
     if (auto import = object.unboxEnv()) {
@@ -2262,22 +2317,13 @@ public:
       log("Accessing field for type {}", TypeName(type));
     }
 
-    if (auto unionType = std::get_if<Types::Union>(&Types::Pool().getType(type))) {
-      for (auto [type, name] : unionType->namedVariants) {
-        if (name == fieldName) {
-          if (auto lValue = object.unbox<StackValue>()) {
-            return Reference(StackValue(lValue->name, type, lValue->scope));
-          } else {
-            crash(nodeIndex, "Can't get union variant off of a temporary value");
-          }
-        }
-      }
-    }
-
     auto boxedField = Types::Pool().getFieldIndex(type, fieldName);
 
     if (!boxedField.has_value()) {
-      crash(node.fieldName, "No field '{}' found in struct '{}'", fieldName, TypeName(type));
+      auto lValue = object.lValue();
+      if (!lValue) TODO("Calling methods on non-lvalues");
+      auto method = findMethod(nodeIndex, fieldName, type, environment);
+      return Reference(BoundFunction(*lValue, *method));
     }
 
     auto [fieldType, fieldIndex] = boxedField->first;
@@ -2497,7 +2543,14 @@ public:
     return resultName;
   }
 
-  Reference callFunction(Function* func, Parser::ArgumentList& argsNode, NodeIndex nodeIndex, Environment& environment, std::ostream& outputFile) {
+  Reference callFunction(
+    Function* func,
+    Parser::ArgumentList& argsNode,
+    NodeIndex nodeIndex,
+    Environment& environment,
+    std::ostream& outputFile,
+    Reference* selfArg = nullptr
+  ) {
     fmt::println("Calling function {} with return type {}", func->globalName, TypeName(func->type.returnType));
     std::vector<std::string> parameters;
 
@@ -2514,14 +2567,14 @@ public:
       // Add dummy param for now
       parameters.push_back("");
     }
-    auto [arguments, namedArguments] = getArguments(parameterTypes, argsNode, environment, outputFile, namedArgs);
+    auto [arguments, namedArguments] = getArguments(parameterTypes, argsNode, environment, outputFile, namedArgs, selfArg);
     for (u32 i = 0; i < arguments.size(); i++) {
       if (auto argType = arguments[i].isAssignableTo(parameterTypes[i])) {
         if (Types::Pool().isLlvmLiteralType(*argType)) {
           auto value = toRegister(&arguments[i], outputFile, environment);
           parameters.push_back(fmt::format("{} {}", LlvmName(*argType), value));
         } else {
-          auto value = toByValPointer(arguments[i], outputFile, environment, argsNode.requiredArgs[i]);
+          auto value = toByValPointer(arguments[i], outputFile, environment);
           parameters.push_back(fmt::format("ptr byval({}) {}", LlvmName(*argType), value));
         }
       } else {
@@ -2574,5 +2627,47 @@ public:
       return Reference(RegisterValue(resultIndex, returnType));
     }
     return Reference(StackValue(resultIndex, returnType));
+  }
+
+  Function* findMethod(NodeIndex nodeIndex, string_view fieldName, TypeIndex type, Environment& environment) {
+    auto staticValue = environment.getStatic(type, fieldName);
+    if (staticValue) {
+      log("Testing if {}.{} is a method", TypeName(type), fieldName);
+      log("{}", *staticValue);
+      if (auto function = staticValue->unboxFunction()) {
+        auto paramTypes = Types::Pool().tupleElements(function->type.parameters);
+        if (paramTypes.empty()) {
+          crash(
+            nodeIndex,
+            "Function '{}.{}' must have its first argument be of type '^{}' or '{} to be called as a method, but it takes 0 arguments'",
+            TypeName(type),
+            fieldName,
+            TypeName(type),
+            TypeName(type)
+          );
+        }
+
+        auto selfType = paramTypes[0];
+        if (selfType == type) {
+          return function;
+        }
+        if (auto ptrType = Types::Pool().dereference(selfType); ptrType && type == *ptrType) {
+          TODO("Calling methods on pointers");
+        }
+
+        crash(
+          nodeIndex,
+          "Function '{}.{}' must have its first argument be of type '^{}' or '{} to be called as a method, but was actually of type '{}'",
+          TypeName(type),
+          fieldName,
+          TypeName(type),
+          TypeName(type),
+          TypeName(type)
+        );
+      } else {
+        crash(nodeIndex, "{}.{} can't be called as a method because it's a {}, but must be a function", TypeName(type), fieldName, TypeName(staticValue->getType()));
+      }
+    }
+    crash(nodeIndex, "No field or method '{}' found in struct '{}'", fieldName, TypeName(type));
   }
 };

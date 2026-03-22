@@ -189,7 +189,7 @@ struct Enum {
   TypeIndex rawType;
   TypeIndex enumType;
 
-  Enum(std::string name, TypeIndex rawType) : name(name), rawType(rawType), values() {}
+  Enum(std::string name, TypeIndex rawType) : values(), name(name), rawType(rawType) {}
 
   bool define(Identifier valueName, uint64_t value) {
     bool succeeded = values.emplace(valueName, value).second;
@@ -318,6 +318,7 @@ public:
   // TODO: function
   std::unordered_map<FunctionType, TypeIndex, FunctionType::Hash> functionCache;
   std::unordered_map<TypeIndex, std::array<TypeIndex, 9>, TypeIndex::Hash> alignmentTypes;
+  unordered_map<TypeIndex, unordered_map<Identifier, Reference*>, TypeIndex::Hash> associatedValues;
 
   // TODO: enum
 
@@ -537,7 +538,6 @@ public:
   // }
 
   std::pair<TypeIndex, Types::TupleIndex> tupleOf(std::vector<TypeIndex> types) {
-    Logger logger(LogLevel::Compile);
     if (tuples.contains(types)) {
       return tuples[types];
     }
@@ -545,7 +545,6 @@ public:
     auto elementTypes = std::span(types);
     TupleIndex tupleIndex{(u32)tuplePool.size()};
 
-    Sizing sizing;
     tuplePool.emplace_back(elementTypes, getSizing(elementTypes));
 
     auto typeIndex = addType(tupleIndex);
@@ -566,7 +565,7 @@ public:
 
   std::span<TypeIndex> tupleElements(TypeIndex type) {
     TupleIndex index = tupleIndex(type);
-    return tupleElements(type);
+    return tupleElements(index);
   }
 
   std::span<TypeIndex> tupleElements(TupleIndex type) {
@@ -913,6 +912,33 @@ public:
   template <typename T> T* unbox(TypeIndex type) {
     if (auto x = std::get_if<T>(&getType(type))) return x;
     return nullptr;
+  }
+
+  enum class CCStorage { None, SSE, Float, Int, Memory };
+  struct RegisterClass {
+    CCStorage low;
+    CCStorage high;
+
+    void lo(CCStorage newStorage) {
+      if ((int)newStorage > (int)low) low = newStorage;
+    }
+
+    void hi(CCStorage newStorage) {
+      if ((int)newStorage > (int)high) high = newStorage;
+    }
+
+    CCStorage storage() {
+      if (low == CCStorage::Memory || high == CCStorage::Memory) return CCStorage::Memory;
+      TODO("bruh storage");
+    }
+  };
+
+  CCStorage registerAssignment(TypeIndex type) {
+    auto byteSize = getSizing(type).byteSize;
+    if (byteSize > 16) {
+      return CCStorage::Memory;
+    }
+    TODO("bruh storage");
   }
 };
 

@@ -112,7 +112,6 @@ TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std
 
 u32 longestPrefixEndingIn(std::span<std::string_view> strings, char lastChar) {
   u32 prevLength = 0;
-  u32 currentLength = 0;
   while (true) {
     auto start = prevLength + 1;
     auto i = start;
@@ -370,12 +369,6 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
     environment.define(unprefixedValueName, blubInterface);
   }
 
-  // if (Logger::globalLevels & LogLevel::CImport) {
-  //   fmt::println("C Types");
-  //   for (auto [cName, blubName] : cTypes) {
-  //     fmt::println("{}: {}", cName, TypeName(blubName));
-  //   }
-  // }
   importedFiles[cFile] = environment;
   return &environment;
 }

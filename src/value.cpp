@@ -2,8 +2,6 @@
 #include "value.h"
 
 Environment* Environment::baseEnvironment() {
-  static Types::TypePool& typePool = Types::Pool();
-  // typePool.debugTypes();
   static Environment baseEnvironment(
     std::unordered_map<Identifier, Reference>{
       {"bool",  Reference(Types::Pool()._bool) },
@@ -21,13 +19,8 @@ Environment* Environment::baseEnvironment() {
       {"usize", Reference(Types::Pool()._usize)},
       {"isize", Reference(Types::Pool()._isize)},
       {"void",  Reference(Types::Pool()._void) },
-  });
-  // auto s32 = baseEnvironment.find("s32").value()->unboxType();
-  // auto actualS32 = Types::Pool().s32;
-  // for (auto [name, value] : baseEnvironment.defs) {
-  //   fmt::println("{} be looking like {}", name, value);
-  // }
-  // fmt::println("S32 be looking like {}:{}", s32.value().value, TypeName(actualS32));
+  }
+  );
 
   return &baseEnvironment;
 }

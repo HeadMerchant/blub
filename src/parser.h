@@ -178,7 +178,6 @@ public:
 
   TokenPointer acceptUntil(TokenType filler, TokenType expected) {
     u32 ahead = 0;
-    auto c = peek({ahead});
     while (!isAtEnd()) {
       auto c = peek({ahead});
       if (c.type == filler) {
@@ -377,7 +376,6 @@ public:
 
   NodeIndex addNode(Encodings::FunctionLiteral node, TokenIndex token) {
     // Block stored directed after args
-    u32 nextIndex = nodes.size();
     auto dataIndex = addData(encodeOptional(node.returnType));
     addData(encodeOptional(node.body));
     return addNode(ASTNode{.left = dataIndex.value, .right = node.parameters.value, .token = token, .nodeType = NodeType::FunctionLiteral});
@@ -400,7 +398,6 @@ public:
   Encodings::Block getBlock(NodeIndex node) {
     auto encoded = getNode(node, NodeType::Block);
 
-    auto statements = getChildren();
     return {.elements = getChildren().subspan(encoded.left, encoded.right)};
   }
 
@@ -648,13 +645,23 @@ public:
   }
 
   NodeIndex multiplication() {
-    static std::vector<TokenType> types = {TokenType::Mult, TokenType::Div, TokenType::ShiftRight, TokenType::ShiftLeft, TokenType::Remainder};
+    static std::vector<TokenType> productOps = {TokenType::Mult, TokenType::Div, TokenType::ShiftRight, TokenType::ShiftLeft, TokenType::Remainder};
     auto expr = unary();
     while (true) {
-      if (match(types)) {
-        TokenPointer op = previous();
+      if (auto op = match(productOps)) {
         auto node = Encodings::BinaryOp{.left = expr, .right = unary(), .operation = op};
         expr = addNode(node);
+      } else if (auto token = match(TokenType::Impl)) {
+        // TODO impl for
+        consume(TokenType::LeftCurlyBrace, "'impl' block must start with '{'");
+        vector<NodeIndex> declarations;
+        while (!match(TokenType::RightCurlyBrace)) {
+          acceptN(TokenType::StatementBreak);
+          declarations.push_back(declaration());
+          acceptN(TokenType::StatementBreak);
+        }
+        auto block = addNode(Encodings::Block{.elements = declarations}, toIndex(token));
+        expr = addNode(Encodings::BinaryOp{.left = expr, .right = block, .operation = token});
       } else if (!(peek().isClosingToken() || peek().isBinaryOp())) {
         auto token = current;
         auto applicant = expression();

@@ -167,6 +167,7 @@ public:
       TokenType::LeftParen,
       TokenType::LeftSquareBracket,
       TokenType::ExclusiveRange,
+      TokenType::Impl,
     };
 
     return isArithmeticOperation() || ops.contains(this->type);

@@ -9,6 +9,7 @@
 #include <optional>
 #include <ranges>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -52,6 +53,7 @@ using std::vector;
 using Identifier = std::string_view;
 using std::bit_cast;
 using std::span;
+using std::string_view;
 using std::unordered_map;
 using std::unordered_set;
 using std::views::transform;
