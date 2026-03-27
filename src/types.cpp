@@ -5,12 +5,12 @@
 
 Logger logger(LogLevel::Compile);
 
-Types::TypePool& Types::Pool() {
-  static Types::TypePool pool = Types::TypePool();
+TypePool& Pool() {
+  static TypePool pool = TypePool();
   return pool;
 }
 
-Types::OptionalType Types::TypePool::dereference(TypeIndex type) {
+OptionalType TypePool::dereference(TypeIndex type) {
   auto typeDefinition = underlyingTypes[type.value];
   if (auto multiPtr = std::get_if<MultiPointer>(&typeDefinition)) {
     logger("dereferencing mutlipointer type {}", TypeName(type));
@@ -25,28 +25,28 @@ Types::OptionalType Types::TypePool::dereference(TypeIndex type) {
 
 template <> struct fmt::formatter<TypeIndex> : ostream_formatter {};
 
-void Types::TypePool::defineLLVMStruct(Types::StructIndex structIndex, std::queue<std::string>& globals) {
-  Types::Struct& structDefinition = getStruct(structIndex);
+void TypePool::defineLLVMStruct(StructIndex structIndex, std::queue<std::string>& globals) {
+  Struct& structDefinition = getStruct(structIndex);
   globals.push(
     fmt::format("{} = type {{{}}}", structDefinition.llvmName, fmt::join(structDefinition.fieldTypes | transform([this](const auto x) { return LlvmName(x); }), ", "))
   );
 }
 
-void Types::TypePool::debugTypes() {
+void TypePool::debugTypes() {
   fmt::println("Pool contains these types:");
   for (u32 j = 0; j < underlyingTypes.size(); j++) {
     fmt::println("{}: {}", j, TypeName(TypeIndex{j}));
   }
 }
 
-void Types::FunctionType::forwardDeclare(std::string_view name, std::queue<std::string>& globals) {
+void FunctionType::forwardDeclare(std::string_view name, std::queue<std::string>& globals) {
   auto returnType = this->returnType;
-  Types::LLVMStorage returnStorage = Types::Pool().storageType(returnType);
-  auto parameterTypes = Types::Pool().tupleElements(this->parameters);
+  LLVMStorage returnStorage = Pool().storageType(returnType);
+  auto parameterTypes = Pool().tupleElements(this->parameters);
 
   std::stringstream instruction;
   fmt::print(instruction, "declare ");
-  if (Types::Pool().isLiteralReturn(returnType)) {
+  if (Pool().isLiteralReturn(returnType)) {
     fmt::print(instruction, "{} ", LlvmName(returnType));
   } else {
     fmt::print(instruction, "void ");
@@ -54,9 +54,9 @@ void Types::FunctionType::forwardDeclare(std::string_view name, std::queue<std::
   fmt::print(instruction, "{}(", name);
 
   bool hasParameters = false;
-  if (returnStorage == Types::LLVMStorage::VARIABLE) {
+  if (returnStorage == LLVMStorage::VARIABLE) {
     // TODO: factor out %return register
-    fmt::print(instruction, "ptr noalias sret({}) align {} %return", LlvmName(returnType), Types::Pool().getSizing(returnType).alignment.byteAlignment());
+    fmt::print(instruction, "ptr noalias sret({}) align {} %return", LlvmName(returnType), Pool().getSizing(returnType).alignment.byteAlignment());
     hasParameters = true;
   }
   for (auto paramType : parameterTypes) {
@@ -65,7 +65,7 @@ void Types::FunctionType::forwardDeclare(std::string_view name, std::queue<std::
     }
     hasParameters = true;
 
-    bool isLiteralParameter = Types::Pool().isLlvmLiteralType(paramType);
+    bool isLiteralParameter = Pool().isLlvmLiteralType(paramType);
     if (isLiteralParameter) {
       fmt::print(instruction, "{}", LlvmName(paramType));
     } else {
@@ -80,5 +80,5 @@ void Types::FunctionType::forwardDeclare(std::string_view name, std::queue<std::
 }
 
 bool TypeIndex::isInfer() {
-  return *this == Types::Pool().infer;
+  return *this == Pool().infer;
 }

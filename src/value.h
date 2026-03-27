@@ -36,13 +36,13 @@ enum class StorageType { REGISTER, STACK };
 enum class CompTimeStatus { ComptimeOnly, Runtime, ComptimeKnown };
 
 struct TranslationUnit;
-class Generic {
+class GenericValue {
 public:
   TranslationUnit& translationUnit;
   Environment& definitionEnvironment;
   NodeIndex astNode;
   std::vector<std::string_view> parameterNames;
-  std::unordered_map<Types::TupleIndex, Reference*, Types::TupleIndex::Hash> cache;
+  std::unordered_map<TupleIndex, Reference*, TupleIndex::Hash> cache;
   std::string_view name;
 };
 
@@ -50,7 +50,7 @@ struct IntLiteral {
   int64_t value;
   TypeIndex type;
 
-  IntLiteral(int64_t value) : value(value), type(Types::Pool().intLiteral) {};
+  IntLiteral(int64_t value) : value(value), type(Pool().intLiteral) {};
   IntLiteral(int64_t value, TypeIndex type) : value(value), type(type) {};
 };
 
@@ -61,13 +61,10 @@ template <> struct fmt::formatter<IntLiteral> : fmt::formatter<int64_t> {
 };
 struct FloatLiteral {
   double value;
-  Types::Float::Precision precision;
-  FloatLiteral(double value, Types::Float::Precision precision = Types::Float::Precision::f32) : value(value), precision(precision) {}
+  Float::Precision precision;
+  FloatLiteral(double value, Float::Precision precision = Float::Precision::f32) : value(value), precision(precision) {}
 };
 
-template <class... Ts> struct overloaded : Ts... {
-  using Ts::operator()...;
-};
 using RegisterName = std::variant<std::string_view, u32>;
 
 enum class ValueScope { Local, Global };
@@ -98,11 +95,11 @@ template <> struct fmt::formatter<StackValue> : ostream_formatter {};
 
 class Function {
 public:
-  Types::FunctionType type;
+  FunctionType type;
   std::string_view globalName;
 
   void llvmDeclaration(std::ostream& o, std::optional<std::span<std::string_view>> paramNames) {
-    auto paramTypes = Types::Pool().tupleElements(type.parameters);
+    auto paramTypes = Pool().tupleElements(type.parameters);
 
     auto forwardDeclare = !paramNames.has_value();
     if (paramNames.has_value()) {
@@ -130,8 +127,8 @@ struct Range {
   }
 
   TypeIndex getType() {
-    TypeIndex lowerType = Types::Pool().intLiteral;
-    TypeIndex upperType = Types::Pool().intLiteral;
+    TypeIndex lowerType = Pool().intLiteral;
+    TypeIndex upperType = Pool().intLiteral;
 
     if (auto regVal = std::get_if<RegisterValue>(&lower)) {
       lowerType = regVal->type;
@@ -142,7 +139,7 @@ struct Range {
       }
     }
 
-    return Types::Pool().coerce(lowerType, upperType).value();
+    return Pool().coerce(lowerType, upperType).value();
   }
 };
 
@@ -152,7 +149,7 @@ struct ZeroInit {};
 using UnderlyingValue = std::variant<
   TypeIndex,
   Environment*,
-  Generic,
+  GenericValue,
   bool,
   StackValue,
   FloatLiteral,
@@ -167,7 +164,7 @@ using UnderlyingValue = std::variant<
   ZeroInit>;
 
 struct Reference {
-  using Opt = Types::OptionalType;
+  using Opt = OptionalType;
   UnderlyingValue value;
   struct {
     int isMutable : 1 = false;
@@ -202,18 +199,17 @@ struct Reference {
   }
 
   Opt isAssignableTo(TypeIndex targetType) {
-    static Types::TypePool& TypePool = Types::Pool();
     auto type = getType();
-    return TypePool.isAssignable(type, targetType);
+    return Pool().isAssignable(type, targetType);
   }
 
-  Reference coerceFloat(Types::Float::Precision precision) const {
+  Reference coerceFloat(Float::Precision precision) const {
     auto type = getType();
     if (auto literal = std::get_if<FloatLiteral>(&this->value)) {
       auto value = literal->value;
       return Reference(FloatLiteral(value, precision));
     }
-    if (Types::Pool().isFloat(type)) return *this;
+    if (Pool().isFloat(type)) return *this;
     if (auto intLit = std::get_if<IntLiteral>(&value)) {
       return Reference(FloatLiteral(intLit->value));
     }
@@ -227,17 +223,17 @@ struct Reference {
     auto typeA = a->getType();
     auto typeB = b->getType();
 
-    auto targetType = Types::Pool().coerce(typeA, typeB);
+    auto targetType = Pool().coerce(typeA, typeB);
     if (!targetType) return std::nullopt;
 
     auto type = *targetType;
-    if (type == Types::Pool().floatLiteral) {
-      if (typeA == Types::Pool().intLiteral) {
+    if (type == Pool().floatLiteral) {
+      if (typeA == Pool().intLiteral) {
         auto value = a->unbox<IntLiteral>()->value;
         return std::make_tuple(type, Reference(FloatLiteral(value)), Reference(b));
       }
 
-      if (typeB == Types::Pool().intLiteral) {
+      if (typeB == Pool().intLiteral) {
         auto value = b->unbox<IntLiteral>()->value;
         return std::make_tuple(type, Reference(a), Reference(FloatLiteral(value)));
       }
@@ -251,19 +247,19 @@ struct Reference {
       overloaded{
         [](RegisterValue x) { return x.type; },
         [](StackValue x) { return x.type; },
-        [](bool x) { return Types::Pool()._bool; },
+        [](bool x) { return Pool()._bool; },
         [](Reference* x) { return x->getType(); },
         [](IntLiteral x) { return x.type; },
-        [](FloatLiteral x) { return Types::Pool().floatLiteral; },
-        [](Never) { return Types::Pool().never; },
-        [](TypeIndex) { return Types::Pool().type; },
-        [](Environment*) { return Types::Pool().environment; },
-        [](Generic) { return Types::Pool().generic; },
-        [](Function x) { return Types::Pool().addFunction(x.type); },
-        [](BoundFunction x) { return Types::Pool().addFunction(x.method.type); },
-        [](Range x) { return Types::Pool().rangeLiteral; },
-        [](VoidRef x) { return Types::Pool()._void; },
-        [](ZeroInit) { return Types::Pool().never; },
+        [](FloatLiteral x) { return Pool().floatLiteral; },
+        [](Never) { return Pool().never; },
+        [](TypeIndex) { return Pool().type; },
+        [](Environment*) { return Pool().environment; },
+        [](GenericValue) { return Pool().generic; },
+        [](Function x) { return Pool().addFunction(x.type); },
+        [](BoundFunction x) { return Pool().addFunction(x.method.type); },
+        [](Range x) { return Pool().rangeLiteral; },
+        [](VoidRef x) { return Pool()._void; },
+        [](ZeroInit) { return Pool().never; },
       },
       value
     );
@@ -281,26 +277,8 @@ struct Reference {
     );
   }
 
-  std::optional<u32*> structFieldIndex() {
-    // if (i32* indexPointer = std::get_if<i32>(&value)) {
-    //     return indexPointer;
-    // } else {
-    //     return std::nullopt;
-    // }
-    TODO("Struct field index");
-  }
-
-  std::optional<Generic*> generic() {
-    TODO("Generic");
-    // if (auto boxed = std::get_if<Generic>(&value)) {
-    //     return boxed;
-    // } else {
-    //     return std::nullopt;
-    // }
-  }
-
   bool isComptime() {
-    auto comptime = isAny<TypeIndex, IntLiteral, FloatLiteral, bool, Function, Generic, Environment*>(value);
+    auto comptime = isAny<TypeIndex, IntLiteral, FloatLiteral, bool, Function, GenericValue, Environment*>(value);
     if (comptime) {
       return true;
     } else if (auto ref = std::get_if<Reference*>(&value)) {
@@ -342,21 +320,21 @@ struct Reference {
 
   friend std::ostream& operator<<(std::ostream& o, const Reference& x) {
     std::visit(
-      Types::overloaded{
+      overloaded{
         [&o](TypeIndex x) { o << LlvmName(x); },
         [&o](bool x) { o << x; },
         [&o](StackValue x) { o << x; },
         [&o](FloatLiteral x) {
           double exactValue;
           switch (x.precision) {
-          case Types::Float::Precision::f16: {
+          case Float::Precision::f16: {
             TODO("Support f16/half-precision floats");
           }
-          case Types::Float::Precision::f32: {
+          case Float::Precision::f32: {
             exactValue = (double)(float)x.value;
             break;
           }
-          case Types::Float::Precision::f64: {
+          case Float::Precision::f64: {
             exactValue = x.value;
             break;
           }
@@ -370,7 +348,7 @@ struct Reference {
         [&o](BoundFunction x) { o << x.method.globalName; },
         [&o](Reference* x) { o << *x; },
         [&o](Environment* x) { TODO("Can't convert environments into llvm names"); },
-        [&o](Generic x) { TODO("Can't convert environments into llvm names"); },
+        [&o](GenericValue x) { TODO("Can't convert environments into llvm names"); },
         [&o](Never x) { o << "undef"; },
         [&o](Range x) { TODO("Can't convert ranges into llvm names"); },
         [&o](VoidRef x) { TODO("Can't convert void into llvm name"); },
@@ -386,7 +364,7 @@ struct Reference {
       overloaded{
         [](IntLiteral x) -> RangeBound { return x; },
         [](RegisterValue x) -> RangeBound {
-          if (Types::Pool().isInt(x.type)) return x;
+          if (Pool().isInt(x.type)) return x;
           TODO("Error for value that can't be used as a range bound");
           return IntLiteral(0);
         },
@@ -420,7 +398,7 @@ public:
   std::vector<Environment*> usings;
   EnvType envType;
 
-  u32 nextTemporary = 1;
+  u32 nextTemporary = 0;
   bool quotePrefixedNames;
   static u32 nextGlobalTemporary;
   RegisterName basicBlock;

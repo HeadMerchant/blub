@@ -84,6 +84,8 @@ enum class TokenType {
   Using,
   When,
   // TODO
+  Test,
+  Invariant,
   Wildcard,
 
   // Literal

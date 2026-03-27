@@ -1,6 +1,8 @@
 #pragma once
+#include "abi.h"
 #include "cimport.h"
 #include "common.h"
+#include "compilercontext.h"
 #include "fmt/base.h"
 #include "parser.h"
 #include "tokenizer.h"
@@ -32,6 +34,14 @@
 
 namespace fs = std::filesystem;
 
+struct StatementContext {
+  optional<string_view> name;
+
+  OptionalType expectedType;
+  OptionalType returnType;
+  OptionalType selfType;
+};
+
 struct CompilerContext {
   struct {
     std::ofstream* outputFileStream;
@@ -52,20 +62,12 @@ struct CompilerContext {
   }
 };
 
-struct StatementContext {
-  std::optional<std::string_view> name;
-
-  Types::OptionalType expectedType;
-  Types::OptionalType returnType;
-  Types::OptionalType selfType;
-};
-
 enum class TargetType { Cpu, Gpu };
 
 struct FunctionStub {
   std::string_view name;
   NodeIndex definitionNode;
-  Types::FunctionType functionType;
+  FunctionType functionType;
 };
 
 class TranslationUnit {
@@ -106,7 +108,7 @@ public:
     auto loadedValue = std::get<RegisterValue>(toRegister(&value, outputFile, environment).value);
     auto stackPointer = Reference(environment.makeTemporary(loadedValue.type));
 
-    auto sizing = Types::Pool().getSizing(loadedValue.type);
+    auto sizing = Pool().getSizing(loadedValue.type);
     auto llvmType = LlvmName(loadedValue.type);
     fmt::println(outputFile, "{} = alloca {}, align {}", stackPointer, llvmType, sizing.alignment.byteAlignment());
     fmt::println(outputFile, "store {} {}, ptr {}", llvmType, loadedValue, stackPointer);
@@ -116,13 +118,13 @@ public:
 
   StackValue dereference(Reference* value, std::ostream& outputFile, Environment& environment, NodeIndex node) {
     if (auto registerValue = value->unbox<RegisterValue>()) {
-      Types::OptionalType dereferencedType = Types::Pool().dereference(registerValue->type);
+      OptionalType dereferencedType = Pool().dereference(registerValue->type);
       if (!dereferencedType.has_value()) {
         crash(node, "Unable to dereference non-pointer type '{}'", LlvmName(registerValue->type));
       }
       return StackValue(registerValue->name, registerValue->type, registerValue->scope);
     } else if (value->lValue()) {
-      Types::OptionalType dereferencedType = Types::Pool().dereference(registerValue->type);
+      OptionalType dereferencedType = Pool().dereference(registerValue->type);
       if (!dereferencedType.has_value()) {
         crash(node, "Unable to dereference non-pointer type '{}'", LlvmName(registerValue->type));
       }
@@ -162,11 +164,11 @@ public:
       }
       case TokenType::LeftSquareBracket: {
         std::vector<Reference> elements;
-        auto type = Types::Pool().infer;
+        auto type = Pool().infer;
         bool canUseExpected = false;
         if (context.expectedType) {
           auto expected = context.expectedType.value();
-          if (auto sizedArray = Types::Pool().sizedArray(expected)) {
+          if (auto sizedArray = Pool().sizedArray(expected)) {
             type = sizedArray->dereferencedType;
             canUseExpected = true;
           }
@@ -185,24 +187,24 @@ public:
 
         u32 i = 0;
         for (auto element : elements) {
-          if (auto elementType = Types::Pool().coerce(element.getType(), type)) {
+          if (auto elementType = Pool().coerce(element.getType(), type)) {
             type = *elementType;
           } else {
             crash(node.elements[i], "Unable to create array of both type {} and {}", TypeName(type), TypeName(element.getType()));
           }
           i++;
         }
-        if (auto forceLiteralsToActualTypes = Types::Pool().isAssignable(type, Types::Pool().infer)) {
+        if (auto forceLiteralsToActualTypes = Pool().isAssignable(type, Pool().infer)) {
           type = forceLiteralsToActualTypes.value();
         } else {
           crash(nodeIndex, "Unable to construct array of type {}", TypeName(type));
         }
-        auto resultType = canUseExpected ? context.expectedType.value() : Types::Pool().sizedArrayOf(type, elements.size());
+        auto resultType = canUseExpected ? context.expectedType.value() : Pool().sizedArrayOf(type, elements.size());
         auto resultArray = Reference(ZeroInit{});
         i = 0;
         for (auto element : elements) {
           auto loaded = toRegister(&element, outputFile, environment);
-          if (auto floatType = Types::Pool().getFloat(type)) {
+          if (auto floatType = Pool().getFloat(type)) {
             if (auto intLiteral = loaded.unbox<IntLiteral>()) {
               loaded.value = FloatLiteral(intLiteral->value, floatType->precision);
             }
@@ -228,7 +230,7 @@ public:
           if (!elementType) TODO("Value tuples");
           elementTypes.push_back(*elementType);
         }
-        auto [typeIndex, _] = Types::Pool().tupleOf(std::move(elementTypes));
+        auto [typeIndex, _] = Pool().tupleOf(std::move(elementTypes));
         return Reference(typeIndex);
       }
       case TokenType::When: {
@@ -255,7 +257,7 @@ public:
         };
 
         // TODO: Exhaustiveness checking
-        if (auto enumType = Types::Pool().getEnum(caseType)) {
+        if (auto enumType = Pool().getEnum(caseType)) {
         }
 
         vector<SwitchCase> cases;
@@ -322,7 +324,7 @@ public:
 
         bool allStackValues = true;
         bool hasResults = false;
-        optional<TypeIndex> resultType = Types::Pool().infer;
+        optional<TypeIndex> resultType = Pool().infer;
         for (auto& caseBlock : cases) {
           fmt::print(outputFile, "{}:\n{}", caseBlock.entryBlock, caseBlock.instructions.str());
           if (!caseBlock.returns) {
@@ -330,15 +332,15 @@ public:
           }
           auto blockType = caseBlock.result.getType();
           if (resultType) {
-            resultType = Types::Pool().coerce(*resultType, blockType);
+            resultType = Pool().coerce(*resultType, blockType);
           }
           allStackValues = allStackValues && (caseBlock.returns || caseBlock.result.lValue());
-          hasResults = hasResults || !(caseBlock.returns || Types::Pool().isVoid(blockType));
+          hasResults = hasResults || !(caseBlock.returns || Pool().isVoid(blockType));
         }
 
         fmt::println(outputFile, "{}:", endBlock);
 
-        if (hasResults && resultType && !Types::Pool().isVoid(*resultType)) {
+        if (hasResults && resultType && !Pool().isVoid(*resultType)) {
           auto type = *resultType;
           auto resultRegister = environment.addTemporary();
           if (allStackValues) {
@@ -414,7 +416,7 @@ public:
             crash(nodeIndex, "Unable to assign value of type '{}' to to variable '{}' of type '{}'", TypeName(value.getType()), assignee->name, TypeName(assignee->type));
           }
           assignee->type = *assignedType;
-          auto byteAlignment = Types::Pool().getSizing(*assignedType).alignment.byteAlignment();
+          auto byteAlignment = Pool().getSizing(*assignedType).alignment.byteAlignment();
           switch (assignee->scope) {
           case ValueScope::Local: {
             fmt::println(outputFile, "{} = alloca {}, align {}", definition, LlvmName(*assignedType), byteAlignment);
@@ -439,7 +441,7 @@ public:
     case NodeType::Definition: {
       auto node = parser.getDefinition(nodeIndex);
       auto name = node.name->lexeme;
-      TypeIndex type = Types::Pool().infer;
+      TypeIndex type = Pool().infer;
       if (node.type.has_value()) {
         StatementContext ctx(context);
         ctx.expectedType = std::nullopt;
@@ -460,7 +462,7 @@ public:
     case NodeType::Literal: {
       auto node = parser.getLiteral(nodeIndex);
       auto token = node.token;
-      auto u8Type = Types::Pool()._u8;
+      auto u8Type = Pool()._u8;
       if (token->type == TokenType::Char) {
         return Reference(IntLiteral(token->lexeme[0], u8Type));
       }
@@ -477,13 +479,13 @@ public:
       }
       if (token->type == TokenType::NullTerminatedString) {
         auto [stringValue, length] = escapeSourceString(token->lexeme, token);
-        auto global = environment.makeGlobal(Types::Pool()._u8);
-        // auto global = environment.makeGlobal(Types::Pool().sizedArrayOf(Types::Pool()._u8, length));
+        auto global = environment.makeGlobal(Pool()._u8);
+        // auto global = environment.makeGlobal(Pool().sizedArrayOf(Pool()._u8, length));
         static std::string nullByte = "\\00";
         std::stringstream instruction;
         instruction << fmt::format("{} = global [{} x i8] c\"{}{}\" align 1\n", global, length + 1, stringValue, nullByte);
         globalsStack.push(instruction.str());
-        return Reference(RegisterValue(global.name, Types::Pool().pointerTo(global.type), global.scope));
+        return Reference(RegisterValue(global.name, Pool().pointerTo(global.type), global.scope));
       }
       if (token->type == TokenType::Decimal) {
         float floatValue = std::stof(token->lexeme.data());
@@ -512,7 +514,7 @@ public:
         crash(nodeIndex, "Identifier \"{}\" not defined", name);
       }
       if (token->type == TokenType::Opaque) {
-        TypeIndex type = Types::Pool().addOpaque(std::string(context.name.value_or("Anonymous Opaque")));
+        TypeIndex type = Pool().addOpaque(std::string(context.name.value_or("Anonymous Opaque")));
         return Reference(type);
       }
       if (token->type == TokenType::Self) {
@@ -544,7 +546,7 @@ public:
         if (targetType != TargetType::Gpu) {
           crash(nodeIndex, "Unable to use cuda builtin '@{}' in non-gpu target", token->lexeme);
         }
-        auto result = environment.makeTemporary(Types::Pool()._u32);
+        auto result = environment.makeTemporary(Pool()._u32);
         fmt::println(outputFile, "{} = call i32 {}", result, cudaBuiltins[token->type]);
         return Reference(result);
       }
@@ -577,11 +579,11 @@ public:
       } else {
         crash(nodeIndex, "Can't assign to literal");
       }
-      Types::OptionalType valueType = value.isAssignableTo(leftType);
+      OptionalType valueType = value.isAssignableTo(leftType);
       if (!valueType) {
         crash(nodeIndex, "Can't assign value of type {} to symbol of type {}", TypeName(value.getType()), TypeName(leftType));
       }
-      if (Types::Pool().isFloat(*valueType)) {
+      if (Pool().isFloat(*valueType)) {
         if (auto literal = value.unbox<IntLiteral>()) {
           value.value = FloatLiteral(literal->value);
         }
@@ -613,7 +615,7 @@ public:
         auto condition = interpret(node.left, environment, outputFile, context);
         auto conditionLiteral = toRegister(&condition, outputFile, environment);
         fmt::println(outputFile, "br i1 {}, label %{}, label %{}\n{}:", conditionLiteral, loopBody, endLabel, loopBody);
-        if (condition.getType() != Types::Pool()._bool) {
+        if (condition.getType() != Pool()._bool) {
           crash(
             nodeIndex,
             "Condition for while loop must be of type 'bool', "
@@ -648,7 +650,7 @@ public:
 
           auto elementType = interpret(node.right, environment, outputFile, context);
           if (auto type = elementType.unboxType()) {
-            return Reference(Types::Pool().sizedArrayOf(*type, (u32)sizeLiteral->value));
+            return Reference(Pool().sizedArrayOf(*type, (u32)sizeLiteral->value));
           }
 
           crash(node.right, "Array element type must be a compile-time known type, but was of type '{}'", TypeName(elementType.getType()));
@@ -658,7 +660,7 @@ public:
         //     ^
 
         // Generic instantiation
-        if (auto boxedGeneric = std::get_if<Generic>(&leftVal.value)) {
+        if (auto boxedGeneric = std::get_if<GenericValue>(&leftVal.value)) {
           auto arguments = parser.getArgumentList(node.right);
           auto expectedArgLength = boxedGeneric->parameterNames.size();
           {
@@ -686,7 +688,7 @@ public:
             Todo(parser.getToken(param.token), "Named generic parameters");
           }
 
-          auto [tupleType, tupleIndex] = Types::TypePool().tupleOf(std::move(argTypes));
+          auto [tupleType, tupleIndex] = TypePool().tupleOf(std::move(argTypes));
 
           if (boxedGeneric->cache.contains(tupleIndex)) {
             return Reference(boxedGeneric->cache[tupleIndex]);
@@ -712,7 +714,7 @@ public:
         auto rightType = rightVal.getType();
 
         // TODO: pointers to slice?
-        if (auto dereffedType = Types::Pool().unboxReference(leftType)) {
+        if (auto dereffedType = Pool().unboxReference(leftType)) {
           auto ptr = toRegister(&leftVal, outputFile, environment);
           // auto loaded = StackValue(environment.addTemporary(), *dereffedType);
           auto loaded = StackValue(std::get<RegisterValue>(ptr.value).name, *dereffedType);
@@ -720,18 +722,18 @@ public:
           leftVal.value = loaded;
           leftType = *dereffedType;
         }
-        if (auto sliceElement = Types::Pool().sliceElementType(leftType)) {
+        if (auto sliceElement = Pool().sliceElementType(leftType)) {
           TypeIndex elementType = *sliceElement;
           auto leftLiteral = toRegister(&leftVal, outputFile, environment);
           auto [dataPointer, length] = getSliceElements(std::get<RegisterValue>(leftLiteral.value), environment, outputFile);
           auto lengthBound = RangeBound(length);
           auto dataPointerRef = Reference(dataPointer);
 
-          if (Types::Pool().isInt(rightType)) {
+          if (Pool().isInt(rightType)) {
             auto index = toRegister(&rightVal, outputFile, environment);
             auto result = StackValue(environment.addTemporary(), elementType);
 
-            if (Types::Pool().isSignedInt(rightType)) {
+            if (Pool().isSignedInt(rightType)) {
               guardLowerBound(index, environment, outputFile);
             }
             guardIndexInBounds(index, lengthBound, environment, outputFile);
@@ -741,9 +743,9 @@ public:
             return sliceRange(*range, node.right, outputFile, environment, length, dataPointerRef);
           }
           crash(node.right, "Index must be an integer or range, but was of type '{}'", TypeName(rightType));
-        } else if (auto elementType = Types::Pool().multiPointerElement(leftType)) {
+        } else if (auto elementType = Pool().multiPointerElement(leftType)) {
           auto dataPointer = toRegister(&leftVal, outputFile, environment);
-          if (Types::Pool().isInt(rightType)) {
+          if (Pool().isInt(rightType)) {
             auto rightLiteral = toRegister(&rightVal, outputFile, environment);
             auto result = Reference(StackValue(environment.addTemporary(), *elementType));
             fmt::println(outputFile, "{} = getelementptr ptr, ptr {}, {} {}", result, dataPointer, LlvmName(rightType), rightLiteral);
@@ -752,16 +754,16 @@ public:
             return sliceRange(*range, node.right, outputFile, environment, std::nullopt, dataPointer);
           }
           crash(node.right, "Index must be an integer or range, but was of type '{}'", TypeName(rightType));
-        } else if (auto sizedArray = Types::Pool().sizedArray(leftType)) {
+        } else if (auto sizedArray = Pool().sizedArray(leftType)) {
           auto length = IntLiteral(sizedArray->length);
           auto elementType = sizedArray->dereferencedType;
           if (!leftVal.lValue()) {
             TODO("Indexing sized array not in stack value");
           }
 
-          if (Types::Pool().isInt(rightType)) {
+          if (Pool().isInt(rightType)) {
             auto index = toRegister(&rightVal, outputFile, environment);
-            if (Types::Pool().isSignedInt(rightType)) {
+            if (Pool().isSignedInt(rightType)) {
               guardLowerBound(index, environment, outputFile);
             }
             auto lengthRef = RangeBound(length);
@@ -792,7 +794,7 @@ public:
           auto ref = Reference(bound->self);
           return callFunction(&bound->method, argsNode, nodeIndex, environment, outputFile, &ref);
         } else if (auto type = function.unboxType()) {
-          if (auto structDefinition = Types::Pool().getStruct(*type)) {
+          if (auto structDefinition = Pool().getStruct(*type)) {
             return constructStruct(nodeIndex, *type, argsNode, environment, outputFile);
           } else {
             crash(nodeIndex, "Can't construct non-struct type {}", TypeName(*type));
@@ -808,11 +810,11 @@ public:
           crash(nodeIndex, "At least one of upper and lower bound on a range must be set");
         }
         RangeBound lowerBound = IntLiteral(0);
-        TypeIndex lowerType = Types::Pool().intLiteral;
+        TypeIndex lowerType = Pool().intLiteral;
         if (lowerBoundIndex) {
           auto result = interpret(lowerBoundIndex.value(), environment, outputFile, context);
           lowerType = result.getType();
-          if (!Types::Pool().isInt(lowerType)) {
+          if (!Pool().isInt(lowerType)) {
             crash(node.left, "Provided range bounds must be of an integer type, but were {}", TypeName(lowerType));
           }
           lowerBound = toRegister(&result, outputFile, environment).rangeBound();
@@ -821,10 +823,10 @@ public:
         if (upperBoundIndex) {
           auto result = interpret(upperBoundIndex.value(), environment, outputFile, context);
           auto upperType = result.getType();
-          if (!Types::Pool().isInt(upperType)) {
+          if (!Pool().isInt(upperType)) {
             crash(node.left, "Provided range bounds must be of an integer type, but were {}", TypeName(upperType));
           }
-          auto rangeType = Types::Pool().coerce(lowerType, upperType);
+          auto rangeType = Pool().coerce(lowerType, upperType);
           if (!rangeType) {
             crash(node.right, "Range bounds must be of the same type, but were {} and {}", TypeName(lowerType), TypeName(upperType));
           }
@@ -842,7 +844,7 @@ public:
         auto leftVal = interpret(node.left, environment, outputFile, context);
         auto leftRegister = toRegister(&leftVal, outputFile, environment);
 
-        if (auto type = leftVal.getType(); type != Types::Pool()._bool) {
+        if (auto type = leftVal.getType(); type != Pool()._bool) {
           crash(node.left, "Operands to logical 'or' need to be of type bool. Left operand was of type '{}'", TypeName(type));
         }
 
@@ -855,12 +857,12 @@ public:
         auto rightVal = interpret(node.right, environment, outputFile, context);
         auto rightRegister = toRegister(&rightVal, outputFile, environment);
 
-        if (auto type = rightVal.getType(); type != Types::Pool()._bool) {
+        if (auto type = rightVal.getType(); type != Pool()._bool) {
           crash(node.right, "Operands to logical 'or' need to be of type bool. Right operand was of type '{}'", TypeName(type));
         }
 
         fmt::println(outputFile, "br label %{}\n{}:", labelEnd, labelEnd);
-        auto result = environment.makeTemporary(Types::Pool()._bool);
+        auto result = environment.makeTemporary(Pool()._bool);
         fmt::println(outputFile, "{} = phi i1 [{}, %{}], [{}, %{}]", result, leftRegister, labelStart, rightRegister, labelFalse);
         return Reference(result);
       }
@@ -874,7 +876,7 @@ public:
         auto leftVal = interpret(node.left, environment, outputFile, context);
         auto leftRegister = toRegister(&leftVal, outputFile, environment);
 
-        if (auto type = leftVal.getType(); type != Types::Pool()._bool) {
+        if (auto type = leftVal.getType(); type != Pool()._bool) {
           crash(node.left, "Operands to logical 'or' need to be of type bool. Left operand was of type '{}'", TypeName(type));
         }
 
@@ -887,12 +889,12 @@ public:
         auto rightVal = interpret(node.right, environment, outputFile, context);
         auto rightRegister = toRegister(&rightVal, outputFile, environment);
 
-        if (auto type = rightVal.getType(); type != Types::Pool()._bool) {
+        if (auto type = rightVal.getType(); type != Pool()._bool) {
           crash(node.right, "Operands to logical 'or' need to be of type bool. Right operand was of type '{}'", TypeName(type));
         }
 
         fmt::println(outputFile, "br label %{}\n{}:", labelFalse, labelFalse);
-        auto result = environment.makeTemporary(Types::Pool()._bool);
+        auto result = environment.makeTemporary(Pool()._bool);
         fmt::println(outputFile, "{} = phi i1 [{}, {}], [{}, {}]", result, leftRegister, labelStart, rightRegister, labelTrue);
         return Reference(result);
       }
@@ -916,7 +918,7 @@ public:
         } else {
           crash(node.right, "Type argument for @align must be a compile-time known type");
         }
-        auto typeIndex = Types::Pool().alignType(baseTypeIndex, Types::Log2Alignment::fromByteSize(byteAlign));
+        auto typeIndex = Pool().alignType(baseTypeIndex, Log2Alignment::fromByteSize(byteAlign));
         return Reference(typeIndex);
       }
       case TokenType::Impl: {
@@ -966,7 +968,7 @@ public:
     }
     case NodeType::FunctionLiteral: {
       auto node = parser.getFunctionLiteral(nodeIndex);
-      TypeIndex returnType = Types::Pool()._void;
+      TypeIndex returnType = Pool()._void;
       if (node.returnType.has_value()) {
         StatementContext context;
         auto boxedReturnType = interpret(node.returnType.value(), environment, outputFile, context).unboxType();
@@ -993,8 +995,8 @@ public:
 
         parameterTypes.push_back(*parameterType);
       }
-      auto [_, tupleType] = Types::Pool().tupleOf(std::move(parameterTypes));
-      auto functionType = Types::FunctionType(tupleType, returnType);
+      auto [_, tupleType] = Pool().tupleOf(std::move(parameterTypes));
+      auto functionType = FunctionType(tupleType, returnType);
 
       // auto token = parser.getTokenIndex()
       auto token = parser.getToken(nodeIndex);
@@ -1066,11 +1068,11 @@ public:
             }
             std::string_view typePrefix;
 
-            if (Types::Pool().isFloat(objectType) && Types::Pool().isFloat(targetType)) {
+            if (Pool().isFloat(objectType) && Pool().isFloat(targetType)) {
               typePrefix = "fp";
-            } else if (Types::Pool().isSignedInt(objectType) && Types::Pool().isSignedInt(objectType)) {
+            } else if (Pool().isSignedInt(objectType) && Pool().isSignedInt(objectType)) {
               typePrefix = isTrunc ? "" : "s";
-            } else if (Types::Pool().isUnsignedInt(objectType) && Types::Pool().isUnsignedInt(targetType)) {
+            } else if (Pool().isUnsignedInt(objectType) && Pool().isUnsignedInt(targetType)) {
               typePrefix = isTrunc ? "" : "z";
             } else {
               crash(nodeIndex, "Unable to cast from {} to {}", TypeName(objectType), TypeName(targetType));
@@ -1208,7 +1210,7 @@ public:
       case UnaryOps::Dereference: {
         auto value = interpret(node.operand, environment, outputFile, context);
         auto type = value.getType();
-        if (Types::Pool().isPointer(type) || Types::Pool().multiPointerElement(type)) {
+        if (Pool().isPointer(type) || Pool().multiPointerElement(type)) {
           return Reference(dereference(&value, outputFile, environment, nodeIndex));
         }
         crash(node.operand, "Can't dereference non-pointer type {}", TypeName(type));
@@ -1216,9 +1218,9 @@ public:
       case UnaryOps::Reference: {
         auto value = interpret(node.operand, environment, outputFile, context);
         if (auto type = value.unboxType()) {
-          return Reference(Types::Pool().pointerTo(*type));
+          return Reference(Pool().pointerTo(*type));
         } else if (auto lValue = value.lValue()) {
-          auto address = Reference(RegisterValue(lValue->name, Types::Pool().pointerTo(lValue->type), lValue->scope));
+          auto address = Reference(RegisterValue(lValue->name, Pool().pointerTo(lValue->type), lValue->scope));
           parser.locationOf(node.operand).underline(std::cout);
           return address;
         } else {
@@ -1230,7 +1232,7 @@ public:
         if (auto boolean = value.unboxBool()) {
           return Reference(!boolean);
         }
-        auto type = Types::Pool()._bool;
+        auto type = Pool()._bool;
         if (value.getType() != type) {
           crash(node.operand, "Unary not operator '!' can only be used on boolean types; Operand was of type '{}'", TypeName(type));
         }
@@ -1245,16 +1247,16 @@ public:
         if (!elementType.has_value()) {
           crash(node.operand, "Element type for array type (slice, fixed-size, etc) must be a compile-time known type, but was a '{}'", TypeName(value.getType()));
         }
-        return Reference(Types::Pool().sliceOf(*elementType));
+        return Reference(Pool().sliceOf(*elementType));
       }
       case UnaryOps::MultiPointerTo: {
         auto value = interpret(node.operand, environment, outputFile, context);
         auto elementType = value.unboxType();
         if (elementType.has_value()) {
-          return Reference(Types::Pool().multiPointerTo(*elementType));
+          return Reference(Pool().multiPointerTo(*elementType));
         } else if (auto stackVal = value.unbox<StackValue>()) {
           auto type = stackVal->type;
-          return Reference(StackValue(stackVal->name, Types::Pool().multiPointerTo(type)));
+          return Reference(StackValue(stackVal->name, Pool().multiPointerTo(type)));
           // TODO: take from global?
         } else {
           crash(
@@ -1267,18 +1269,18 @@ public:
       case UnaryOps::MultiPointerFrom: {
         auto value = interpret(node.operand, environment, outputFile, context);
         auto type = value.getType();
-        if (auto sizedArray = Types::Pool().sizedArray(type)) {
+        if (auto sizedArray = Pool().sizedArray(type)) {
           if (!value.lValue()) {
             crash(nodeIndex, "Unable to make slice from array stored in temporary value");
           }
-          auto type = Types::Pool().multiPointerTo(sizedArray->dereferencedType);
+          auto type = Pool().multiPointerTo(sizedArray->dereferencedType);
           auto multiPointer = environment.makeTemporary(type);
           fmt::println(outputFile, "{} = ptr {}", multiPointer, value);
           return Reference(multiPointer);
-        } else if (auto elementType = Types::Pool().sliceElementType(type)) {
+        } else if (auto elementType = Pool().sliceElementType(type)) {
           auto slicedObj = toRegister(&value, outputFile, environment);
           auto loadedSlice = *slicedObj.unbox<RegisterValue>();
-          auto multiPointerType = Types::Pool().multiPointerTo(*elementType);
+          auto multiPointerType = Pool().multiPointerTo(*elementType);
           auto dataPtr = environment.makeTemporary(multiPointerType);
           fmt::println(outputFile, "{} = extractvalue {} {}, 0", dataPtr, LlvmName(multiPointerType), loadedSlice);
         } else {
@@ -1295,11 +1297,11 @@ public:
         auto loaded = toRegister(&value, outputFile, environment);
         auto type = loaded.getType();
         auto result = environment.makeTemporary(type);
-        if (Types::Pool().isFloat(type)) {
+        if (Pool().isFloat(type)) {
           fmt::println(outputFile, "%{} = fsub {} 0.0, {}", result.name, LlvmName(type), loaded);
           return Reference(result);
         }
-        if (Types::Pool().isSignedInt(type)) {
+        if (Pool().isSignedInt(type)) {
           fmt::println(outputFile, "%{} = sub {} 0, {}", result.name, LlvmName(type), loaded);
           return Reference(result);
         }
@@ -1311,7 +1313,7 @@ public:
           crash(nodeIndex, "Can't take a bitwise not of a comptime value");
         }
         auto type = value.getType();
-        if (!(Types::Pool().isSignedInt(type) || Types::Pool().isUnsignedInt(type))) {
+        if (!(Pool().isSignedInt(type) || Pool().isUnsignedInt(type))) {
           crash(nodeIndex, "Can't perform operation 'bitwise not' on non-integer value of type '{}'", TypeName(type));
         }
         auto loaded = toRegister(&value, outputFile, environment);
@@ -1322,7 +1324,7 @@ public:
       case UnaryOps::MakeSlice: {
         auto value = interpret(node.operand, environment, outputFile, context);
         auto type = value.getType();
-        if (auto sizedArray = Types::Pool().sizedArray(type)) {
+        if (auto sizedArray = Pool().sizedArray(type)) {
           if (auto stackVal = value.unbox<StackValue>()) {
             auto copy = *stackVal;
             copy.type = sizedArray->dereferencedType;
@@ -1332,7 +1334,7 @@ public:
           }
           auto length = Reference(IntLiteral(sizedArray->length));
           return makeSlice(value, length, outputFile, environment);
-        } else if (auto slice = Types::Pool().sliceElementType(type)) {
+        } else if (auto slice = Pool().sliceElementType(type)) {
           return value;
         } else {
           crash(nodeIndex, "Unable to make slice from value of type '{}'; Can only slice sized arrays", TypeName(type));
@@ -1346,22 +1348,22 @@ public:
         auto returnType = context.returnType.value();
         if (returnValue) {
           parser.locationOf(returnValue.value()).underline(std::cout);
-          if (Types::Pool().isVoid(returnType)) {
+          if (Pool().isVoid(returnType)) {
             crash(*returnValue, "Cannot return value in a function that with a 'void' return type");
           }
           StatementContext returnContext{.expectedType = returnType};
           auto value = interpret(*returnValue, environment, outputFile, returnContext);
           auto loadedValue = toRegister(&value, outputFile, environment);
-          if (!Types::Pool().isAssignable(value.getType(), returnType)) {
+          if (!Pool().isAssignable(value.getType(), returnType)) {
             crash(*returnValue, "Return value of type '{}' needs to be of type '{}'", TypeName(value.getType()), TypeName(returnType));
           }
-          if (Types::Pool().isLlvmLiteralType(returnType)) {
+          if (Pool().isLlvmLiteralType(returnType)) {
             fmt::println(outputFile, "ret {} {}", LlvmName(returnType), loadedValue);
           } else {
             fmt::println(outputFile, "store {} {}, ptr %return\nret void", LlvmName(returnType), loadedValue);
           }
         } else {
-          if (!Types::Pool().isVoid(returnType)) {
+          if (!Pool().isVoid(returnType)) {
             crash(*returnValue, "Must return a value in a function with non-void return type");
           }
           fmt::println(outputFile, "ret void");
@@ -1390,7 +1392,7 @@ public:
     case NodeType::If: {
       auto node = parser.getIf(nodeIndex);
       StatementContext conditionContext(context);
-      auto expectedConditionType = Types::Pool()._bool;
+      auto expectedConditionType = Pool()._bool;
       conditionContext.expectedType = expectedConditionType;
       auto condition = interpret(node.condition, environment, outputFile, conditionContext);
       auto conditionType = condition.getType();
@@ -1434,12 +1436,12 @@ public:
       if (hasElse && resultType) {
         auto elseType = elseResult.getType();
         log("Result type: {}", TypeName(*resultType));
-        resultType = Types::Pool().coerce(*resultType, elseType);
+        resultType = Pool().coerce(*resultType, elseType);
         log("Result type 2: {}", TypeName(*resultType));
       }
 
       if (resultType && context.expectedType) {
-        resultType = Types::Pool().isAssignable(*resultType, *context.expectedType);
+        resultType = Pool().isAssignable(*resultType, *context.expectedType);
       }
 
       if (comptime) {
@@ -1484,10 +1486,10 @@ public:
 
       fmt::println(outputFile, "{}:", endLabel);
 
-      if (resultType && resultType != Types::Pool()._void) {
+      if (resultType && resultType != Pool()._void) {
         auto type = resultType.value();
         auto phiResult = Reference(environment.makeTemporary(type));
-        if (auto floatType = Types::Pool().unbox<Types::Float>(type)) {
+        if (auto floatType = Pool().unbox<Float>(type)) {
           fmt::println(
             outputFile,
             "{}  = phi {} [{}, %{}], [{}, %{}]",
@@ -1514,7 +1516,7 @@ public:
       std::stringstream typeInstruction;
       typeInstruction << llvmName << " = type {";
       std::string typeName = named ? std::string(context.name.value()) : "Anonymous type";
-      auto [typeIndex, structIndex] = Types::Pool().makeStruct(std::move(typeName), std::move(llvmName));
+      auto [typeIndex, structIndex] = Pool().makeStruct(std::move(typeName), std::move(llvmName));
       if (named) {
         environment.define(context.name.value(), Reference(typeIndex));
       }
@@ -1528,13 +1530,13 @@ public:
           if (hasFields) typeInstruction << ", ";
           auto definitionNode = parser.getDefinition(fieldIndex);
           auto fieldName = definitionNode.name->lexeme;
-          Types::OptionalType type = interpret(definitionNode.type.value(), environment, outputFile, context).unboxType();
+          OptionalType type = interpret(definitionNode.type.value(), environment, outputFile, context).unboxType();
           if (!type) {
             crash(nodeIndex, "Type for field '{}' must be known at compile time", fieldName);
           }
 
           // TODO: default values
-          Types::Pool().getStruct(structIndex).defineField(fieldName, *type);
+          Pool().getStruct(structIndex).defineField(fieldName, *type);
           fmt::print(typeInstruction, "{}", LlvmName(*type));
           hasFields = true;
           break;
@@ -1558,7 +1560,7 @@ public:
         crash(nodeIndex, "Can't evaluate value tuple without inferred type");
       }
       auto type = context.expectedType.value();
-      auto structDefinition = Types::Pool().getStruct(type);
+      auto structDefinition = Pool().getStruct(type);
       if (!structDefinition.has_value()) {
         crash(nodeIndex, "Can't construct non-struct type {}", TypeName(type));
       }
@@ -1576,7 +1578,7 @@ public:
         auto rawValue = interpret(*node.rawType, environment, outputFile, context);
         if (auto type = rawValue.unboxType()) {
           rawType = *type;
-          if (!Types::Pool().isInt(rawType)) {
+          if (!Pool().isInt(rawType)) {
             crash(*node.rawType, "Enum raw type '{}' isn't an integer", TypeName(rawType));
           }
         } else {
@@ -1587,21 +1589,21 @@ public:
         // TODO: zero-sized enum?
         // TODO: non-Po2-sized enums
         if (bitSize <= 8) {
-          rawType = Types::TypePool()._u8;
+          rawType = TypePool()._u8;
         } else if (bitSize <= 16) {
-          rawType = Types::TypePool()._u16;
+          rawType = TypePool()._u16;
         } else if (bitSize <= 32) {
-          rawType = Types::TypePool()._u32;
+          rawType = TypePool()._u32;
         } else if (bitSize <= 64) {
-          rawType = Types::TypePool()._u64;
+          rawType = TypePool()._u64;
         } else {
           crash(nodeIndex, "Unable to create enum with values that can't fit in 64 bits: {} values", node.entries.size());
         }
       }
 
-      auto [typeIndex, enumIndex] = Types::Pool().addEnum(rawType, context.name.has_value() ? std::string(context.name.value()) : "Anonymous Enum");
+      auto [typeIndex, enumIndex] = Pool().addEnum(rawType, context.name.has_value() ? std::string(context.name.value()) : "Anonymous Enum");
       u32 valueCount = 0;
-      Types::Enum& enumDefinition = Types::Pool().getEnum(enumIndex);
+      Enum& enumDefinition = Pool().getEnum(enumIndex);
       for (auto [nameToken, valueNode] : node.entries) {
         auto name = parser.getToken(nameToken)->lexeme;
 
@@ -1636,7 +1638,7 @@ public:
       log("Escaped lines: {}", escapedLines);
       totalLength += numLines - 1;
 
-      auto global = environment.makeGlobal(Types::Pool()._u8);
+      auto global = environment.makeGlobal(Pool()._u8);
       std::stringstream instruction;
       instruction << fmt::format("{} = global [{} x i8] c\"{}\" align 1\n", global, totalLength, fmt::join(escapedLines, "\\0A"));
       globalsStack.push(instruction.str());
@@ -1657,13 +1659,13 @@ public:
 
       if (auto range = iterator.unbox<Range>()) {
         TODO("Range iterators");
-      } else if (auto type = iterator.getType(); auto elementType = Types::Pool().sliceElementType(type)) {
+      } else if (auto type = iterator.getType(); auto elementType = Pool().sliceElementType(type)) {
         fmt::println(outputFile, "{}:", loopHeader);
 
         auto sliceRegister = toRegister(&iterator, outputFile, environment);
-        auto slicePointer = environment.makeTemporary(Types::Pool().multiPointerTo(*elementType));
-        auto sliceLength = environment.makeTemporary(Types::Pool()._usize);
-        auto endPointer = environment.makeTemporary(Types::Pool().multiPointerTo(*elementType));
+        auto slicePointer = environment.makeTemporary(Pool().multiPointerTo(*elementType));
+        auto sliceLength = environment.makeTemporary(Pool()._usize);
+        auto endPointer = environment.makeTemporary(Pool().multiPointerTo(*elementType));
         fmt::println(outputFile, "{} = extractElement {} {}, {} 0", slicePointer, LlvmName(type), sliceRegister, LlvmName(slicePointer.type));
         fmt::println(outputFile, "{} = extractElement {} {}, {} 1", sliceLength, LlvmName(type), sliceRegister, LlvmName(sliceLength.type));
         fmt::println(outputFile, "{} = getelementptr {}, ptr {}, {} {}", endPointer, LlvmName(*elementType), slicePointer, LlvmName(sliceLength.type), sliceLength);
@@ -1672,11 +1674,11 @@ public:
         Environment loopEnv(&environment, loopHeader);
         // TODO: by ref vs by value
         auto iterationVariable = StackValue(node.capture->lexeme, *elementType);
-        auto nextIterationVar = environment.makeTemporary(Types::Pool().multiPointerTo(*elementType));
+        auto nextIterationVar = environment.makeTemporary(Pool().multiPointerTo(*elementType));
         loopEnv.define(node.capture->lexeme, Reference(iterationVariable));
 
         fmt::println(outputFile, "{} = phi ptr [{}, %{}], [{}, %{}]", iterationVariable, slicePointer, loopHeader, nextIterationVar, loopUpdate);
-        auto loopBound = environment.makeTemporary(Types::Pool().multiPointerTo(*elementType));
+        auto loopBound = environment.makeTemporary(Pool().multiPointerTo(*elementType));
         fmt::println(outputFile, "{} = icmp eq ptr {}, {}", loopBound, iterationVariable, endPointer);
         fmt::println(outputFile, "br i1 {}, label %{}, label %{}", loopBound, endLabel, loopBody);
 
@@ -1718,7 +1720,7 @@ public:
       if (auto function = object.unboxFunction()) {
         return callFunction(function, argsNode, nodeIndex, environment, outputFile);
       } else if (auto type = object.unboxType()) {
-        if (auto structDefinition = Types::Pool().getStruct(*type)) {
+        if (auto structDefinition = Pool().getStruct(*type)) {
           return constructStruct(nodeIndex, *type, argsNode, environment, outputFile);
         } else {
           crash(nodeIndex, "Can't construct non-struct type {}", TypeName(*type));
@@ -1906,11 +1908,11 @@ public:
   Reference makeSlice(Reference& dataPointer, Reference& length, std::ostream& output, Environment& env) {
     auto lengthLoaded = toRegister(&length, output, env);
     auto dataType = dataPointer.getType();
-    auto type = Types::Pool().sliceOf(dataType);
+    auto type = Pool().sliceOf(dataType);
     auto intermediateResult = env.makeTemporary(type);
     fmt::println(output, "{} = insertvalue {} undef, ptr {}, 0", intermediateResult, LlvmName(type), dataPointer);
-    auto result = env.makeTemporary(Types::Pool().sliceOf(dataType));
-    fmt::println(output, "{} = insertvalue {} {}, {} {}, 1", result, LlvmName(type), intermediateResult, LlvmName(Types::Pool()._usize), lengthLoaded);
+    auto result = env.makeTemporary(Pool().sliceOf(dataType));
+    fmt::println(output, "{} = insertvalue {} {}, {} {}, 1", result, LlvmName(type), intermediateResult, LlvmName(Pool()._usize), lengthLoaded);
     return Reference(result);
   }
 
@@ -1925,13 +1927,13 @@ public:
     if (!(range.hasUpper() || baseLength)) {
       crash(rangeNode, "Ranges for slicing multipointers must have an upper bound");
     }
-    auto usize = Types::Pool()._usize;
+    auto usize = Pool()._usize;
     auto lower = Reference::unboxBound(range.lower);
     auto upperBound = range.hasUpper() ? range.upper.value() : baseLength.value();
     auto upper = Reference::unboxBound(upperBound);
 
     auto type = range.getType();
-    if (Types::Pool().isSignedInt(type)) {
+    if (Pool().isSignedInt(type)) {
       TODO("Error for signed slices");
       // guardLowerBound(lower, environment, outputFile);
     }
@@ -1951,16 +1953,16 @@ public:
   }
 
   void extendToUsize(Reference& index, Environment& environment, std::ostream& outputFile) {
-    auto usize = Types::Pool()._usize;
-    if (auto type = index.getType(); Types::Pool().isUnsignedInt(type) && type != usize) {
-      auto extended = environment.makeTemporary(Types::Pool()._usize);
+    auto usize = Pool()._usize;
+    if (auto type = index.getType(); Pool().isUnsignedInt(type) && type != usize) {
+      auto extended = environment.makeTemporary(Pool()._usize);
       fmt::println(outputFile, "{} = zext {} {} to {}", extended, LlvmName(type), index, LlvmName(usize));
       index.value = extended;
     }
   }
 
   void guardLowerBound(Reference& index, Environment& environment, std::ostream& outputFile) {
-    auto isNegative = environment.makeTemporary(Types::Pool()._bool);
+    auto isNegative = environment.makeTemporary(Pool()._bool);
     auto crashBlockId = environment.addTemporary();
     auto continueBlockId = environment.addTemporary();
     fmt::println(outputFile, "{} = icmp slt {} {}, 0", isNegative, LlvmName(index.getType()), index);
@@ -1971,10 +1973,10 @@ public:
   }
 
   void guardExclusiveInBounds(Reference& index, RangeBound& baseLength, Environment& environment, std::ostream& outputFile) {
-    auto isOutsideBounds = environment.makeTemporary(Types::Pool()._bool);
+    auto isOutsideBounds = environment.makeTemporary(Pool()._bool);
     auto crashBlockId = environment.addTemporary();
     auto continueBlockId = environment.addTemporary();
-    fmt::println(outputFile, "{} = icmp ult {} {}, {}", isOutsideBounds, LlvmName(Types::Pool()._usize), baseLength, index);
+    fmt::println(outputFile, "{} = icmp ult {} {}, {}", isOutsideBounds, LlvmName(Pool()._usize), baseLength, index);
     fmt::println(outputFile, "br i1 {}, label %{}, label %{}", isOutsideBounds, crashBlockId, continueBlockId);
     fmt::println(outputFile, "{}:", crashBlockId);
     crashInstruction(outputFile);
@@ -1985,10 +1987,10 @@ public:
     Reference usedIndex = index;
     extendToUsize(usedIndex, environment, outputFile);
 
-    auto isOutsideBounds = environment.makeTemporary(Types::Pool()._bool);
+    auto isOutsideBounds = environment.makeTemporary(Pool()._bool);
     auto crashBlockId = environment.addTemporary();
     auto continueBlockId = environment.addTemporary();
-    fmt::println(outputFile, "{} = icmp ule {} {}, {}", isOutsideBounds, LlvmName(Types::Pool()._usize), baseLength, usedIndex);
+    fmt::println(outputFile, "{} = icmp ule {} {}, {}", isOutsideBounds, LlvmName(Pool()._usize), baseLength, usedIndex);
     fmt::println(outputFile, "br i1 {}, label %{}, label %{}", isOutsideBounds, crashBlockId, continueBlockId);
     fmt::println(outputFile, "{}:", crashBlockId);
     crashInstruction(outputFile);
@@ -1996,11 +1998,11 @@ public:
   }
 
   RegisterValue guardNonnegativeLength(Reference& lower, RangeBound& upper, Environment& environment, std::ostream& outputFile) {
-    auto usize = Types::Pool()._usize;
+    auto usize = Pool()._usize;
     auto length = environment.makeTemporary(usize);
     fmt::println(outputFile, "{} = sub {} {}, {}", length, LlvmName(usize), upper, lower);
 
-    auto lengthIsNegative = environment.makeTemporary(Types::Pool()._bool);
+    auto lengthIsNegative = environment.makeTemporary(Pool()._bool);
     auto crashBlockId = environment.addTemporary();
     auto continueBlockId = environment.addTemporary();
     fmt::println(outputFile, "{} = icmp slt {} {}, 0", lengthIsNegative, LlvmName(usize), lower);
@@ -2013,10 +2015,10 @@ public:
   }
 
   pair<RegisterValue, RegisterValue> getSliceElements(RegisterValue slice, Environment& environment, std::ostream& outputFile) {
-    auto elementType = Types::Pool().sliceElementType(slice.type);
+    auto elementType = Pool().sliceElementType(slice.type);
     assert(elementType);
     auto dataPointer = environment.makeTemporary(*elementType);
-    auto length = environment.makeTemporary(Types::Pool()._usize);
+    auto length = environment.makeTemporary(Pool()._usize);
     fmt::println(outputFile, "{} = extractvalue {} {}, 0", dataPointer, TypeName(slice.type), slice);
     fmt::println(outputFile, "{} = extractvalue {} {}, 1", length, TypeName(slice.type), slice);
     return {dataPointer, length};
@@ -2028,15 +2030,15 @@ public:
 
   Reference constructStruct(NodeIndex nodeIndex, TypeIndex type, Parser::ArgumentList& argsNode, Environment& environment, std::ostream& outputFile) {
     // TODO: unions: named and unnamed
-    auto structDefinition = Types::Pool().getStruct(type);
+    auto structDefinition = Pool().getStruct(type);
     if (!structDefinition.has_value()) {
       crash(nodeIndex, "Can't construct non-struct type {}", TypeName(type));
     }
     auto structLlvmName = LlvmName(type);
     auto structName = TypeName(type);
 
-    Types::Struct& definition = **structDefinition;
-    auto fieldTypes = Types::TypeSpan(definition.fieldTypes);
+    Struct& definition = **structDefinition;
+    auto fieldTypes = TypeSpan(definition.fieldTypes);
 
     auto [arguments, namedArguments] = getArguments(fieldTypes, argsNode, environment, outputFile, (*structDefinition)->fields, nullptr);
     std::vector<bool> setArguments(fieldTypes.size(), false);
@@ -2065,7 +2067,7 @@ public:
         fmt::println("Assigning value of type {} to field of type {}", TypeName(value.getType()), TypeName(field->type));
       }
       auto i = field->index;
-      auto targetType = Types::Pool().isAssignable(value.getType(), field->type);
+      auto targetType = Pool().isAssignable(value.getType(), field->type);
       if (!targetType) {
         fmt::println("Struct {}:", structName);
         for (auto [name, type] : structDefinition.value()->fields) {
@@ -2073,7 +2075,7 @@ public:
         }
         crash(argToken, "Unable to assign argument of type '{}' to parameter of type '{}'", TypeName(value.getType()), TypeName(field->type));
       }
-      if (Types::Pool().isFloat(*targetType)) {
+      if (Pool().isFloat(*targetType)) {
         if (auto intLit = value.getInt()) {
           value.value = FloatLiteral(*intLit);
         }
@@ -2093,11 +2095,11 @@ public:
   }
 
   pair<std::vector<Reference>, std::unordered_map<Identifier, Reference>> getArguments(
-    Types::TypeSpan paramTypes,
+    TypeSpan paramTypes,
     Parser::ArgumentList& argsNode,
     Environment& environment,
     std::ostream& outputFile,
-    Types::FieldMap& fieldNames,
+    FieldMap& fieldNames,
     Reference* firstArg
   ) {
     vector<Reference> arguments;
@@ -2118,7 +2120,7 @@ public:
           paramType.value
         );
       }
-      if (auto floatType = Types::Pool().getFloat(paramType)) {
+      if (auto floatType = Pool().getFloat(paramType)) {
         arguments.push_back(argument.coerceFloat(floatType->precision));
       } else {
         arguments.push_back(argument);
@@ -2183,51 +2185,33 @@ public:
 
   void defineFunction(FunctionStub stub, Environment* environment) {
     Environment functionEnvironment = Environment(environment, stub.name);
-    auto node = parser.getFunctionLiteral(stub.definitionNode);
-    Types::FunctionType functionType = stub.functionType;
-    auto returnType = functionType.returnType;
-    auto parameterTypes = Types::Pool().tupleElements(functionType.parameters);
-    StatementContext functionContext{.returnType = returnType};
+
     auto& instruction = outputFileStream;
+    instruction << "define ";
 
-    Types::LLVMStorage returnStorage = Types::Pool().storageType(returnType);
-    fmt::print(instruction, "define ");
-    if (returnStorage == Types::LLVMStorage::LITERAL) {
-      fmt::print(instruction, "{} ", LlvmName(returnType));
-    } else {
-      fmt::print(instruction, "void ");
-    }
-    fmt::print(instruction, "{}(", stub.name);
+    OutContext context{.outputFile = instruction, .environment = functionEnvironment};
+    Function function(stub.functionType, stub.name);
 
-    bool hasParameters = false;
-    if (returnStorage == Types::LLVMStorage::VARIABLE) {
-      // TODO: factor out %return register
-      fmt::print(instruction, "ptr noalias sret({}) align {} %return", LlvmName(returnType), Types::Pool().getSizing(returnType).alignment.byteAlignment());
-      hasParameters = true;
-    }
+    auto entryLabel = declareParamRegisters(context, function);
+    functionEnvironment.nextTemporary = entryLabel + 1;
+    auto node = parser.getFunctionLiteral(stub.definitionNode);
     auto parameters = parser.getParameterList(node.parameters);
+
+    // TODO: attributes
+    // https://llvm.org/docs/LangRef.html#function-attributes
+    instruction << " {\n";
+
+    vector<Identifier> paramNames;
+    paramNames.reserve(parameters.requiredParameters.size() + parameters.optionalParameters.size());
     u32 parameterIndex = 0;
+    auto parameterTypes = Pool().tupleElements(stub.functionType.parameters);
     for (NodeIndex paramNode : parameters.requiredParameters) {
-      if (hasParameters) {
-        instruction << ", ";
-      }
-      hasParameters = true;
-
       TypeIndex paramType = parameterTypes[parameterIndex];
-      bool isLiteralParameter = Types::Pool().isLlvmLiteralType(paramType);
       auto parameterDefinition = parser.getDefinition(paramNode);
+      string_view paramName = parameterDefinition.name->lexeme;
 
-      std::string_view paramName = parameterDefinition.name->lexeme;
-
-      Reference parameter = isLiteralParameter ? Reference(RegisterValue(paramName, paramType)) : Reference(StackValue(paramName, paramType));
-      if (isLiteralParameter) {
-        fmt::print(instruction, "{} {}", LlvmName(paramType), parameter);
-      } else {
-        // TODO: type alignment; for now align to s64
-        fmt::print(instruction, "ptr byval({}) {}", LlvmName(paramType), parameter);
-      }
-
-      if (!functionEnvironment.define(paramName, parameter).has_value()) {
+      paramNames.push_back(paramName);
+      if (!functionEnvironment.define(paramName, Reference(StackValue(paramName, paramType))).has_value()) {
         crash(paramNode, "Duplicate function parameter {}", paramName);
       }
       parameterIndex++;
@@ -2236,10 +2220,13 @@ public:
     for (NodeIndex parameterIndex : parameters.optionalParameters) {
       Todo(parameterIndex, "Named parameters/default values");
     }
-    instruction << ")";
-    // TODO: attributes
-    // https://llvm.org/docs/LangRef.html#function-attributes
-    instruction << "{\n";
+
+    loadParameterRegisters(context, stub.functionType, paramNames);
+
+    FunctionType functionType = stub.functionType;
+    auto returnType = functionType.returnType;
+
+    StatementContext functionContext{.returnType = returnType};
 
     auto body = parser.getBlock(node.body.value());
     for (auto statement : body.elements) {
@@ -2247,14 +2234,15 @@ public:
     }
 
     if (!functionEnvironment.hasReturned) {
-      if (returnType == Types::Pool()._void) {
+      if (returnType == Pool()._void) {
         instruction << "ret void\n";
       } else {
         crash(stub.definitionNode, "Return required for all code paths");
       }
     }
-    // TODO: ensure return value
+
     instruction << "}\n\n";
+    return;
   }
 
   Reference dotAccess(NodeIndex nodeIndex, std::ostream& outputFile, Environment& environment, StatementContext& context) {
@@ -2269,7 +2257,7 @@ public:
 
     if (auto type = object.unboxType()) {
       {
-        auto sizing = Types::Pool().getSizing(*type);
+        auto sizing = Pool().getSizing(*type);
         if (fieldName == "size") {
           return Reference(IntLiteral(sizing.byteSize));
         } else if (fieldName == "alignment") {
@@ -2279,7 +2267,7 @@ public:
         }
       }
 
-      if (auto enumDefinition = Types::Pool().getEnum(*type)) {
+      if (auto enumDefinition = Pool().getEnum(*type)) {
         if (auto value = enumDefinition->get(fieldName)) {
           return Reference(IntLiteral(*value, *type));
         }
@@ -2308,7 +2296,7 @@ public:
 
     // TODO: auto dereference pointers
     auto type = object.getType();
-    Types::OptionalType dereferenced = Types::Pool().dereference(type);
+    OptionalType dereferenced = Pool().dereference(type);
     if (dereferenced.has_value()) {
       StackValue dereffed = dereference(&object, outputFile, environment, node.object.value());
       object.value = dereffed;
@@ -2317,7 +2305,7 @@ public:
       log("Accessing field for type {}", TypeName(type));
     }
 
-    auto boxedField = Types::Pool().getFieldIndex(type, fieldName);
+    auto boxedField = Pool().getFieldIndex(type, fieldName);
 
     if (!boxedField.has_value()) {
       auto lValue = object.lValue();
@@ -2371,8 +2359,8 @@ public:
       if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
         return Reference(FloatLiteral(left->value + right->value));
       }
-      if (Types::Pool().isInt(operandType)) binaryOperator = "add";
-      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fadd";
+      if (Pool().isInt(operandType)) binaryOperator = "add";
+      else if (Pool().isFloat(operandType)) binaryOperator = "fadd";
       else crashBinOp(node.operation, &leftVal, &rightVal);
       break;
     }
@@ -2383,8 +2371,8 @@ public:
       if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
         return Reference(FloatLiteral(left->value - right->value));
       }
-      if (Types::Pool().isInt(operandType)) binaryOperator = "sub";
-      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fsub";
+      if (Pool().isInt(operandType)) binaryOperator = "sub";
+      else if (Pool().isFloat(operandType)) binaryOperator = "fsub";
       else crashBinOp(node.operation, &leftVal, &rightVal);
       break;
     }
@@ -2395,9 +2383,9 @@ public:
       if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
         return Reference(FloatLiteral(left->value / right->value));
       }
-      if (Types::Pool().isSignedInt(operandType)) binaryOperator = "sdiv";
-      else if (Types::Pool().isInt(operandType)) binaryOperator = "udiv";
-      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fdiv";
+      if (Pool().isSignedInt(operandType)) binaryOperator = "sdiv";
+      else if (Pool().isInt(operandType)) binaryOperator = "udiv";
+      else if (Pool().isFloat(operandType)) binaryOperator = "fdiv";
       else crashBinOp(node.operation, &leftVal, &rightVal);
       break;
     }
@@ -2416,8 +2404,8 @@ public:
         return Reference(FloatLiteral(left->value * right->value));
       }
       fmt::println("Two ints or floats");
-      if (Types::Pool().isInt(operandType)) binaryOperator = "mul";
-      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fmul";
+      if (Pool().isInt(operandType)) binaryOperator = "mul";
+      else if (Pool().isFloat(operandType)) binaryOperator = "fmul";
       else crashBinOp(node.operation, &leftVal, &rightVal);
       break;
     }
@@ -2429,9 +2417,9 @@ public:
         auto result = std::remainder(left->value, right->value);
         return Reference(FloatLiteral(result));
       }
-      if (Types::Pool().isSignedInt(operandType)) binaryOperator = "srem";
-      else if (Types::Pool().isUnsignedInt(operandType)) binaryOperator = "urem";
-      else if (Types::Pool().isFloat(operandType)) binaryOperator = "frem";
+      if (Pool().isSignedInt(operandType)) binaryOperator = "srem";
+      else if (Pool().isUnsignedInt(operandType)) binaryOperator = "urem";
+      else if (Pool().isFloat(operandType)) binaryOperator = "frem";
       else crashBinOp(node.operation, &leftVal, &rightVal);
       break;
     }
@@ -2442,10 +2430,10 @@ public:
       if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
         return Reference(left->value < right->value);
       }
-      resultType = Types::Pool()._bool;
-      if (Types::Pool().isSignedInt(operandType)) binaryOperator = "icmp slt";
-      else if (Types::Pool().isInt(operandType)) binaryOperator = "icmp ult";
-      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp uolt";
+      resultType = Pool()._bool;
+      if (Pool().isSignedInt(operandType)) binaryOperator = "icmp slt";
+      else if (Pool().isInt(operandType)) binaryOperator = "icmp ult";
+      else if (Pool().isFloat(operandType)) binaryOperator = "fcmp uolt";
       else crashBinOp(node.operation, &leftVal, &rightVal);
       break;
     }
@@ -2456,10 +2444,10 @@ public:
       if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
         return Reference(left->value > right->value);
       }
-      resultType = Types::Pool()._bool;
-      if (Types::Pool().isSignedInt(operandType)) binaryOperator = "icmp sgt";
-      else if (Types::Pool().isInt(operandType)) binaryOperator = "icmp ugt";
-      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp uogt";
+      resultType = Pool()._bool;
+      if (Pool().isSignedInt(operandType)) binaryOperator = "icmp sgt";
+      else if (Pool().isInt(operandType)) binaryOperator = "icmp ugt";
+      else if (Pool().isFloat(operandType)) binaryOperator = "fcmp uogt";
       else crashBinOp(node.operation, &leftVal, &rightVal);
       break;
     }
@@ -2470,10 +2458,10 @@ public:
       if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
         return Reference(left->value <= right->value);
       }
-      resultType = Types::Pool()._bool;
-      if (Types::Pool().isSignedInt(operandType)) binaryOperator = "icmp sle";
-      else if (Types::Pool().isInt(operandType)) binaryOperator = "icmp ule";
-      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp uole";
+      resultType = Pool()._bool;
+      if (Pool().isSignedInt(operandType)) binaryOperator = "icmp sle";
+      else if (Pool().isInt(operandType)) binaryOperator = "icmp ule";
+      else if (Pool().isFloat(operandType)) binaryOperator = "fcmp uole";
       else crashBinOp(node.operation, &leftVal, &rightVal);
       break;
     }
@@ -2484,10 +2472,10 @@ public:
       if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
         return Reference(left->value >= right->value);
       }
-      resultType = Types::Pool()._bool;
-      if (Types::Pool().isSignedInt(operandType)) binaryOperator = "icmp sge";
-      else if (Types::Pool().isInt(operandType)) binaryOperator = "icmp uge";
-      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp uoge";
+      resultType = Pool()._bool;
+      if (Pool().isSignedInt(operandType)) binaryOperator = "icmp sge";
+      else if (Pool().isInt(operandType)) binaryOperator = "icmp uge";
+      else if (Pool().isFloat(operandType)) binaryOperator = "fcmp uoge";
       else crashBinOp(node.operation, &leftVal, &rightVal);
       break;
     }
@@ -2498,14 +2486,14 @@ public:
       if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
         return Reference(left->value == right->value);
       }
-      resultType = Types::Pool()._bool;
-      if (Types::Pool().isInt(operandType) || Types::Pool().isPointer(operandType)) binaryOperator = "icmp eq";
-      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp ueq";
-      else if (auto enumDef = Types::Pool().getEnum(operandType)) {
+      resultType = Pool()._bool;
+      if (Pool().isInt(operandType) || Pool().isPointer(operandType)) binaryOperator = "icmp eq";
+      else if (Pool().isFloat(operandType)) binaryOperator = "fcmp ueq";
+      else if (auto enumDef = Pool().getEnum(operandType)) {
         auto rawType = enumDef->rawType;
-        if (Types::Pool().isInt(rawType)) {
+        if (Pool().isInt(rawType)) {
           binaryOperator = "icmp eq";
-        } else if (Types::Pool().isFloat(rawType)) {
+        } else if (Pool().isFloat(rawType)) {
           binaryOperator = "fcmp ueq";
         } else {
           crashBinOp(node.operation, &leftVal, &rightVal);
@@ -2520,14 +2508,14 @@ public:
       if (auto left = leftLiteral.unbox<FloatLiteral>(), right = rightLiteral.unbox<FloatLiteral>(); left && right) {
         return Reference(left->value != right->value);
       }
-      resultType = Types::Pool()._bool;
-      if (Types::Pool().isInt(operandType) || Types::Pool().isPointer(operandType)) binaryOperator = "icmp ne";
-      else if (Types::Pool().isFloat(operandType)) binaryOperator = "fcmp une";
-      else if (auto enumDef = Types::Pool().getEnum(operandType)) {
+      resultType = Pool()._bool;
+      if (Pool().isInt(operandType) || Pool().isPointer(operandType)) binaryOperator = "icmp ne";
+      else if (Pool().isFloat(operandType)) binaryOperator = "fcmp une";
+      else if (auto enumDef = Pool().getEnum(operandType)) {
         auto rawType = enumDef->rawType;
-        if (Types::Pool().isInt(rawType)) {
+        if (Pool().isInt(rawType)) {
           binaryOperator = "icmp ne";
-        } else if (Types::Pool().isFloat(rawType)) {
+        } else if (Pool().isFloat(rawType)) {
           binaryOperator = "fcmp une";
         } else {
           crashBinOp(node.operation, &leftVal, &rightVal);
@@ -2556,13 +2544,13 @@ public:
 
     auto funcType = func->type;
     auto returnType = funcType.returnType;
-    auto parameterTypes = Types::Pool().tupleElements(funcType.parameters);
+    auto parameterTypes = Pool().tupleElements(funcType.parameters);
     std::vector<bool> setArguments(parameterTypes.size(), false);
 
-    bool literalReturn = Types::Pool().isLiteralReturn(returnType);
-    bool hasReturn = !Types::Pool().isVoid(returnType);
+    bool literalReturn = Pool().isLiteralReturn(returnType);
+    bool hasReturn = !Pool().isVoid(returnType);
 
-    static Types::FieldMap namedArgs;
+    static FieldMap namedArgs;
     if (hasReturn && !literalReturn) {
       // Add dummy param for now
       parameters.push_back("");
@@ -2570,7 +2558,7 @@ public:
     auto [arguments, namedArguments] = getArguments(parameterTypes, argsNode, environment, outputFile, namedArgs, selfArg);
     for (u32 i = 0; i < arguments.size(); i++) {
       if (auto argType = arguments[i].isAssignableTo(parameterTypes[i])) {
-        if (Types::Pool().isLlvmLiteralType(*argType)) {
+        if (Pool().isLlvmLiteralType(*argType)) {
           auto value = toRegister(&arguments[i], outputFile, environment);
           parameters.push_back(fmt::format("{} {}", LlvmName(*argType), value));
         } else {
@@ -2602,7 +2590,7 @@ public:
       resultIndex = environment.addTemporary();
       if (!literalReturn) {
         auto result = Reference(StackValue(resultIndex, returnType));
-        auto align = Types::Pool().getSizing(returnType).alignment.byteAlignment();
+        auto align = Pool().getSizing(returnType).alignment.byteAlignment();
         fmt::println(outputFile, "{} = alloca {}, align {}", result, LlvmName(returnType), align);
         parameters[0] = fmt::format("ptr sret({}) align {} {}", LlvmName(returnType), align, result);
       }
@@ -2620,7 +2608,7 @@ public:
     }
     fmt::println(outputFile, "{}({})", func->globalName, fmt::join(parameters, ", "));
 
-    if (Types::Pool().isVoid(returnType)) {
+    if (Pool().isVoid(returnType)) {
       return Reference::Void();
     }
     if (literalReturn) {
@@ -2635,7 +2623,7 @@ public:
       log("Testing if {}.{} is a method", TypeName(type), fieldName);
       log("{}", *staticValue);
       if (auto function = staticValue->unboxFunction()) {
-        auto paramTypes = Types::Pool().tupleElements(function->type.parameters);
+        auto paramTypes = Pool().tupleElements(function->type.parameters);
         if (paramTypes.empty()) {
           crash(
             nodeIndex,
@@ -2651,7 +2639,7 @@ public:
         if (selfType == type) {
           return function;
         }
-        if (auto ptrType = Types::Pool().dereference(selfType); ptrType && type == *ptrType) {
+        if (auto ptrType = Pool().dereference(selfType); ptrType && type == *ptrType) {
           TODO("Calling methods on pointers");
         }
 

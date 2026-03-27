@@ -1,4 +1,5 @@
 #pragma once
+#include "../deps/doctest.h"
 #include "fmt/base.h"
 #include <bit>
 #include <cassert>
@@ -24,6 +25,12 @@ using u64 = uint64_t;
 // using s16 = int16_t;
 // using s32 = int32_t;
 // using s64 = int64_t;
+
+#ifndef ASSERT_INVARIANTS
+#ifndef DOCTEST_CONFIG_INVARIANTS
+#define ASSERT_INVARIANTS
+#endif
+#endif
 
 [[noreturn]] void TODO(std::string message);
 
@@ -121,4 +128,8 @@ struct Logger {
       fmt::println(fmt, std::forward<Args>(args)...);
     }
   }
+};
+
+template <class... Ts> struct overloaded : Ts... {
+  using Ts::operator()...;
 };

@@ -1,8 +1,8 @@
+#pragma once
 #include "types.h"
 #include "value.h"
 #include <filesystem>
 #include <unordered_map>
-#pragma once
 
 using TypeCache = std::unordered_map<std::string_view, TypeIndex>;
 

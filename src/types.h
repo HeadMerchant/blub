@@ -1,8 +1,10 @@
 #pragma once
 #include "common.h"
 #include "fmt/base.h"
+#include "registers.h"
 #include <algorithm>
 #include <array>
+#include <concepts>
 #include <cstdint>
 #include <fmt/format.h>
 #include <fmt/ostream.h>
@@ -46,7 +48,6 @@ struct TypeIndex {
   bool isInfer();
 };
 
-namespace Types {
 const u32 NUM_BUILTINS = 14;
 const std::string_view SliceName = "%.slice";
 
@@ -62,9 +63,6 @@ struct TypeField {
 
 using FieldMap = std::unordered_map<Identifier, TypeField>;
 
-struct DataIndex {
-  u32 value;
-};
 struct StructIndex {
   u32 value;
 };
@@ -93,7 +91,7 @@ struct FunctionType {
   }
 
   struct Hash {
-    std::size_t operator()(const Types::FunctionType& k) const {
+    std::size_t operator()(const FunctionType& k) const {
       using std::hash;
       return (hash<u32>()(k.parameters.value) ^ (hash<u32>()(k.returnType.value) << 1));
     }
@@ -210,7 +208,7 @@ struct PointerType {
   TypeIndex multiPointer;
 };
 
-struct Void {};
+struct VoidType {};
 struct Infer {};
 struct SignedInt {
   u32 bitSize;
@@ -225,6 +223,10 @@ struct Float {
   Precision precision;
   u32 bitSize() {
     return precision == f16 ? 16 : precision == f32 ? 32 : 64;
+  }
+
+  u32 byteSize() {
+    return bitSize() / 8;
   }
 };
 struct Pointer {
@@ -247,13 +249,13 @@ struct SizedArray {
   TypeIndex dereferencedType;
   u32 length;
 };
-struct Never {};
-struct IntLiteral {};
-struct FloatLiteral {};
+struct NeverType {};
+struct IntLiteralType {};
+struct FloatLiteralType {};
 struct Type {};
-struct Environment {};
+struct EnvironmentType {};
 // TODO: implement params and return type
-struct Generic {};
+struct TypeOfGeneric {};
 struct RangeLiteral {};
 struct AlignedType {
   TypeIndex baseType;
@@ -267,7 +269,7 @@ struct Union {
 };
 
 using UnderlyingType = std::variant<
-  Void,
+  VoidType,
   SignedInt,
   UnsignedInt,
   Float,
@@ -281,18 +283,18 @@ using UnderlyingType = std::variant<
   Infer,
   Opaque,
   SizedArray,
-  Never,
-  IntLiteral,
-  FloatLiteral,
+  NeverType,
+  IntLiteralType,
+  FloatLiteralType,
   Type,
-  Environment,
-  Generic,
+  EnvironmentType,
+  TypeOfGeneric,
   RangeLiteral,
   AlignedType,
   Union>;
-template <class... Ts> struct overloaded : Ts... {
-  using Ts::operator()...;
-};
+using std::same_as;
+template <typename T>
+concept IntRegister = same_as<T, SignedInt> || same_as<T, UnsignedInt> || same_as<T, Pointer> || same_as<T, MultiPointer> || same_as<T, FunctionType>;
 
 struct Tuple {
   std::span<TypeIndex> types;
@@ -361,7 +363,7 @@ public:
     // 23 builtins initialized
     underlyingTypes.reserve(256);
 
-    _void = addType(Void{});
+    _void = addType(VoidType{});
     _u8 = addType(UnsignedInt(8));
     _u16 = addType(UnsignedInt(16));
     _u32 = addType(UnsignedInt(32));
@@ -382,13 +384,13 @@ public:
     _bool = addType(UnsignedInt(1));
 
     infer = addType(Infer{});
-    never = addType(Never{});
-    intLiteral = addType(IntLiteral{});
-    floatLiteral = addType(FloatLiteral{});
+    never = addType(NeverType{});
+    intLiteral = addType(IntLiteralType{});
+    floatLiteral = addType(FloatLiteralType{});
 
     type = addType(Type{});
-    environment = addType(Environment{});
-    generic = addType(Generic{});
+    environment = addType(EnvironmentType{});
+    generic = addType(TypeOfGeneric{});
     rangeLiteral = addType(RangeLiteral{});
   }
 
@@ -501,7 +503,7 @@ public:
     auto type = coerce(valueIndex, targetIndex);
     if (!type.has_value()) return std::nullopt;
 
-    if (std::holds_alternative<Infer>(valueType) || std::holds_alternative<Void>(valueType)) {
+    if (std::holds_alternative<Infer>(valueType) || std::holds_alternative<VoidType>(valueType)) {
       return std::nullopt;
     }
 
@@ -537,7 +539,7 @@ public:
   //   std::cout << std::endl;
   // }
 
-  std::pair<TypeIndex, Types::TupleIndex> tupleOf(std::vector<TypeIndex> types) {
+  std::pair<TypeIndex, TupleIndex> tupleOf(std::vector<TypeIndex> types) {
     if (tuples.contains(types)) {
       return tuples[types];
     }
@@ -610,7 +612,7 @@ public:
   }
 
   bool isVoid(TypeIndex type) {
-    return std::holds_alternative<Void>(getType(type));
+    return std::holds_alternative<VoidType>(getType(type));
   }
 
   OptionalType sliceElementType(TypeIndex type) {
@@ -696,7 +698,7 @@ public:
   }
 
   bool isFloat(TypeIndex type) {
-    return isAny<Float, FloatLiteral>(getType(type));
+    return isAny<Float, FloatLiteralType>(getType(type));
   }
 
   std::optional<Float> getFloat(TypeIndex type) {
@@ -716,7 +718,7 @@ public:
   }
 
   bool isInt(TypeIndex type) {
-    return isSignedInt(type) || isUnsignedInt(type) || isAny<IntLiteral>(getType(type));
+    return isSignedInt(type) || isUnsignedInt(type) || isAny<IntLiteralType>(getType(type));
   }
 
   bool isInfer(TypeIndex type) {
@@ -728,7 +730,7 @@ public:
   Sizing getSizing(TypeIndex type) {
     return std::visit(
       overloaded{
-        [](Void x) { return Sizing{0, 0}; },
+        [](VoidType x) { return Sizing{0, 0}; },
         [](SignedInt x) { return Sizing::fromBitSize(x.bitSize); },
         [](UnsignedInt x) { return Sizing::fromBitSize(x.bitSize); },
         [](Float x) { return Sizing::fromBitSize(x.bitSize()); },
@@ -752,15 +754,15 @@ public:
           auto length = x.length;
           return Sizing{.byteSize = length * sizing.byteSize, .bitSize = length * sizing.bitSize, .alignment = sizing.alignment};
         },
-        [](Never) {
+        [](NeverType) {
           TODO("Error for sizing Never type");
           return Sizing{};
         },
-        [](IntLiteral) {
+        [](IntLiteralType) {
           TODO("Error for sizing IntLiteral type");
           return Sizing{};
         },
-        [](FloatLiteral) {
+        [](FloatLiteralType) {
           TODO("Error for sizing FloatLiteral type");
           return Sizing{};
         },
@@ -768,11 +770,11 @@ public:
           TODO("Error for sizing Type type");
           return Sizing{};
         },
-        [](Environment) {
+        [](EnvironmentType) {
           TODO("Error for sizing Environment type");
           return Sizing{};
         },
-        [](Generic) {
+        [](TypeOfGeneric) {
           TODO("Error for sizing Generic type");
           return Sizing{};
         },
@@ -808,6 +810,61 @@ public:
         },
       },
       getType(type)
+    );
+  }
+
+  void registerStorage(TypeIndex typeIndex, RegisterAssignment& assignment) {
+    auto sizing = getSizing(typeIndex);
+    if (sizing.byteSize == 0) return;
+
+    auto type = getType(typeIndex);
+    std::visit(
+      overloaded{
+        [&]<IntRegister T>(T) {
+          for (auto i = 0; i < getSizing(typeIndex).byteSize; i++) {
+            assignment.push(RegisterType::Int);
+          }
+        },
+        [&](Float x) {
+          for (auto i = 0; i < x.byteSize(); i++) {
+            assignment.push(RegisterType::Float);
+          }
+        },
+        [&](StructIndex x) {
+          auto structDef = getStruct(x);
+          if (structDef.sizing.byteSize >= 16) {
+            assignment.push(RegisterType::Memory);
+            return;
+          }
+          for (auto field : structDef.fieldTypes) {
+            registerStorage(field, assignment);
+          }
+        },
+        [&](TupleIndex x) {
+          if (getSizing(typeIndex).byteSize >= 16) {
+            assignment.push(RegisterType::Memory);
+            return;
+          }
+          auto tuple = tupleElements(x);
+          for (auto element : tuple) {
+            registerStorage(element, assignment);
+          }
+        },
+        [&](EnumIndex x) { registerStorage(getEnum(x).rawType, assignment); },
+        [&](FunctionType x) { assignment.push(RegisterType::Int); },
+        [&](SizedArray x) {
+          auto size = getSizing(x.dereferencedType).byteSize * x.length;
+          if (size >= 16) {
+            assignment.push(RegisterType::Memory);
+            return;
+          }
+          for (u32 i = 0; i < x.length; i++) {
+            registerStorage(x.dereferencedType, assignment);
+          }
+        },
+        [&](auto x) { TODO("Error for trying to get storage type for type that can't be passed"); },
+      },
+      type
     );
   }
 
@@ -862,11 +919,11 @@ public:
 
   bool subTypes(UnderlyingType& child, UnderlyingType& parent) {
     if (isAny<Infer>(child)) return true;
-    if (isAny<Never>(child)) return !isAny<Infer>(parent);
-    if (isAny<IntLiteral>(child)) {
-      return isAny<SignedInt, UnsignedInt, FloatLiteral, Float>(parent);
+    if (isAny<NeverType>(child)) return !isAny<Infer>(parent);
+    if (isAny<IntLiteralType>(child)) {
+      return isAny<SignedInt, UnsignedInt, FloatLiteralType, Float>(parent);
     }
-    if (isAny<FloatLiteral>(child)) {
+    if (isAny<FloatLiteralType>(child)) {
       return isAny<Float>(parent);
     }
     if (auto parentVal = std::get_if<Pointer>(&parent)) {
@@ -932,47 +989,37 @@ public:
       TODO("bruh storage");
     }
   };
-
-  CCStorage registerAssignment(TypeIndex type) {
-    auto byteSize = getSizing(type).byteSize;
-    if (byteSize > 16) {
-      return CCStorage::Memory;
-    }
-    TODO("bruh storage");
-  }
 };
 
 TypePool& Pool();
 
-} // namespace Types
-
 struct TypeName {
   TypeIndex type;
 
-  static void print(std::ostream& o, Types::UnderlyingType& type) {
+  static void print(std::ostream& o, UnderlyingType& type) {
     std::visit(
-      Types::overloaded{
-        [&o](Types::Void x) { o << "void"; },
-        [&o](Types::SignedInt x) { o << "s" << x.bitSize; },
-        [&o](Types::UnsignedInt x) { o << "u" << x.bitSize; },
-        [&o](Types::Float x) { o << "f" << x.bitSize(); },
-        [&o](Types::Pointer x) {
+      overloaded{
+        [&o](VoidType x) { o << "void"; },
+        [&o](SignedInt x) { o << "s" << x.bitSize; },
+        [&o](UnsignedInt x) { o << "u" << x.bitSize; },
+        [&o](Float x) { o << "f" << x.bitSize(); },
+        [&o](Pointer x) {
           o << "^";
           print(o, x.dereferencedType);
         },
-        [&o](Types::MultiPointer x) {
+        [&o](MultiPointer x) {
           o << "[^]";
           print(o, x.dereferencedType);
         },
-        [&o](Types::Slice x) {
+        [&o](Slice x) {
           o << "[]";
           print(o, x.dereferencedType);
         },
-        [&o](Types::StructIndex x) { o << Types::Pool().structPool[x.value].name; },
-        [&o](Types::TupleIndex x) {
+        [&o](StructIndex x) { o << Pool().structPool[x.value].name; },
+        [&o](TupleIndex x) {
           bool hasMultiple = false;
           o << "(";
-          for (auto type : Types::Pool().tupleElements(x)) {
+          for (auto type : Pool().tupleElements(x)) {
             if (hasMultiple) {
               o << ", ";
             }
@@ -982,30 +1029,30 @@ struct TypeName {
           }
           o << ")";
         },
-        [&o](Types::EnumIndex x) { o << Types::Pool().enumPool[x.value].name; },
-        [&o](Types::FunctionType x) {
-          print(o, Types::Pool().tupleTypeIndices[x.parameters.value]);
+        [&o](EnumIndex x) { o << Pool().enumPool[x.value].name; },
+        [&o](FunctionType x) {
+          print(o, Pool().tupleTypeIndices[x.parameters.value]);
           o << " -> ";
           print(o, x.returnType);
         },
-        [&o](Types::Infer x) { o << "infer"; },
-        [&o](Types::Opaque x) { o << x.name; },
-        [&o](Types::SizedArray x) {
+        [&o](Infer x) { o << "infer"; },
+        [&o](Opaque x) { o << x.name; },
+        [&o](SizedArray x) {
           o << "[" << x.length << "]";
           print(o, x.dereferencedType);
         },
-        [&o](Types::Never x) { o << "never"; },
-        [&o](Types::IntLiteral) { o << "int literal"; },
-        [&o](Types::FloatLiteral) { o << "float literal"; },
-        [&o](Types::Generic) { o << "generic"; },
-        [&o](Types::Environment) { o << "environment"; },
-        [&o](Types::Type) { o << "type"; },
-        [&o](Types::RangeLiteral) { o << "range"; },
-        [&o](Types::AlignedType x) {
+        [&o](NeverType x) { o << "never"; },
+        [&o](IntLiteralType) { o << "int literal"; },
+        [&o](FloatLiteralType) { o << "float literal"; },
+        [&o](TypeOfGeneric) { o << "generic"; },
+        [&o](EnvironmentType) { o << "environment"; },
+        [&o](Type) { o << "type"; },
+        [&o](RangeLiteral) { o << "range"; },
+        [&o](AlignedType x) {
           fmt::print(o, "@align({}) ", x.newAlignment.byteAlignment());
           print(o, x.baseType);
         },
-        [&o](Types::Union x) {
+        [&o](Union x) {
           o << "(";
           auto hasMultiple = false;
           for (auto [type, fieldName] : x.namedVariants) {
@@ -1027,7 +1074,7 @@ struct TypeName {
   }
 
   static void print(std::ostream& o, TypeIndex type) {
-    print(o, Types::Pool().getType(type));
+    print(o, Pool().getType(type));
   }
 
   friend std::ostream& operator<<(std::ostream& o, const TypeName& type) {
@@ -1039,21 +1086,21 @@ struct TypeName {
 struct LlvmName {
   TypeIndex type;
   static void format(std::ostream& o, TypeIndex type) {
-    auto underlyingType = Types::Pool().getType(type);
+    auto underlyingType = Pool().getType(type);
     std::visit(
-      Types::overloaded{
-        [&o](Types::Void x) { o << "void"; },
-        [&o](Types::SignedInt x) { o << "i" << x.bitSize; },
-        [&o](Types::UnsignedInt x) { o << "i" << x.bitSize; },
-        [&o](Types::Float x) { o << (x.precision == Types::Float::f16 ? "half" : (x.precision == Types::Float::f32 ? "float" : "double")); },
-        [&o](Types::Pointer x) { o << "ptr"; },
-        [&o](Types::MultiPointer x) { o << "ptr"; },
-        [&o](Types::Slice x) { o << "%.slice"; },
-        [&o](Types::StructIndex x) { o << Types::Pool().structPool[x.value].llvmName; },
-        [&o](Types::TupleIndex x) {
+      overloaded{
+        [&o](VoidType x) { o << "void"; },
+        [&o](SignedInt x) { o << "i" << x.bitSize; },
+        [&o](UnsignedInt x) { o << "i" << x.bitSize; },
+        [&o](Float x) { o << (x.precision == Float::f16 ? "half" : (x.precision == Float::f32 ? "float" : "double")); },
+        [&o](Pointer x) { o << "ptr"; },
+        [&o](MultiPointer x) { o << "ptr"; },
+        [&o](Slice x) { o << "%.slice"; },
+        [&o](StructIndex x) { o << Pool().structPool[x.value].llvmName; },
+        [&o](TupleIndex x) {
           bool hasMultiple = false;
           o << "{";
-          for (auto type : Types::Pool().tupleElements(x)) {
+          for (auto type : Pool().tupleElements(x)) {
             if (hasMultiple) {
               o << ", ";
             }
@@ -1062,24 +1109,24 @@ struct LlvmName {
           }
           o << "}";
         },
-        [&o](Types::EnumIndex x) { format(o, Types::Pool().enumPool[x.value].rawType); },
-        [&o](Types::FunctionType x) { o << "ptr"; },
-        [&o](Types::Opaque x) { o << x.llvmName; },
-        [&o](Types::Infer x) { TODO("Error for llvm name of an inferred type"); },
-        [&o](Types::SizedArray x) {
+        [&o](EnumIndex x) { format(o, Pool().enumPool[x.value].rawType); },
+        [&o](FunctionType x) { o << "ptr"; },
+        [&o](Opaque x) { o << x.llvmName; },
+        [&o](Infer x) { TODO("Error for llvm name of an inferred type"); },
+        [&o](SizedArray x) {
           o << "[" << x.length << " x ";
           format(o, x.dereferencedType);
           o << "]";
         },
-        [&o](Types::Never x) { TODO("Error for llvm name for never type"); },
-        [&o](Types::IntLiteral) { o << "i32"; },
-        [&o](Types::FloatLiteral) { o << "float"; },
-        [&o](Types::Generic) { TODO("Error for llvm name for float literal type"); },
-        [&o](Types::Environment) { TODO("Error for llvm name for float literal type"); },
-        [&o](Types::Type) { TODO("Error for llvm name for type literal type"); },
-        [&o](Types::RangeLiteral) { TODO("Error for llvm name for range literal type"); },
-        [&o](Types::AlignedType x) { format(o, x.baseType); },
-        [&o, type](Types::Union x) {
+        [&o](NeverType x) { TODO("Error for llvm name for never type"); },
+        [&o](IntLiteralType) { o << "i32"; },
+        [&o](FloatLiteralType) { o << "float"; },
+        [&o](TypeOfGeneric) { TODO("Error for llvm name for float literal type"); },
+        [&o](EnvironmentType) { TODO("Error for llvm name for float literal type"); },
+        [&o](Type) { TODO("Error for llvm name for type literal type"); },
+        [&o](RangeLiteral) { TODO("Error for llvm name for range literal type"); },
+        [&o](AlignedType x) { format(o, x.baseType); },
+        [&o, type](Union x) {
           // TODO: move to using largest type?
           // fmt::print(o, "[i8 x {}]", Types::Pool().getSizing(type).byteSize);
           format(o, x.anonymousVariants[0]);
@@ -1097,4 +1144,4 @@ struct LlvmName {
 
 template <> struct fmt::formatter<TypeName> : ostream_formatter {};
 template <> struct fmt::formatter<LlvmName> : ostream_formatter {};
-template <> struct fmt::formatter<Types::Log2Alignment> : ostream_formatter {};
+template <> struct fmt::formatter<Log2Alignment> : ostream_formatter {};
