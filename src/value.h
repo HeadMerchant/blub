@@ -54,14 +54,16 @@ struct IntLiteral {
 };
 
 template <> struct fmt::formatter<IntLiteral> : fmt::formatter<int64_t> {
-  template <typename FormatContext> auto format(const IntLiteral& obj, FormatContext& ctx) const {
+  template <typename FormatContext>
+  auto format(const IntLiteral& obj, FormatContext& ctx) const {
     return fmt::formatter<int64_t>::format(obj.value, ctx);
   }
 };
 struct FloatLiteral {
   double value;
   Float::Precision precision;
-  FloatLiteral(double value, Float::Precision precision = Float::Precision::f32) : value(value), precision(precision) {}
+  FloatLiteral(double value, Float::Precision precision = Float::Precision::f32)
+      : value(value), precision(precision) {}
 };
 
 using RegisterName = std::variant<std::string_view, u32>;
@@ -173,13 +175,15 @@ struct Reference {
 
   Opt unboxType() {
     if (auto type = std::get_if<TypeIndex>(&value)) return *type;
-    if (auto type = std::get_if<Reference*>(&value)) return (*type)->unboxType();
+    if (auto type = std::get_if<Reference*>(&value))
+      return (*type)->unboxType();
     return std::nullopt;
   }
 
   Function* unboxFunction() {
     if (auto func = std::get_if<Function>(&value)) return func;
-    if (auto func = std::get_if<Reference*>(&value)) return (*func)->unboxFunction();
+    if (auto func = std::get_if<Reference*>(&value))
+      return (*func)->unboxFunction();
     return nullptr;
   }
 
@@ -205,10 +209,18 @@ struct Reference {
     if (auto ref = std::get_if<Reference*>(&value)) {
       return (*ref)->coerceFloat(precision);
     }
-    throw std::invalid_argument(fmt::format("Attempted to coerce value of type {} to float", TypeName(type)));
+    throw std::invalid_argument(
+      fmt::format(
+        "Attempted to coerce value of type {} to float",
+        TypeName(type)
+      )
+    );
   }
 
-  static optional<std::tuple<TypeIndex, Reference, Reference>> coerceType(Reference* a, Reference* b) {
+  static optional<std::tuple<TypeIndex, Reference, Reference>> coerceType(
+    Reference* a,
+    Reference* b
+  ) {
     auto typeA = a->getType();
     auto typeB = b->getType();
 
@@ -219,12 +231,20 @@ struct Reference {
     if (type == Pool().floatLiteral) {
       if (typeA == Pool().intLiteral) {
         auto value = a->unbox<IntLiteral>()->value;
-        return std::make_tuple(type, Reference(FloatLiteral(value)), Reference(b));
+        return std::make_tuple(
+          type,
+          Reference(FloatLiteral(value)),
+          Reference(b)
+        );
       }
 
       if (typeB == Pool().intLiteral) {
         auto value = b->unbox<IntLiteral>()->value;
-        return std::make_tuple(type, Reference(a), Reference(FloatLiteral(value)));
+        return std::make_tuple(
+          type,
+          Reference(a),
+          Reference(FloatLiteral(value))
+        );
       }
     }
 
@@ -267,7 +287,14 @@ struct Reference {
   }
 
   bool isComptime() {
-    auto comptime = isAny<TypeIndex, IntLiteral, FloatLiteral, bool, Function, GenericValue, Environment*>(value);
+    auto comptime = isAny<
+      TypeIndex,
+      IntLiteral,
+      FloatLiteral,
+      bool,
+      Function,
+      GenericValue,
+      Environment*>(value);
     if (comptime) {
       return true;
     } else if (auto ref = std::get_if<Reference*>(&value)) {
@@ -336,8 +363,12 @@ struct Reference {
         [&o](Function x) { o << x.globalName; },
         [&o](BoundFunction x) { o << x.method.globalName; },
         [&o](Reference* x) { o << *x; },
-        [&o](Environment* x) { TODO("Can't convert environments into llvm names"); },
-        [&o](GenericValue x) { TODO("Can't convert environments into llvm names"); },
+        [&o](Environment* x) {
+          TODO("Can't convert environments into llvm names");
+        },
+        [&o](GenericValue x) {
+          TODO("Can't convert environments into llvm names");
+        },
         [&o](Never x) { o << "undef"; },
         [&o](Range x) { TODO("Can't convert ranges into llvm names"); },
         [&o](VoidRef x) { TODO("Can't convert void into llvm name"); },
@@ -397,7 +428,8 @@ public:
   bool hasReturned = false;
 
   Environment* parent;
-  using WitnessTable = unordered_map<TypeIndex, unordered_map<Identifier, Reference>>;
+  using WitnessTable =
+    unordered_map<TypeIndex, unordered_map<Identifier, Reference>>;
   struct Impls {
     WitnessTable witnesses;
 
@@ -412,18 +444,35 @@ public:
     return prefix;
   }
 
-  Environment() : parent(Environment::baseEnvironment()), imports(), defs(), prefix(""), envType(EnvType::Global), basicBlock(0u), log(LogLevel::Compile) {}
+  Environment()
+      : parent(Environment::baseEnvironment()), imports(), defs(), prefix(""),
+        envType(EnvType::Global), basicBlock(0u), log(LogLevel::Compile) {}
 
-  Environment(Environment* parent, std::string_view prefix, bool quoteTemporaries = false)
-      : parent(parent), imports(), defs(), quotePrefixedNames(quoteTemporaries | parent->quotePrefixedNames), envType(EnvType::Function), log(LogLevel::Compile) {
+  Environment(
+    Environment* parent,
+    std::string_view prefix,
+    bool quoteTemporaries = false
+  )
+      : parent(parent), imports(), defs(),
+        quotePrefixedNames(quoteTemporaries | parent->quotePrefixedNames),
+        envType(EnvType::Function), log(LogLevel::Compile) {
     std::stringstream ss;
     ss << parent->prefix << prefix << ".";
     this->prefix = ss.str();
   }
 
-  Environment(Environment* parent, std::string prefix, bool quoteTemporaries = false)
-      : parent(parent), prefix(prefix), imports(), defs(), quotePrefixedNames(quoteTemporaries | parent->quotePrefixedNames) {}
-  Environment(std::unordered_map<std::string_view, Reference> defs, Environment* parent = nullptr) : parent(parent), defs(defs), imports() {}
+  Environment(
+    Environment* parent,
+    std::string prefix,
+    bool quoteTemporaries = false
+  )
+      : parent(parent), prefix(prefix), imports(), defs(),
+        quotePrefixedNames(quoteTemporaries | parent->quotePrefixedNames) {}
+  Environment(
+    std::unordered_map<std::string_view, Reference> defs,
+    Environment* parent = nullptr
+  )
+      : parent(parent), defs(defs), imports() {}
 
   Reference* find(std::string_view name) {
     Environment* env = this;

@@ -127,8 +127,11 @@ public:
     return true;
   }
 
-  RegisterAssignment dominateSSE(CallingConvention cc = CallingConvention::C) const {
-    if (types == (Raw)RegisterType::Memory || types == (Raw)RegisterType::NONE) return *this;
+  RegisterAssignment dominateSSE(
+    CallingConvention cc = CallingConvention::C
+  ) const {
+    if (types == (Raw)RegisterType::Memory || types == (Raw)RegisterType::NONE)
+      return *this;
     // TODO: non-system v
     constexpr u32 abiByteStride = 8;
     RegisterAssignment result;

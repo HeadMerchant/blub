@@ -77,7 +77,10 @@ struct StructIndex {
   u32 value;
   TypeSpan fields();
 };
-static_assert(AggregateType<StructIndex>, "StructIndex must implement method 'fields'");
+static_assert(
+  AggregateType<StructIndex>,
+  "StructIndex must implement method 'fields'"
+);
 
 template <typename T>
 concept RecursiveType = requires(T t) {
@@ -87,7 +90,10 @@ struct EnumIndex {
   u32 value;
   TypeIndex rawType();
 };
-static_assert(RecursiveType<EnumIndex>, "EnumIndex must implement method 'rawType'");
+static_assert(
+  RecursiveType<EnumIndex>,
+  "EnumIndex must implement method 'rawType'"
+);
 
 struct TupleIndex {
   u32 value;
@@ -96,7 +102,10 @@ struct TupleIndex {
   }
   TypeSpan fields();
 };
-static_assert(AggregateType<TupleIndex>, "TupleIndex must implement method 'fields'");
+static_assert(
+  AggregateType<TupleIndex>,
+  "TupleIndex must implement method 'fields'"
+);
 template <> struct std::hash<TupleIndex> {
   std::size_t operator()(const TupleIndex& x) const {
     return std::hash<u32>()(x.value);
@@ -115,14 +124,17 @@ struct FunctionType {
 template <> struct std::hash<FunctionType> {
   std::size_t operator()(const FunctionType& k) const {
     using std::hash;
-    return (hash<u32>()(k.parameters.value) ^ (hash<u32>()(k.returnType.value) << 1));
+    return (
+      hash<u32>()(k.parameters.value) ^ (hash<u32>()(k.returnType.value) << 1)
+    );
   }
 };
 
 struct Log2Alignment {
   uint8_t value;
   static Log2Alignment fromByteSize(u32 byteSize) {
-    uint8_t log2Alignment = std::numeric_limits<u32>::digits - 1 - __builtin_clz(byteSize);
+    uint8_t log2Alignment =
+      std::numeric_limits<u32>::digits - 1 - __builtin_clz(byteSize);
     return {log2Alignment};
   }
 
@@ -163,11 +175,19 @@ struct Sizing {
       assert(byteSize == 4);
       assert(alignment.byteAlignment() == 4);
     }
-    return Sizing{.byteSize = byteSize, .bitSize = bitSize, .alignment = alignment};
+    return Sizing{
+      .byteSize = byteSize,
+      .bitSize = bitSize,
+      .alignment = alignment
+    };
   }
 
   static Sizing alignToPointer(u32 byteSize) {
-    return Sizing{.byteSize = byteSize, .bitSize = byteSize * 8, .alignment = Log2Alignment::fromByteSize(8)};
+    return Sizing{
+      .byteSize = byteSize,
+      .bitSize = byteSize * 8,
+      .alignment = Log2Alignment::fromByteSize(8)
+    };
   }
 };
 
@@ -179,7 +199,8 @@ struct Struct {
   Sizing sizing;
   std::vector<TypeIndex> fieldTypes;
 
-  Struct(std::string name, std::string llvmName) : name(name), llvmName(llvmName) {}
+  Struct(std::string name, std::string llvmName)
+      : name(name), llvmName(llvmName) {}
 
   std::optional<TypeField> getField(std::string_view fieldName) {
     if (fields.contains(fieldName)) {
@@ -206,7 +227,8 @@ struct Enum {
   TypeIndex rawType;
   TypeIndex enumType;
 
-  Enum(std::string name, TypeIndex rawType) : values(), name(name), rawType(rawType) {}
+  Enum(std::string name, TypeIndex rawType)
+      : values(), name(name), rawType(rawType) {}
 
   bool define(Identifier valueName, uint64_t value) {
     bool succeeded = values.emplace(valueName, value).second;
@@ -269,10 +291,14 @@ struct SizedArray {
   u32 length;
   auto fields() {
     using namespace std::views;
-    return iota(0, (int)length) | transform([&](int) { return dereferencedType; });
+    return iota(0, (int)length) |
+           transform([&](int) { return dereferencedType; });
   }
 };
-static_assert(AggregateType<SizedArray>, "SizedArray must implement method 'fields'");
+static_assert(
+  AggregateType<SizedArray>,
+  "SizedArray must implement method 'fields'"
+);
 
 struct NeverType {};
 struct IntLiteralType {};
@@ -287,7 +313,10 @@ struct AlignedType {
   Log2Alignment newAlignment;
   TypeIndex rawType();
 };
-static_assert(RecursiveType<AlignedType>, "AlignedType must implement method 'rawType'");
+static_assert(
+  RecursiveType<AlignedType>,
+  "AlignedType must implement method 'rawType'"
+);
 
 // TODO: tagged unions
 struct Union {
@@ -327,7 +356,8 @@ using UnderlyingType = std::variant<
   VectorType>;
 template <typename T>
 concept IntRegister =
-  same_as<T, SignedInt> || same_as<T, UnsignedInt> || same_as<T, Pointer> || same_as<T, MultiPointer> || same_as<T, FunctionType> || same_as<T, Slice>;
+  same_as<T, SignedInt> || same_as<T, UnsignedInt> || same_as<T, Pointer> ||
+  same_as<T, MultiPointer> || same_as<T, FunctionType> || same_as<T, Slice>;
 
 struct Tuple {
   std::span<TypeIndex> types;
@@ -355,12 +385,14 @@ public:
 
   std::vector<Tuple> tuplePool;
   std::vector<TypeIndex> tupleTypeIndices;
-  std::unordered_map<std::vector<TypeIndex>, std::pair<TypeIndex, TupleIndex>> tuples;
+  std::unordered_map<std::vector<TypeIndex>, std::pair<TypeIndex, TupleIndex>>
+    tuples;
   std::unordered_map<u32, std::unordered_map<TypeIndex, TypeIndex>> sizedArrays;
   // TODO: function
   std::unordered_map<FunctionType, TypeIndex> functionCache;
   std::unordered_map<TypeIndex, std::array<TypeIndex, 9>> alignmentTypes;
-  unordered_map<TypeIndex, unordered_map<Identifier, Reference*>> associatedValues;
+  unordered_map<TypeIndex, unordered_map<Identifier, Reference*>>
+    associatedValues;
 
   // TODO: enum
 
@@ -469,7 +501,10 @@ public:
 
   OptionalType dereference(TypeIndex type);
 
-  std::pair<TypeIndex, StructIndex> makeStruct(std::string name, std::string llvmName) {
+  std::pair<TypeIndex, StructIndex> makeStruct(
+    std::string name,
+    std::string llvmName
+  ) {
     StructIndex structIndex{(u32)structPool.size()};
     structPool.emplace_back(name, llvmName);
     return {addType(structIndex), structIndex};
@@ -497,7 +532,8 @@ public:
 
   bool isPointer(TypeIndex index) {
     auto underlying = underlyingTypes[index.value];
-    return std::holds_alternative<Pointer>(underlying) || std::holds_alternative<MultiPointer>(underlying);
+    return std::holds_alternative<Pointer>(underlying) ||
+           std::holds_alternative<MultiPointer>(underlying);
   }
 
   std::optional<TypeIndex> unboxReference(TypeIndex index) {
@@ -507,7 +543,10 @@ public:
     return std::nullopt;
   }
 
-  std::optional<pair<TypeField, TypeIndex>> getFieldIndex(TypeIndex typeIndex, std::string_view fieldName) {
+  std::optional<pair<TypeField, TypeIndex>> getFieldIndex(
+    TypeIndex typeIndex,
+    std::string_view fieldName
+  ) {
     auto structDefinition = getStruct(typeIndex);
     if (structDefinition) {
       if (auto fieldDef = (*structDefinition)->getField(fieldName)) {
@@ -518,7 +557,13 @@ public:
 
     if (auto slice = std::get_if<Slice>(&getType(typeIndex))) {
       if (fieldName == "data") {
-        return pair(TypeField{.type = multiPointerTo(slice->dereferencedType), .index = 0}, typeIndex);
+        return pair(
+          TypeField{
+            .type = multiPointerTo(slice->dereferencedType),
+            .index = 0
+          },
+          typeIndex
+        );
       }
       if (fieldName == "length") {
         return pair(TypeField{.type = _usize, .index = 1}, typeIndex);
@@ -527,7 +572,8 @@ public:
 
     if (auto unionType = std::get_if<Union>(&getType(typeIndex))) {
       for (auto variantType : unionType->anonymousVariants) {
-        if (auto fieldResult = getFieldIndex(variantType, fieldName)) return fieldResult;
+        if (auto fieldResult = getFieldIndex(variantType, fieldName))
+          return fieldResult;
       }
     }
 
@@ -543,7 +589,8 @@ public:
     auto type = coerce(valueIndex, targetIndex);
     if (!type.has_value()) return std::nullopt;
 
-    if (std::holds_alternative<Infer>(valueType) || std::holds_alternative<VoidType>(valueType)) {
+    if (std::holds_alternative<Infer>(valueType) ||
+        std::holds_alternative<VoidType>(valueType)) {
       return std::nullopt;
     }
 
@@ -565,7 +612,12 @@ public:
     }
 
     for (int i = 0; i < valueElements.size(); i++) {
-      if (!isAssignable(value = valueElements[i], targetType = targetElements[i]).has_value()) return std::nullopt;
+      if (!isAssignable(
+             value = valueElements[i],
+             targetType = targetElements[i]
+          )
+             .has_value())
+        return std::nullopt;
     }
 
     return targetType;
@@ -724,14 +776,18 @@ public:
   }
 
   bool isInt(TypeIndex type) {
-    return isSignedInt(type) || isUnsignedInt(type) || isAny<IntLiteralType>(getType(type));
+    return isSignedInt(type) || isUnsignedInt(type) ||
+           isAny<IntLiteralType>(getType(type));
   }
 
   bool isInfer(TypeIndex type) {
     return std::holds_alternative<Infer>(getType(type));
   }
 
-  void defineLLVMStruct(StructIndex structDefinition, std::queue<std::string>& globals);
+  void defineLLVMStruct(
+    StructIndex structDefinition,
+    std::queue<std::string>& globals
+  );
 
   Sizing getSizing(TypeIndex type) {
     return std::visit(
@@ -758,7 +814,11 @@ public:
         [this](SizedArray x) {
           auto sizing = getSizing(x.dereferencedType);
           auto length = x.length;
-          return Sizing{.byteSize = length * sizing.byteSize, .bitSize = length * sizing.bitSize, .alignment = sizing.alignment};
+          return Sizing{
+            .byteSize = length * sizing.byteSize,
+            .bitSize = length * sizing.bitSize,
+            .alignment = sizing.alignment
+          };
         },
         [](NeverType) {
           TODO("Error for sizing Never type");
@@ -791,26 +851,30 @@ public:
         [this](AlignedType x) {
           Sizing sizing = getSizing(x.baseType);
           sizing.alignment = x.newAlignment;
-          sizing.byteSize = alignTo(sizing.byteSize, sizing.alignment.byteAlignment());
+          sizing.byteSize =
+            alignTo(sizing.byteSize, sizing.alignment.byteAlignment());
           return sizing;
         },
         [this](Union& x) {
           Sizing sizing;
           for (auto [type, _] : x.namedVariants) {
             auto variantSizing = getSizing(type);
-            sizing.alignment.value = std::max(variantSizing.alignment.value, sizing.alignment.value);
+            sizing.alignment.value =
+              std::max(variantSizing.alignment.value, sizing.alignment.value);
             sizing.bitSize = std::max(variantSizing.bitSize, sizing.bitSize);
             sizing.byteSize = std::max(variantSizing.byteSize, sizing.byteSize);
           }
 
           for (auto type : x.anonymousVariants) {
             auto variantSizing = getSizing(type);
-            sizing.alignment.value = std::max(variantSizing.alignment.value, sizing.alignment.value);
+            sizing.alignment.value =
+              std::max(variantSizing.alignment.value, sizing.alignment.value);
             sizing.bitSize = std::max(variantSizing.bitSize, sizing.bitSize);
             sizing.byteSize = std::max(variantSizing.byteSize, sizing.byteSize);
           }
 
-          sizing.byteSize = alignTo(sizing.byteSize, sizing.alignment.byteAlignment());
+          sizing.byteSize =
+            alignTo(sizing.byteSize, sizing.alignment.byteAlignment());
           // TODO: How does bit sizing work here?
           return sizing;
         },
@@ -831,7 +895,10 @@ private:
   void registerStorage(TypeIndex typeIndex, RegisterAssignment& assignment);
 
 public:
-  RegisterAssignment registerStorage(TypeIndex typeIndex, CallingConvention cc = CallingConvention::C) {
+  RegisterAssignment registerStorage(
+    TypeIndex typeIndex,
+    CallingConvention cc = CallingConvention::C
+  ) {
     RegisterAssignment registers;
     registerStorage(typeIndex, registers);
     return registers;
@@ -855,7 +922,11 @@ public:
     }
 
     structSize = alignTo(structSize, structAlignment);
-    return Sizing{.byteSize = structSize, .bitSize = structSize * 8, .alignment = Log2Alignment::fromByteSize(structAlignment)};
+    return Sizing{
+      .byteSize = structSize,
+      .bitSize = structSize * 8,
+      .alignment = Log2Alignment::fromByteSize(structAlignment)
+    };
   }
 
   OptionalType coerce(TypeIndex a, TypeIndex b) {
@@ -925,7 +996,8 @@ public:
 
     if (baseAlignment < alignment.value) {
       auto index = alignment.value - 1;
-      auto typeIndex = addType(AlignedType{.baseType = baseType, .newAlignment = alignment});
+      auto typeIndex =
+        addType(AlignedType{.baseType = baseType, .newAlignment = alignment});
       alignmentTypes[baseType][index] = typeIndex;
       return typeIndex;
     } else {
@@ -934,7 +1006,8 @@ public:
   }
 
   static constexpr u32 maxVectorWidth = 8;
-  std::unordered_map<TypeIndex, std::array<TypeIndex, maxVectorWidth>> vectorTypes;
+  std::unordered_map<TypeIndex, std::array<TypeIndex, maxVectorWidth>>
+    vectorTypes;
 
   TypeIndex vectorOf(TypeIndex elementType, u8 length) {
     assert(length < maxVectorWidth);
@@ -945,7 +1018,8 @@ public:
     std::array<TypeIndex, maxVectorWidth>& types = vectorTypes[elementType];
     TypeIndex result;
     for (u8 i = 0; i < maxVectorWidth; i++) {
-      auto type = addType(VectorType{.elementType = elementType, .length = (u8)(i + 1)});
+      auto type =
+        addType(VectorType{.elementType = elementType, .length = (u8)(i + 1)});
       types[i] = type;
       if (i == length) result = type;
     }
@@ -1075,7 +1149,12 @@ struct LlvmName {
         [&o](VoidType x) { o << "void"; },
         [&o](SignedInt x) { o << "i" << x.bitSize; },
         [&o](UnsignedInt x) { o << "i" << x.bitSize; },
-        [&o](Float x) { o << (x.precision == Float::f16 ? "half" : (x.precision == Float::f32 ? "float" : "double")); },
+        [&o](Float x) {
+          o
+            << (x.precision == Float::f16
+                  ? "half"
+                  : (x.precision == Float::f32 ? "float" : "double"));
+        },
         [&o](Pointer x) { o << "ptr"; },
         [&o](MultiPointer x) { o << "ptr"; },
         [&o](Slice x) { o << "%.slice"; },
@@ -1104,10 +1183,16 @@ struct LlvmName {
         [&o](NeverType x) { TODO("Error for llvm name for never type"); },
         [&o](IntLiteralType) { o << "i32"; },
         [&o](FloatLiteralType) { o << "float"; },
-        [&o](TypeOfGeneric) { TODO("Error for llvm name for float literal type"); },
-        [&o](EnvironmentType) { TODO("Error for llvm name for float literal type"); },
+        [&o](TypeOfGeneric) {
+          TODO("Error for llvm name for float literal type");
+        },
+        [&o](EnvironmentType) {
+          TODO("Error for llvm name for float literal type");
+        },
         [&o](Type) { TODO("Error for llvm name for type literal type"); },
-        [&o](RangeLiteral) { TODO("Error for llvm name for range literal type"); },
+        [&o](RangeLiteral) {
+          TODO("Error for llvm name for range literal type");
+        },
         [&o](AlignedType x) { format(o, x.baseType); },
         [&o, type](Union x) {
           // TODO: move to using largest type?
@@ -1152,7 +1237,8 @@ TEST_CASE("Built-in type registers") {
     for (auto type : types) {
       RegisterAssignment registers = Pool().registerStorage(type);
       auto size = Pool().getSizing(type).byteSize;
-      // fmt::println("What {} looks like: {:#b}", TypeName(type), registers.types);
+      // fmt::println("What {} looks like: {:#b}", TypeName(type),
+      // registers.types);
       CHECK_EQ(registers.length, size);
       for (auto i = 0; i < size; i++) {
         CHECK_EQ(registers.pop(), RegisterType::Int);

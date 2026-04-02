@@ -1,7 +1,7 @@
+#include "types.h"
 #include "abi.h"
 #include "common.h"
 #include "fmt/format.h"
-#include "types.h"
 #include <ranges>
 
 Logger logger(LogLevel::Compile);
@@ -42,10 +42,21 @@ OptionalType TypePool::dereference(TypeIndex type) {
 
 template <> struct fmt::formatter<TypeIndex> : ostream_formatter {};
 
-void TypePool::defineLLVMStruct(StructIndex structIndex, std::queue<std::string>& globals) {
+void TypePool::defineLLVMStruct(
+  StructIndex structIndex,
+  std::queue<std::string>& globals
+) {
   Struct& structDefinition = getStruct(structIndex);
   globals.push(
-    fmt::format("{} = type {{{}}}", structDefinition.llvmName, fmt::join(structDefinition.fieldTypes | transform([this](const auto x) { return LlvmName(x); }), ", "))
+    fmt::format(
+      "{} = type {{{}}}",
+      structDefinition.llvmName,
+      fmt::join(
+        structDefinition.fieldTypes |
+          transform([this](const auto x) { return LlvmName(x); }),
+        ", "
+      )
+    )
   );
 }
 
@@ -56,7 +67,10 @@ void TypePool::debugTypes() {
   }
 }
 
-void FunctionType::forwardDeclare(std::string_view name, std::queue<std::string>& globals) {
+void FunctionType::forwardDeclare(
+  std::string_view name,
+  std::queue<std::string>& globals
+) {
   std::stringstream instruction;
   fmt::print(instruction, "declare ");
   Function function{.type = *this, .globalName = name};
@@ -68,7 +82,10 @@ bool TypeIndex::isInfer() {
   return *this == Pool().infer;
 }
 
-void TypePool::registerStorage(TypeIndex typeIndex, RegisterAssignment& assignment) {
+void TypePool::registerStorage(
+  TypeIndex typeIndex,
+  RegisterAssignment& assignment
+) {
   auto sizing = getSizing(typeIndex);
   if (sizing.byteSize == 0) return;
   if (sizing.byteSize > 16) {
@@ -80,7 +97,9 @@ void TypePool::registerStorage(TypeIndex typeIndex, RegisterAssignment& assignme
   auto startLength = assignment.length;
   std::visit(
     overloaded{
-      [&]<IntRegister T>(T) { assignment.push(RegisterType::Int, sizing.byteSize); },
+      [&]<IntRegister T>(T) {
+        assignment.push(RegisterType::Int, sizing.byteSize);
+      },
       [&](Float x) { assignment.push(RegisterType::Float, x.byteSize()); },
       [&]<AggregateType T>(T x) {
         for (auto element : x.fields()) {
@@ -89,8 +108,15 @@ void TypePool::registerStorage(TypeIndex typeIndex, RegisterAssignment& assignme
       },
       [&](EnumIndex x) { registerStorage(getEnum(x).rawType, assignment); },
       [&](auto x) {
-        fmt::println("Error for trying to get storage type for type that can't be passed: '{}'", TypeName(typeIndex));
-        TODO("Error for trying to get storage type for type that can't be passed: '{}'");
+        fmt::println(
+          "Error for trying to get storage type for type that can't be passed: "
+          "'{}'",
+          TypeName(typeIndex)
+        );
+        TODO(
+          "Error for trying to get storage type for type that can't be passed: "
+          "'{}'"
+        );
       },
     },
     type

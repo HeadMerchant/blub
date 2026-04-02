@@ -217,12 +217,18 @@ public:
 
   bool isLiteral() const {
     static unordered_set<TokenType> literals = {
-      TokenType::String,         TokenType::Decimal,       TokenType::Integer,        TokenType::NullTerminatedString,
-      TokenType::True,           TokenType::False,         TokenType::Identifier,     TokenType::Opaque,
-      TokenType::CudaBlockIdxX,  TokenType::CudaBlockIdxY, TokenType::CudaBlockIdxZ,  TokenType::CudaBlockDimX,
-      TokenType::CudaBlockDimY,  TokenType::CudaBlockDimZ, TokenType::CudaThreadIdxX, TokenType::CudaThreadIdxY,
-      TokenType::CudaThreadIdxZ, TokenType::CudaGridDimX,  TokenType::CudaGridDimY,   TokenType::CudaGridDimZ,
-      TokenType::Char,           TokenType::Self,          TokenType::HexInt,         TokenType::Undef,
+      TokenType::String,         TokenType::Decimal,
+      TokenType::Integer,        TokenType::NullTerminatedString,
+      TokenType::True,           TokenType::False,
+      TokenType::Identifier,     TokenType::Opaque,
+      TokenType::CudaBlockIdxX,  TokenType::CudaBlockIdxY,
+      TokenType::CudaBlockIdxZ,  TokenType::CudaBlockDimX,
+      TokenType::CudaBlockDimY,  TokenType::CudaBlockDimZ,
+      TokenType::CudaThreadIdxX, TokenType::CudaThreadIdxY,
+      TokenType::CudaThreadIdxZ, TokenType::CudaGridDimX,
+      TokenType::CudaGridDimY,   TokenType::CudaGridDimZ,
+      TokenType::Char,           TokenType::Self,
+      TokenType::HexInt,         TokenType::Undef,
     };
 
     return literals.contains(this->type);
@@ -281,7 +287,10 @@ struct Tokenizer {
         advance();
       }
       if (peek() != '\'') {
-        crash("Expected terminating ' for character token, but found '{}'", peek());
+        crash(
+          "Expected terminating ' for character token, but found '{}'",
+          peek()
+        );
       }
       addToken(TokenType::Char);
       advance();
@@ -573,7 +582,8 @@ struct Tokenizer {
 
 public:
   Tokenizer(const std::string_view& sourceCode, fs::path& inputFile)
-      : sourceCode(sourceCode), tokens(), firstCharacterOnLine(), inputFilePath(inputFile), log(LogLevel::Tokenize) {
+      : sourceCode(sourceCode), tokens(), firstCharacterOnLine(),
+        inputFilePath(inputFile), log(LogLevel::Tokenize) {
     firstCharacterOnLine.push_back(0);
     while (!isAtEnd()) {
       scanToken();
@@ -598,23 +608,50 @@ public:
       fmt::println(out, "{: >8}| {}", line, lineContents);
       fmt::print(out, "{: >8}| ", "");
       fmt::print(out, "{:\t>{}}", "", tabCount);
-      fmt::println(out, "{: >{}}{:^>{}}", "", column - tabCount, "", lexeme.size());
+      fmt::println(
+        out,
+        "{: >{}}{:^>{}}",
+        "",
+        column - tabCount,
+        "",
+        lexeme.size()
+      );
     }
   };
 
   TokenLocation locationOf(std::string_view lexeme) const {
     // i32 charIndex = lexeme.data() - sourceCode.data();
     u32 charIndex = lexeme.begin() - sourceCode.begin();
-    auto line = std::lower_bound(firstCharacterOnLine.begin(), firstCharacterOnLine.end(), charIndex);
+    auto line = std::lower_bound(
+      firstCharacterOnLine.begin(),
+      firstCharacterOnLine.end(),
+      charIndex
+    );
     u32 lineNumber = line - firstCharacterOnLine.begin();
     u32 lineStartIndex = (line - 1)[0];
-    return {.line = lineNumber, .column = charIndex - lineStartIndex, .lineContents = sourceCode.substr(lineStartIndex, *line - lineStartIndex - 1), .lexeme = lexeme};
+    return {
+      .line = lineNumber,
+      .column = charIndex - lineStartIndex,
+      .lineContents =
+        sourceCode.substr(lineStartIndex, *line - lineStartIndex - 1),
+      .lexeme = lexeme
+    };
   }
 
-  template <typename... Args> [[noreturn]] void crash(fmt::format_string<Args...> fmt, Args&&... args) const {
+  template <typename... Args>
+  [[noreturn]] void crash(
+    fmt::format_string<Args...> fmt,
+    Args&&... args
+  ) const {
     auto& out = std::cerr;
     auto location = locationOf(lexeme());
-    fmt::println(out, "Tokenizer error in file {} at line {}:{}", inputFilePath.string(), location.line, location.column);
+    fmt::println(
+      out,
+      "Tokenizer error in file {} at line {}:{}",
+      inputFilePath.string(),
+      location.line,
+      location.column
+    );
     location.underline(out);
     fmt::println(out, fmt, std::forward<Args>(args)...);
     abort();

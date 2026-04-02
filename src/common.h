@@ -25,11 +25,14 @@ using u64 = uint64_t;
 // using s32 = int32_t;
 // using s64 = int64_t;
 
-#define assert(cond)                                                                                                            \
-  do {                                                                                                                          \
-    if (!(cond)) {                                                                                                              \
-      throw std::runtime_error(std::string("Assertion failed: ") + #cond + " at " + __FILE__ + ":" + std::to_string(__LINE__)); \
-    }                                                                                                                           \
+#define assert(cond)                                                          \
+  do {                                                                        \
+    if (!(cond)) {                                                            \
+      throw std::runtime_error(                                               \
+        std::string("Assertion failed: ") + #cond + " at " + __FILE__ + ":" + \
+        std::to_string(__LINE__)                                              \
+      );                                                                      \
+    }                                                                         \
   } while (false)
 
 #ifndef ASSERT_INVARIANTS
@@ -49,12 +52,17 @@ template <typename... Ts, typename Variant> bool isAny(const Variant& v) {
 }
 
 template <typename... Ts> struct fmt::formatter<std::variant<Ts...>> {
-  template <typename FormatParseContext> constexpr auto parse(FormatParseContext& ctx) {
+  template <typename FormatParseContext>
+  constexpr auto parse(FormatParseContext& ctx) {
     return ctx.begin();
   }
 
-  template <typename FormatContext> auto format(const std::variant<Ts...>& value, FormatContext& ctx) const {
-    return std::visit([&ctx](const auto& v) { return fmt::format_to(ctx.out(), "{}", v); }, value);
+  template <typename FormatContext>
+  auto format(const std::variant<Ts...>& value, FormatContext& ctx) const {
+    return std::visit(
+      [&ctx](const auto& v) { return fmt::format_to(ctx.out(), "{}", v); },
+      value
+    );
   }
 };
 
@@ -129,7 +137,8 @@ struct Logger {
   static inline LogLevel globalLevels = static_cast<LogLevel>(0);
   LogLevel logLevel;
 
-  template <typename... Args> void operator()(fmt::format_string<Args...> fmt, Args&&... args) const {
+  template <typename... Args>
+  void operator()(fmt::format_string<Args...> fmt, Args&&... args) const {
     if (globalLevels & logLevel) {
       fmt::println(fmt, std::forward<Args>(args)...);
     }

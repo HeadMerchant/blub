@@ -10,7 +10,12 @@ u32 packInt(u8 a, u8 b, u8 c, u8 d) {
 }
 
 std::tuple<u8, u8, u8, u8> unpackInt(u32 value) {
-  return {(value >> 24) & 255, (value >> 16) & 255, (value >> 8) & 255, value & 255};
+  return {
+    (value >> 24) & 255,
+    (value >> 16) & 255,
+    (value >> 8) & 255,
+    value & 255
+  };
 }
 
 StringPool& StringPool::inst() {

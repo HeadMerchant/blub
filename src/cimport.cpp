@@ -19,7 +19,11 @@
 using namespace simdjson;
 namespace fs = std::filesystem;
 
-TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std::string>& globals) {
+TypeIndex parseType(
+  std::string_view qualType,
+  TypeCache& cTypes,
+  std::queue<std::string>& globals
+) {
   Logger log(LogLevel::CImport);
   // TODO(mut)
   if (qualType.starts_with("const ")) {
@@ -43,7 +47,9 @@ TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std
   }
   auto baseTypeString = qualType.substr(0, endIndex);
   if (!cTypes.contains(baseTypeString)) {
-    throw std::invalid_argument(fmt::format("Undefined C type: {} in type {}", baseTypeString, qualType));
+    throw std::invalid_argument(
+      fmt::format("Undefined C type: {} in type {}", baseTypeString, qualType)
+    );
   }
   log("base type: {}", baseTypeString);
   TypeIndex type = cTypes[baseTypeString];
@@ -58,7 +64,11 @@ TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std
       auto closingBracketIndex = modifiers.find(']');
       auto lengthString = modifiers.substr(0, closingBracketIndex);
       u32 arrayLength;
-      std::from_chars(lengthString.data(), lengthString.data() + lengthString.size(), arrayLength);
+      std::from_chars(
+        lengthString.data(),
+        lengthString.data() + lengthString.size(),
+        arrayLength
+      );
 
       type = Pool().sizedArrayOf(type, arrayLength);
       modifiers = modifiers.substr(closingBracketIndex + 1);
@@ -78,7 +88,9 @@ TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std
     if (modifiers == "(void)") {
       std::vector<TypeIndex> emptyTuple;
       auto [_, paramTypes] = Pool().tupleOf(std::move(emptyTuple));
-      type = Pool().addFunction(FunctionType{.parameters = paramTypes, .returnType = type});
+      type = Pool().addFunction(
+        FunctionType{.parameters = paramTypes, .returnType = type}
+      );
     } else {
       modifiers = modifiers.substr(1);
       std::vector<TypeIndex> paramTypes;
@@ -93,7 +105,9 @@ TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std
 
         auto parenIndex = modifiers.find(")");
         if (parenIndex == std::string::npos) {
-          throw std::invalid_argument(fmt::format("Malformed C type '{}'", modifiers));
+          throw std::invalid_argument(
+            fmt::format("Malformed C type '{}'", modifiers)
+          );
         }
 
         auto paramType = modifiers.substr(0, parenIndex);
@@ -102,7 +116,9 @@ TypeIndex parseType(std::string_view qualType, TypeCache& cTypes, std::queue<std
       }
 
       auto [_, paramTuple] = Pool().tupleOf(paramTypes);
-      type = Pool().addFunction(FunctionType{.parameters = paramTuple, .returnType = type});
+      type = Pool().addFunction(
+        FunctionType{.parameters = paramTuple, .returnType = type}
+      );
     }
   }
 
@@ -123,7 +139,9 @@ u32 longestPrefixEndingIn(std::span<std::string_view> strings, char lastChar) {
 
     for (auto string : strings) {
       if (i >= string.length()) return prevLength;
-      if (string.substr(start, i - prevLength) != strings[0].substr(start, i - prevLength)) return prevLength;
+      if (string.substr(start, i - prevLength) !=
+          strings[0].substr(start, i - prevLength))
+        return prevLength;
     }
     prevLength = i;
   }
@@ -131,19 +149,30 @@ u32 longestPrefixEndingIn(std::span<std::string_view> strings, char lastChar) {
   return prevLength;
 }
 
-TypeIndex parseRecord(ondemand::value& node, Identifier cName, Identifier unprefixedName, TypeCache& cTypes, std::queue<std::string>& globals) {
+TypeIndex parseRecord(
+  ondemand::value& node,
+  Identifier cName,
+  Identifier unprefixedName,
+  TypeCache& cTypes,
+  std::queue<std::string>& globals
+) {
   Logger log(LogLevel::CImport);
   std::string_view tagUsed;
   node["tagUsed"].get(tagUsed);
   TypeIndex resultTypeIndex;
   if (tagUsed == "struct") {
     static u32 anonIndex;
-    auto [typeIndex, structIndex] =
-      Pool().makeStruct(std::string(unprefixedName), cName.empty() ? fmt::format("%.cstruct.{}", anonIndex++) : fmt::format("%.cstruct.{}", cName));
+    auto [typeIndex, structIndex] = Pool().makeStruct(
+      std::string(unprefixedName),
+      cName.empty() ? fmt::format("%.cstruct.{}", anonIndex++)
+                    : fmt::format("%.cstruct.{}", cName)
+    );
 
     ondemand::array structFields;
     if (node["inner"].get_array().get(structFields)) {
-      throw std::invalid_argument(fmt::format("Error parsing fields for C struct '{}'", unprefixedName));
+      throw std::invalid_argument(
+        fmt::format("Error parsing fields for C struct '{}'", unprefixedName)
+      );
     }
 
     OptionalType anonType;
@@ -179,7 +208,9 @@ TypeIndex parseRecord(ondemand::value& node, Identifier cName, Identifier unpref
     std::vector<pair<TypeIndex, Identifier>> namedVariants;
     ondemand::array variants;
     if (node["inner"].get_array().get(variants)) {
-      throw std::invalid_argument(fmt::format("Error parsing variants for C union '{}'", cName));
+      throw std::invalid_argument(
+        fmt::format("Error parsing variants for C union '{}'", cName)
+      );
     }
 
     OptionalType anonType;
@@ -196,7 +227,8 @@ TypeIndex parseRecord(ondemand::value& node, Identifier cName, Identifier unpref
         std::string_view fieldTypeName;
         TypeIndex variantType;
         variant["type"]["qualType"].get(fieldTypeName);
-        if (fieldTypeName.starts_with("union ") || fieldTypeName.starts_with("struct ")) {
+        if (fieldTypeName.starts_with("union ") ||
+            fieldTypeName.starts_with("struct ")) {
           if (anonType) {
             variantType = anonType.value();
             anonType = std::nullopt;
@@ -216,7 +248,12 @@ TypeIndex parseRecord(ondemand::value& node, Identifier cName, Identifier unpref
       }
     }
 
-    auto typeIndex = Pool().addType(Union{.namedVariants = namedVariants, .anonymousVariants = anonymousVariants});
+    auto typeIndex = Pool().addType(
+      Union{
+        .namedVariants = namedVariants,
+        .anonymousVariants = anonymousVariants
+      }
+    );
     resultTypeIndex = typeIndex;
   } else {
     log("Unknown tag '{}' for C RecordDecl '{}'; skipping", tagUsed, cName);
@@ -228,7 +265,12 @@ TypeIndex parseRecord(ondemand::value& node, Identifier cName, Identifier unpref
   return resultTypeIndex;
 }
 
-Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::string>& globals, TypeCache& definedTypes) {
+Environment* cBindings(
+  fs::path cFile,
+  std::string prefix,
+  std::queue<std::string>& globals,
+  TypeCache& definedTypes
+) {
   auto fileName = cFile.string();
   static std::unordered_map<fs::path, Environment> importedFiles;
   static TypeCache cTypes = {
@@ -270,7 +312,11 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
 
   // TODO: handle crash
   auto astDumpFile = "ast.json";
-  auto command = fmt::format("clang -Xclang -ast-dump=json {} > {}", cFile.string(), astDumpFile);
+  auto command = fmt::format(
+    "clang -Xclang -ast-dump=json {} > {}",
+    cFile.string(),
+    astDumpFile
+  );
   system(command.c_str());
   ondemand::parser parser;
   auto json = padded_string::load(astDumpFile);
@@ -278,7 +324,8 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
 
   for (auto node : ast["inner"]) {
     std::string_view valueName, kind;
-    if (node["kind"].get(kind) != SUCCESS || node["name"].get(valueName)) continue;
+    if (node["kind"].get(kind) != SUCCESS || node["name"].get(valueName))
+      continue;
     if (!valueName.starts_with(prefix)) continue;
     valueName = StringPool::inst().copy(valueName);
     std::string_view unprefixedValueName = valueName.substr(prefix.size());
@@ -288,8 +335,13 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
       blubInterface.value = cTypes[valueName];
     } else if (kind == "EnumDecl") {
       u32 currentValue = 0;
-      log("Making enum '{}' with raw value '{}'", unprefixedValueName, TypeName(Pool()._s32));
-      auto [typeIndex, enumIndex] = Pool().addEnum(Pool()._s32, std::string(unprefixedValueName));
+      log(
+        "Making enum '{}' with raw value '{}'",
+        unprefixedValueName,
+        TypeName(Pool()._s32)
+      );
+      auto [typeIndex, enumIndex] =
+        Pool().addEnum(Pool()._s32, std::string(unprefixedValueName));
       std::vector<std::string_view> enumVals;
       if (auto inner = node["inner"]; inner.error() == SUCCESS) {
         for (auto element : inner.get_array()) {
@@ -300,7 +352,11 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
         }
       }
       u32 prefixLength = longestPrefixEndingIn(enumVals, '_');
-      log("Enum prefix: {}\n{}", enumVals[0].substr(0, prefixLength), fmt::join(enumVals, "\n"));
+      log(
+        "Enum prefix: {}\n{}",
+        enumVals[0].substr(0, prefixLength),
+        fmt::join(enumVals, "\n")
+      );
 
       if (auto inner = node["inner"]; inner.error() == SUCCESS) {
         for (auto element : inner.get_array()) {
@@ -318,16 +374,31 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
             } else {
               std::string_view numberValue;
               array.at(0)["value"].get(numberValue);
-              std::from_chars(numberValue.data(), numberValue.data() + numberValue.size(), currentValue);
+              std::from_chars(
+                numberValue.data(),
+                numberValue.data() + numberValue.size(),
+                currentValue
+              );
             }
           }
           if (!Pool().getEnum(enumIndex).define(valueName, currentValue)) {
             auto definition = Pool().getEnum(enumIndex);
-            fmt::println(std::cerr, "Duplicate enum value '{}' for enum '{}'", valueName, TypeName(typeIndex));
+            fmt::println(
+              std::cerr,
+              "Duplicate enum value '{}' for enum '{}'",
+              valueName,
+              TypeName(typeIndex)
+            );
             for (auto [name, _] : definition.values) {
               log("Variant: {}", name);
             }
-            throw std::invalid_argument(fmt::format("Duplicate enum value '{}' for enum '{}'", valueName, TypeName(typeIndex)));
+            throw std::invalid_argument(
+              fmt::format(
+                "Duplicate enum value '{}' for enum '{}'",
+                valueName,
+                TypeName(typeIndex)
+              )
+            );
           }
 
           currentValue++;
@@ -344,26 +415,49 @@ Environment* cBindings(fs::path cFile, std::string prefix, std::queue<std::strin
       std::string_view qualType;
       bool error = node["type"]["qualType"].get(qualType);
       if (error) {
-        throw std::invalid_argument(fmt::format("Unable to get qualified type for C function '{}'", valueName));
+        throw std::invalid_argument(
+          fmt::format(
+            "Unable to get qualified type for C function '{}'",
+            valueName
+          )
+        );
       }
 
       // TODO: factor out to Types module?
       auto declareName = StringPool::inst().copy(fmt::format("@{}", valueName));
       TypeIndex type = parseType(qualType, cTypes, globals);
       if (!Pool().functionType(type).has_value()) {
-        fmt::println(std::cerr, "Unable to get function type for C type '{}'", qualType);
+        fmt::println(
+          std::cerr,
+          "Unable to get function type for C type '{}'",
+          qualType
+        );
         fmt::println(std::cerr, "Blub name: '{}'", TypeName(type));
         abort();
       }
       auto functionType = Pool().functionType(type).value();
-      log("Generating llvm declaration for C function: '{}': {}", unprefixedValueName, qualType);
+      log(
+        "Generating llvm declaration for C function: '{}': {}",
+        unprefixedValueName,
+        qualType
+      );
       log("Internal name: {}", valueName);
       functionType.forwardDeclare(declareName, globals);
       blubInterface.value = Function(functionType, declareName);
     } else if (kind == "RecordDecl") {
-      blubInterface.value = parseRecord(node.value(), valueName, unprefixedValueName, cTypes, globals);
+      blubInterface.value = parseRecord(
+        node.value(),
+        valueName,
+        unprefixedValueName,
+        cTypes,
+        globals
+      );
     } else {
-      log("Skipping clang ast node of kind '{}'; name: '{}'", kind, unprefixedValueName);
+      log(
+        "Skipping clang ast node of kind '{}'; name: '{}'",
+        kind,
+        unprefixedValueName
+      );
     }
 
     environment.define(unprefixedValueName, blubInterface);

@@ -1,5 +1,5 @@
-#include "types.h"
 #include "value.h"
+#include "types.h"
 
 Environment* Environment::baseEnvironment() {
   static Environment baseEnvironment(

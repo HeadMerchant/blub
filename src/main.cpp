@@ -27,7 +27,8 @@ int main(int argc, char** argv) {
 
   if (shouldRunTests) {
     {
-      auto args = span<char*>(argv, argc) | transform([](char* x) { return string_view(x); });
+      auto args = span<char*>(argv, argc) |
+                  transform([](char* x) { return string_view(x); });
       fmt::println("Running tests with args: {}", fmt::join(args, " "));
     }
     // for (auto i = 0; i < argc; i++) {
@@ -88,21 +89,30 @@ int main(int argc, char** argv) {
 
   std::ofstream outFile(outFilename, std::ofstream::out | std::ofstream::trunc);
   if (!outFile.is_open()) {
-    throw std::invalid_argument("Unable to write llvm bytecode to " + outFilename);
+    throw std::invalid_argument(
+      "Unable to write llvm bytecode to " + outFilename
+    );
   }
   fmt::println("Writing to file {}", outFilename);
-  std::string_view preamble = "%.slice = type {ptr, i64}\n"
-                              "declare void @llvm.trap() nounwind\n"
-                              "%.ctor = type { i32, ptr, ptr }\n"
-                              "@llvm.global_ctors = appending global [1 x %.ctor] [%.ctor { i32 65535, ptr @.ctor, ptr null }]\n";
+  std::string_view preamble =
+    "%.slice = type {ptr, i64}\n"
+    "declare void @llvm.trap() nounwind\n"
+    "%.ctor = type { i32, ptr, ptr }\n"
+    "@llvm.global_ctors = appending global [1 x %.ctor] [%.ctor { i32 65535, "
+    "ptr @.ctor, ptr null }]\n";
   outFile << preamble;
   TranslationUnit::compile(sourceFile, outFile, TargetType::Cpu);
-  outFile << "define void @.ctor() {\n" << CompilerContext::inst().blub.globalInitialization.str() << "ret void\n}";
+  outFile << "define void @.ctor() {\n"
+          << CompilerContext::inst().blub.globalInitialization.str()
+          << "ret void\n}";
   outFile.close();
   auto objectCommand = fmt::format("clang -c {} -o main.o", outFilename);
   fmt::println("Generating object file: {}", objectCommand);
   if (auto rc = std::system(objectCommand.c_str())) {
-    fmt::println(std::cerr, "Error generating object file (likely error in blub compiler)");
+    fmt::println(
+      std::cerr,
+      "Error generating object file (likely error in blub compiler)"
+    );
     abort();
   }
 
@@ -117,7 +127,11 @@ int main(int argc, char** argv) {
   if (cIncludes) {
     cIncludeObject = "include.o";
     fmt::println("Compiling included C files");
-    auto clangCommand = fmt::format("clang -x c {} -c /dev/null -o {}", fmt::join(clangArgs, " "), cIncludeObject);
+    auto clangCommand = fmt::format(
+      "clang -x c {} -c /dev/null -o {}",
+      fmt::join(clangArgs, " "),
+      cIncludeObject
+    );
     fmt::println("Clang args: {}", clangArgs);
     auto rc = std::system(clangCommand.c_str());
     if (rc != 0) {
@@ -127,7 +141,12 @@ int main(int argc, char** argv) {
   }
 
   auto& linkedLibararies = CompilerContext::inst().c.linkedLibraries;
-  auto clangCommand = fmt::format("clang main.o {} {} -o {}", cIncludeObject, fmt::join(linkedLibararies, " "), executable);
+  auto clangCommand = fmt::format(
+    "clang main.o {} {} -o {}",
+    cIncludeObject,
+    fmt::join(linkedLibararies, " "),
+    executable
+  );
 
   fmt::println("Linking with args: {}", clangCommand);
   if (auto rc = std::system(clangCommand.c_str())) {
