@@ -1,0 +1,21 @@
+[
+  {
+    "label": "Debug ocean fft",
+    "build": {
+      "command": "make",
+      // "args": ["-j8"],
+      "cwd": "$ZED_WORKTREE_ROOT/build",
+    },
+    "program": "$ZED_WORKTREE_ROOT/build/blub",
+    "request": "launch",
+    "adapter": "GDB",
+    "args": ["../blub-ocean-fft/main.blub"],
+  },
+  {
+    "label": "Debug tests",
+    "program": "$ZED_WORKTREE_ROOT/build/blub",
+    "request": "launch",
+    "adapter": "GDB",
+    "args": ["--test", "--breaks"],
+  },
+]

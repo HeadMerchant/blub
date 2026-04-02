@@ -1,3 +1,4 @@
+#include "abi.h"
 #include "common.h"
 #include "fmt/format.h"
 #include "types.h"
@@ -8,6 +9,22 @@ Logger logger(LogLevel::Compile);
 TypePool& Pool() {
   static TypePool pool = TypePool();
   return pool;
+}
+
+TypeSpan StructIndex::fields() {
+  return Pool().getStruct(*this).fieldTypes;
+}
+
+TypeSpan TupleIndex::fields() {
+  return Pool().tupleElements(*this);
+}
+
+TypeIndex EnumIndex::rawType() {
+  return Pool().getEnum(*this).rawType;
+}
+
+TypeIndex AlignedType::rawType() {
+  return this->baseType;
 }
 
 OptionalType TypePool::dereference(TypeIndex type) {
@@ -40,45 +57,49 @@ void TypePool::debugTypes() {
 }
 
 void FunctionType::forwardDeclare(std::string_view name, std::queue<std::string>& globals) {
-  auto returnType = this->returnType;
-  LLVMStorage returnStorage = Pool().storageType(returnType);
-  auto parameterTypes = Pool().tupleElements(this->parameters);
-
   std::stringstream instruction;
   fmt::print(instruction, "declare ");
-  if (Pool().isLiteralReturn(returnType)) {
-    fmt::print(instruction, "{} ", LlvmName(returnType));
-  } else {
-    fmt::print(instruction, "void ");
-  }
-  fmt::print(instruction, "{}(", name);
-
-  bool hasParameters = false;
-  if (returnStorage == LLVMStorage::VARIABLE) {
-    // TODO: factor out %return register
-    fmt::print(instruction, "ptr noalias sret({}) align {} %return", LlvmName(returnType), Pool().getSizing(returnType).alignment.byteAlignment());
-    hasParameters = true;
-  }
-  for (auto paramType : parameterTypes) {
-    if (hasParameters) {
-      instruction << ", ";
-    }
-    hasParameters = true;
-
-    bool isLiteralParameter = Pool().isLlvmLiteralType(paramType);
-    if (isLiteralParameter) {
-      fmt::print(instruction, "{}", LlvmName(paramType));
-    } else {
-      // TODO: type alignment; for now align to s64
-      fmt::print(instruction, "ptr byval({})", LlvmName(paramType));
-    }
-  }
-
-  instruction << ")";
-
+  Function function{.type = *this, .globalName = name};
+  declareParamRegisters(instruction, function);
   globals.push(instruction.str());
 }
 
 bool TypeIndex::isInfer() {
   return *this == Pool().infer;
+}
+
+void TypePool::registerStorage(TypeIndex typeIndex, RegisterAssignment& assignment) {
+  auto sizing = getSizing(typeIndex);
+  if (sizing.byteSize == 0) return;
+  if (sizing.byteSize > 16) {
+    assignment.push(RegisterType::Memory);
+    return;
+  }
+
+  auto type = getType(typeIndex);
+  auto startLength = assignment.length;
+  std::visit(
+    overloaded{
+      [&]<IntRegister T>(T) { assignment.push(RegisterType::Int, sizing.byteSize); },
+      [&](Float x) { assignment.push(RegisterType::Float, x.byteSize()); },
+      [&]<AggregateType T>(T x) {
+        for (auto element : x.fields()) {
+          registerStorage(element, assignment);
+        }
+      },
+      [&](EnumIndex x) { registerStorage(getEnum(x).rawType, assignment); },
+      [&](auto x) {
+        fmt::println("Error for trying to get storage type for type that can't be passed: '{}'", TypeName(typeIndex));
+        TODO("Error for trying to get storage type for type that can't be passed: '{}'");
+      },
+    },
+    type
+  );
+  if (!assignment.isMemory()) {
+    assert(assignment.length - startLength == sizing.byteSize);
+  }
+}
+
+void TypeIndex::debug() {
+  fmt::println("{}: {}", TypeName(*this), LlvmName(*this));
 }

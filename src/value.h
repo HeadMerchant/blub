@@ -4,7 +4,6 @@
 #include "fmt/ostream.h"
 #include "parser.h"
 #include "types.h"
-#include <cassert>
 #include <cstdint>
 #include <optional>
 #include <string_view>
@@ -42,7 +41,7 @@ public:
   Environment& definitionEnvironment;
   NodeIndex astNode;
   std::vector<std::string_view> parameterNames;
-  std::unordered_map<TupleIndex, Reference*, TupleIndex::Hash> cache;
+  std::unordered_map<TupleIndex, Reference*> cache;
   std::string_view name;
 };
 
@@ -97,16 +96,6 @@ class Function {
 public:
   FunctionType type;
   std::string_view globalName;
-
-  void llvmDeclaration(std::ostream& o, std::optional<std::span<std::string_view>> paramNames) {
-    auto paramTypes = Pool().tupleElements(type.parameters);
-
-    auto forwardDeclare = !paramNames.has_value();
-    if (paramNames.has_value()) {
-      assert(paramNames->size() == paramTypes.size());
-    }
-    fmt::print(o, "{} ", (forwardDeclare ? "declare" : "define"));
-  }
 };
 
 class BoundFunction {
@@ -399,13 +388,16 @@ public:
   EnvType envType;
 
   u32 nextTemporary = 0;
+  u32 lastTemporary() {
+    return nextTemporary - 1;
+  }
   bool quotePrefixedNames;
   static u32 nextGlobalTemporary;
   RegisterName basicBlock;
   bool hasReturned = false;
 
   Environment* parent;
-  using WitnessTable = unordered_map<TypeIndex, unordered_map<Identifier, Reference>, TypeIndex::Hash>;
+  using WitnessTable = unordered_map<TypeIndex, unordered_map<Identifier, Reference>>;
   struct Impls {
     WitnessTable witnesses;
 

@@ -5,11 +5,11 @@
 #include "compilercontext.h"
 #include "fmt/base.h"
 #include "parser.h"
+#include "registers.h"
 #include "tokenizer.h"
 #include "types.h"
 #include "value.h"
 #include <bit>
-#include <cassert>
 #include <cctype>
 #include <cmath>
 #include <filesystem>
@@ -38,8 +38,13 @@ struct StatementContext {
   optional<string_view> name;
 
   OptionalType expectedType;
-  OptionalType returnType;
   OptionalType selfType;
+  struct {
+    OptionalType type;
+    string_view aggregateTypename;
+    RegisterAssignment registers;
+  } returns;
+  // Used bc llvm return types with floats are sussy
 };
 
 struct CompilerContext {
@@ -123,8 +128,8 @@ public:
         crash(node, "Unable to dereference non-pointer type '{}'", LlvmName(registerValue->type));
       }
       return StackValue(registerValue->name, registerValue->type, registerValue->scope);
-    } else if (value->lValue()) {
-      OptionalType dereferencedType = Pool().dereference(registerValue->type);
+    } else if (auto lValue = value->lValue()) {
+      OptionalType dereferencedType = Pool().dereference(lValue->type);
       if (!dereferencedType.has_value()) {
         crash(node, "Unable to dereference non-pointer type '{}'", LlvmName(registerValue->type));
       }
@@ -1342,14 +1347,14 @@ public:
       }
       case UnaryOps::Return: {
         auto returnValue = parser.readOptional(node.operand.value);
-        if (!context.returnType) {
+        if (!context.returns.type) {
           crash(nodeIndex, "Return can only be used inside a function");
         }
-        auto returnType = context.returnType.value();
+        auto returnType = context.returns.type.value();
         if (returnValue) {
           parser.locationOf(returnValue.value()).underline(std::cout);
           if (Pool().isVoid(returnType)) {
-            crash(*returnValue, "Cannot return value in a function that with a 'void' return type");
+            crash(*returnValue, "Cannot return value in a function with a 'void' return type");
           }
           StatementContext returnContext{.expectedType = returnType};
           auto value = interpret(*returnValue, environment, outputFile, returnContext);
@@ -1357,10 +1362,21 @@ public:
           if (!Pool().isAssignable(value.getType(), returnType)) {
             crash(*returnValue, "Return value of type '{}' needs to be of type '{}'", TypeName(value.getType()), TypeName(returnType));
           }
-          if (Pool().isLlvmLiteralType(returnType)) {
+          auto registers = context.returns.registers;
+          if (registers.isMemory()) {
+            fmt::println(outputFile, "store {} {}, ptr %return\nret void", LlvmName(returnType), loadedValue);
+          } else if (registers.allInt() || !Pool().isAggregate(returnType)) {
             fmt::println(outputFile, "ret {} {}", LlvmName(returnType), loadedValue);
           } else {
-            fmt::println(outputFile, "store {} {}, ptr %return\nret void", LlvmName(returnType), loadedValue);
+            if (context.returns.aggregateTypename.empty()) {
+              crash(*returnValue, "Expected an aggregate llvm type name in context for return value, but was left empty");
+            }
+            auto storage = environment.addTemporary();
+            auto transmuted = environment.addTemporary();
+            fmt::println(outputFile, "%{} = alloca {}", storage, LlvmName(returnType));
+            fmt::println(outputFile, "store {} {}, ptr %{}", LlvmName(returnType), loadedValue, storage);
+            fmt::println(outputFile, "%{} = load {}, ptr %{}", transmuted, context.returns.aggregateTypename, storage);
+            fmt::println(outputFile, "ret {} %{}", context.returns.aggregateTypename, transmuted);
           }
         } else {
           if (!Pool().isVoid(returnType)) {
@@ -2120,10 +2136,11 @@ public:
           paramType.value
         );
       }
+      Reference loadedArg = toRegister(&argument, outputFile, environment);
       if (auto floatType = Pool().getFloat(paramType)) {
-        arguments.push_back(argument.coerceFloat(floatType->precision));
+        arguments.push_back(loadedArg.coerceFloat(floatType->precision));
       } else {
-        arguments.push_back(argument);
+        arguments.push_back(loadedArg);
       }
       i++;
     }
@@ -2149,8 +2166,16 @@ public:
       if (!targetType) {
         crash(value, fmt::runtime("Unable to assign argument of type '{}' to parameter of type '{}'"), TypeName(argument.getType()), TypeName(field.type));
       }
-      auto [_, success] = namedArgs.emplace(nameToken->lexeme, argument);
-      if (!success) {
+      Reference loadedArg = toRegister(&argument, outputFile, environment);
+      bool nonDuplicate = false;
+      if (auto floatType = Pool().getFloat(field.type)) {
+        auto result = namedArgs.emplace(nameToken->lexeme, loadedArg.coerceFloat(floatType->precision));
+        nonDuplicate = result.second;
+      } else {
+        auto result = namedArgs.emplace(nameToken->lexeme, loadedArg);
+        nonDuplicate = result.second;
+      }
+      if (!nonDuplicate) {
         crash(nameToken, "Duplicate named argument");
       }
     }
@@ -2189,11 +2214,10 @@ public:
     auto& instruction = outputFileStream;
     instruction << "define ";
 
-    OutContext context{.outputFile = instruction, .environment = functionEnvironment};
     Function function(stub.functionType, stub.name);
 
-    auto entryLabel = declareParamRegisters(context, function);
-    functionEnvironment.nextTemporary = entryLabel + 1;
+    auto declarationResult = declareParamRegisters(instruction, function);
+    functionEnvironment.nextTemporary = declarationResult.lastParameterRegister + 1;
     auto node = parser.getFunctionLiteral(stub.definitionNode);
     auto parameters = parser.getParameterList(node.parameters);
 
@@ -2221,12 +2245,18 @@ public:
       Todo(parameterIndex, "Named parameters/default values");
     }
 
-    loadParameterRegisters(context, stub.functionType, paramNames);
+    OutContext loadingContext{.outputFile = instruction, .environment = functionEnvironment};
+    loadParameterRegisters(loadingContext, stub.functionType, paramNames);
 
     FunctionType functionType = stub.functionType;
     auto returnType = functionType.returnType;
 
-    StatementContext functionContext{.returnType = returnType};
+    StatementContext functionContext;
+    functionContext.returns = {
+      .type = returnType,
+      .aggregateTypename = declarationResult.aggregateReturnTypeName,
+      .registers = Pool().registerStorage(returnType),
+    };
 
     auto body = parser.getBlock(node.body.value());
     for (auto statement : body.elements) {
@@ -2539,42 +2569,17 @@ public:
     std::ostream& outputFile,
     Reference* selfArg = nullptr
   ) {
-    fmt::println("Calling function {} with return type {}", func->globalName, TypeName(func->type.returnType));
+    log("Calling function {} with return type {}", func->globalName, TypeName(func->type.returnType));
     std::vector<std::string> parameters;
 
     auto funcType = func->type;
-    auto returnType = funcType.returnType;
     auto parameterTypes = Pool().tupleElements(funcType.parameters);
     std::vector<bool> setArguments(parameterTypes.size(), false);
 
-    bool literalReturn = Pool().isLiteralReturn(returnType);
-    bool hasReturn = !Pool().isVoid(returnType);
-
+    // TODO: named arguments
     static FieldMap namedArgs;
-    if (hasReturn && !literalReturn) {
-      // Add dummy param for now
-      parameters.push_back("");
-    }
+
     auto [arguments, namedArguments] = getArguments(parameterTypes, argsNode, environment, outputFile, namedArgs, selfArg);
-    for (u32 i = 0; i < arguments.size(); i++) {
-      if (auto argType = arguments[i].isAssignableTo(parameterTypes[i])) {
-        if (Pool().isLlvmLiteralType(*argType)) {
-          auto value = toRegister(&arguments[i], outputFile, environment);
-          parameters.push_back(fmt::format("{} {}", LlvmName(*argType), value));
-        } else {
-          auto value = toByValPointer(arguments[i], outputFile, environment);
-          parameters.push_back(fmt::format("ptr byval({}) {}", LlvmName(*argType), value));
-        }
-      } else {
-        crash(
-          argsNode.requiredArgs[i],
-          "Invalid argument in function call (can't pass argument of type {} to parameter of type {})",
-          TypeName(arguments[i].getType()),
-          TypeName(parameterTypes[i])
-        );
-      }
-      setArguments[i] = true;
-    }
 
     // TODO: optional arguments
     for (auto [name, value] : namedArguments) {
@@ -2585,36 +2590,14 @@ public:
       crash(nodeIndex, "Passed {} arguments, but expected {}", arguments.size(), parameterTypes.size());
     }
 
-    u32 resultIndex;
-    if (hasReturn) {
-      resultIndex = environment.addTemporary();
-      if (!literalReturn) {
-        auto result = Reference(StackValue(resultIndex, returnType));
-        auto align = Pool().getSizing(returnType).alignment.byteAlignment();
-        fmt::println(outputFile, "{} = alloca {}, align {}", result, LlvmName(returnType), align);
-        parameters[0] = fmt::format("ptr sret({}) align {} {}", LlvmName(returnType), align, result);
-      }
-    }
+    OutContext callCtx{.outputFile = outputFile, .environment = environment};
 
-    if (hasReturn && literalReturn) {
-      auto result = Reference(RegisterValue(resultIndex, returnType));
-      fmt::print(outputFile, "{} = ", result);
-    }
-    outputFile << "call ";
-    if (literalReturn) {
-      fmt::print(outputFile, "{} ", LlvmName(returnType));
-    } else {
-      outputFile << "void ";
-    }
-    fmt::println(outputFile, "{}({})", func->globalName, fmt::join(parameters, ", "));
-
-    if (Pool().isVoid(returnType)) {
+    // TODO: ZST
+    u32 resultRegister = callAbiFunctionWithArgs(callCtx, *func, arguments);
+    if (Pool().isVoid(func->type.returnType)) {
       return Reference::Void();
     }
-    if (literalReturn) {
-      return Reference(RegisterValue(resultIndex, returnType));
-    }
-    return Reference(StackValue(resultIndex, returnType));
+    return Reference(RegisterValue{.name = resultRegister, .type = func->type.returnType, .scope = ValueScope::Local});
   }
 
   Function* findMethod(NodeIndex nodeIndex, string_view fieldName, TypeIndex type, Environment& environment) {

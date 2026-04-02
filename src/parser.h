@@ -3,7 +3,6 @@
 #include "fmt/base.h"
 #include "tokenizer.h"
 #include <bit>
-#include <cassert>
 #include <fmt/core.h>
 #include <iostream>
 #include <limits>

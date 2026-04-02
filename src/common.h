@@ -2,7 +2,6 @@
 #include "../deps/doctest.h"
 #include "fmt/base.h"
 #include <bit>
-#include <cassert>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -25,6 +24,13 @@ using u64 = uint64_t;
 // using s16 = int16_t;
 // using s32 = int32_t;
 // using s64 = int64_t;
+
+#define assert(cond)                                                                                                            \
+  do {                                                                                                                          \
+    if (!(cond)) {                                                                                                              \
+      throw std::runtime_error(std::string("Assertion failed: ") + #cond + " at " + __FILE__ + ":" + std::to_string(__LINE__)); \
+    }                                                                                                                           \
+  } while (false)
 
 #ifndef ASSERT_INVARIANTS
 #ifndef DOCTEST_CONFIG_INVARIANTS
