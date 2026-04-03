@@ -5,19 +5,29 @@
 #include "registers.h"
 #include "types.h"
 #include "value.h"
+#include <concepts>
 #include <sstream>
 #include <unistd.h>
 
-void declareParameterRegisters(
-  std::ostream& outputFile,
-  TypeIndex typeIndex,
-  RegisterAssignment& registers,
-  u32& registerIndex
-) {
-  auto sizing = Pool().getSizing(typeIndex);
+template <typename T, typename ReturnType>
+concept AbiVisitor = requires(T t) {
+  {t.memory(TypeIndex{}, Sizing{})} -> std::same_as<typename T::returnType>; 
+  {t.inRegister(TypeIndex{}, Sizing{})} -> std::same_as<typename T::returnType>; 
+  {t.sseVectorLow(TypeIndex{}, Sizing{}) } -> std::same_as<typename T::returnType>;
+  {t.sseVectorHigh(TypeIndex{}, Sizing{}) } -> std::same_as<typename T::returnType>;
+  {t.template aggregate<TupleIndex>(TupleIndex{}) } -> std::same_as<typename T::returnType>;
+  {t.template aggregate<SizedArray>(SizedArray{}) } -> std::same_as<typename T::returnType>;
+  {t.template aggregate<StructIndex>(SizedArray{}) } -> std::same_as<typename T::returnType>;
+};
 
-  if (sizing.byteSize == 0) return;
-  if (registers.typeAt(0) == RegisterType::Memory) {
+struct Declaration {
+  using returnType = void;
+  std::ostream& outputFile;
+  TypeIndex typeIndex;
+  RegisterAssignment registers;
+  u32 registerIndex;
+
+  void memory(TypeIndex typeIndex, Sizing sizing) {
     fmt::print(
       outputFile,
       "ptr noundef byval({}) align {}",
@@ -25,14 +35,50 @@ void declareParameterRegisters(
       sizing.alignment.byteAlignment()
     );
     registerIndex++;
-    return;
+  }
+
+  void inRegister(TypeIndex typeIndex, Sizing sizing) {
+    outputFile << LlvmName(typeIndex);
+    registerIndex++;
+    registers.pop(sizing.byteSize);
+  }
+
+  void sseVectorLow() {
+  
+  }
+
+  void sseVectorHigh() {
+  
+  }
+
+  template <AggregateType T>
+  void aggregate(T t) {
+    
+  }
+};
+
+// template <AbiVistor T>
+void abiVisit(TypeIndex typeIndex, RegisterAssignment& registers) {
+  auto sizing = Pool().getSizing(typeIndex);
+
+  if (sizing.byteSize == 0) return;
+  if (registers.typeAt(0) == RegisterType::Memory) {
+    registers.pop(sizing.byteSize);
   }
   if (registers.allInt(sizing.byteSize)) {
     outputFile << LlvmName(typeIndex);
     registerIndex++;
-    registers.pop(sizing.byteSize);
     return;
   }
+  
+}
+
+void declareParameterRegisters(
+  std::ostream& outputFile,
+  TypeIndex typeIndex,
+  RegisterAssignment& registers,
+  u32& registerIndex
+) {
 
   auto type = Pool().getType(typeIndex);
   std::visit(
