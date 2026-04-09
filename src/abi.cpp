@@ -5,26 +5,75 @@
 #include "registers.h"
 #include "types.h"
 #include "value.h"
-#include <concepts>
 #include <sstream>
 #include <unistd.h>
 
-template <typename T, typename ReturnType>
-concept AbiVisitor = requires(T t) {
-  {t.memory(TypeIndex{}, Sizing{})} -> std::same_as<typename T::returnType>; 
-  {t.inRegister(TypeIndex{}, Sizing{})} -> std::same_as<typename T::returnType>; 
-  {t.sseVectorLow(TypeIndex{}, Sizing{}) } -> std::same_as<typename T::returnType>;
-  {t.sseVectorHigh(TypeIndex{}, Sizing{}) } -> std::same_as<typename T::returnType>;
-  {t.template aggregate<TupleIndex>(TupleIndex{}) } -> std::same_as<typename T::returnType>;
-  {t.template aggregate<SizedArray>(SizedArray{}) } -> std::same_as<typename T::returnType>;
-  {t.template aggregate<StructIndex>(SizedArray{}) } -> std::same_as<typename T::returnType>;
+template <typename T>
+concept AbiVisitor = requires(T t, RegisterAssignment& registers) {
+  { t.memory(TypeIndex{}, Sizing{}) };
+  { t.inRegister(TypeIndex{}, Sizing{}) };
+  { t.sseVectorLow(TypeIndex{}, Sizing{}) };
+  { t.sseVectorHigh(TypeIndex{}, Sizing{}) };
+  { t.template aggregate<TupleIndex>(TypeIndex{}, TupleIndex{}, registers) };
+  { t.template aggregate<SizedArray>(TypeIndex{}, SizedArray{}, registers) };
+  { t.template aggregate<StructIndex>(TypeIndex{}, StructIndex{}, registers) };
 };
+template <AbiVisitor T>
 
-struct Declaration {
-  using returnType = void;
+void abiVisit(TypeIndex typeIndex, RegisterAssignment& registers, T& visitor) {
+  auto sizing = Pool().getSizing(typeIndex);
+
+  if (sizing.byteSize == 0) {
+    return;
+  }
+  if (registers.typeAt(0) == RegisterType::Memory) {
+    visitor.memory(typeIndex, sizing);
+    return;
+  }
+  if (registers.allInt(sizing.byteSize)) {
+    visitor.inRegister(typeIndex, sizing);
+    registers.pop(sizing.byteSize);
+    return;
+  }
+  UnderlyingType& type = Pool().getType(typeIndex);
+  std::visit(
+    overloaded{
+      [&]<IntRegister I>(I x) { assert(false); },
+      [&](Float x) {
+        if (x.precision != Float::f32) {
+          TODO("Declaring non-f32 floats in parameters");
+        }
+        u32 byteSize = x.byteSize();
+        bool isFloat = registers.typeAt() == RegisterType::Float;
+        u8 readOffset = registers.readIndex % 8;
+        if (
+          isFloat && readOffset == 0 &&
+          registers.typeAt(byteSize) == RegisterType::Float
+        ) {
+          visitor.sseVectorLow(typeIndex, sizing);
+          // fmt::println("Low; expecting to pop {} bytes", byteSize);
+        } else if (
+          isFloat && readOffset != 0 &&
+          registers.typeAt(-byteSize) == RegisterType::Float
+        ) {
+          visitor.sseVectorHigh(typeIndex, sizing);
+          // fmt::println("High; expecting to pop {} bytes", byteSize);
+        } else {
+          visitor.inRegister(typeIndex, sizing);
+          // fmt::println("Putting float in int register", byteSize);
+        }
+        registers.pop(byteSize);
+      },
+      [&]<AggregateType U>(U x) { visitor.aggregate(typeIndex, x, registers); },
+      [&]<RecursiveType U>(U x) { abiVisit(x.rawType(), registers, visitor); },
+      [&](auto x) { TODO("Can't create args"); },
+    },
+    type
+  );
+}
+
+struct AbiDeclaration {
   std::ostream& outputFile;
-  TypeIndex typeIndex;
-  RegisterAssignment registers;
   u32 registerIndex;
 
   void memory(TypeIndex typeIndex, Sizing sizing) {
@@ -40,108 +89,48 @@ struct Declaration {
   void inRegister(TypeIndex typeIndex, Sizing sizing) {
     outputFile << LlvmName(typeIndex);
     registerIndex++;
-    registers.pop(sizing.byteSize);
   }
 
-  void sseVectorLow() {
-  
+  void sseVectorLow(TypeIndex typeIndex, Sizing sizing) {
+    fmt::print(outputFile, "<2 x {}>", LlvmName(typeIndex));
   }
 
-  void sseVectorHigh() {
-  
+  void sseVectorHigh(TypeIndex typeIndex, Sizing sizing) {
+    registerIndex++;
   }
 
   template <AggregateType T>
-  void aggregate(T t) {
-    
+  void aggregate(TypeIndex typeIndex, T t, RegisterAssignment& registers) {
+    auto prevRegister = registerIndex;
+    // fmt::println("{:#b}", registers.types);
+    for (auto fieldType : t.fields()) {
+      if (prevRegister != registerIndex) {
+        outputFile << ", ";
+      }
+      prevRegister = registerIndex;
+      abiVisit(fieldType, registers, *this);
+    }
   }
 };
 
-// template <AbiVistor T>
-void abiVisit(TypeIndex typeIndex, RegisterAssignment& registers) {
-  auto sizing = Pool().getSizing(typeIndex);
-
-  if (sizing.byteSize == 0) return;
-  if (registers.typeAt(0) == RegisterType::Memory) {
-    registers.pop(sizing.byteSize);
-  }
-  if (registers.allInt(sizing.byteSize)) {
-    outputFile << LlvmName(typeIndex);
-    registerIndex++;
-    return;
-  }
-  
-}
-
-void declareParameterRegisters(
-  std::ostream& outputFile,
-  TypeIndex typeIndex,
-  RegisterAssignment& registers,
-  u32& registerIndex
-) {
-
-  auto type = Pool().getType(typeIndex);
-  std::visit(
-    overloaded{
-      [&]<IntRegister T>(T x) { assert(false); },
-      [&](Float x) {
-        if (x.precision != Float::f32) {
-          TODO("Declaring non-f32 floats in parameters");
-        }
-        auto byteSize = x.byteSize();
-        if (registers.typeAt() == RegisterType::Float) {
-          if (registers.readIndex / 8 == 0) {
-            registerIndex++;
-            if (registers.typeAt(byteSize) == RegisterType::Float) {
-              fmt::print(outputFile, "<2 x {}>", LlvmName(typeIndex));
-            } else {
-              outputFile << LlvmName(typeIndex);
-            }
-          } else if (registers.readIndex / 8 != 0 &&
-                     registers.typeAt(-byteSize) != RegisterType::Float) {
-            outputFile << LlvmName(typeIndex);
-            registerIndex++;
-          }
-        } else {
-          outputFile << LlvmName(typeIndex);
-          registerIndex++;
-        }
-        registers.pop(byteSize);
-      },
-      [&]<AggregateType T>(T x) {
-        auto prevRegister = registerIndex;
-        for (auto fieldType : x.fields()) {
-          if (prevRegister != registerIndex) {
-            outputFile << ", ";
-          }
-          prevRegister = registerIndex;
-          declareParameterRegisters(
-            outputFile,
-            fieldType,
-            registers,
-            registerIndex
-          );
-        }
-      },
-      [&](EnumIndex x) {
-        declareParameterRegisters(
-          outputFile,
-          Pool().getEnum(x).rawType,
-          registers,
-          registerIndex
-        );
-      },
-      [&](auto x) { TODO("Can't create args"); },
-    },
-    type
-  );
-}
+static_assert(
+  AbiVisitor<AbiDeclaration>,
+  "Declaration doesn't conform to AbiVisitor"
+);
 
 u32 declareParameterRegisters(std::ostream& outputFile, TypeIndex typeIndex) {
   RegisterAssignment registers = Pool().registerStorage(typeIndex);
-  u32 registerIndex = 0;
-  declareParameterRegisters(outputFile, typeIndex, registers, registerIndex);
-  return registerIndex;
+  AbiDeclaration visitor{.outputFile = outputFile, .registerIndex = 0};
+  abiVisit(typeIndex, registers, visitor);
+  return visitor.registerIndex;
+}
+
+std::string aggregateReturnTypeName(TypeIndex returnType) {
+  std::stringstream returnStream;
+  returnStream << "{";
+  declareParameterRegisters(returnStream, returnType);
+  returnStream << "}";
+  return returnStream.str();
 }
 
 // Assume that the caller has put declare/define first
@@ -156,13 +145,10 @@ DeclarationResult declareParamRegisters(
   if (returnRegisters.isMemory() || returnRegisters.isVoid()) {
     outputFile << "void";
   } else if (returnRegisters.allInt() || !Pool().isAggregate(returnType)) {
-    outputFile << TypeName(returnType);
+    outputFile << LlvmName(returnType);
   } else {
-    std::stringstream returnStream;
-    returnStream << "{";
-    declareParameterRegisters(outputFile, returnType);
-    returnStream << "}";
-    returnTypeName = returnStream.str();
+    returnTypeName = aggregateReturnTypeName(returnType);
+    outputFile << returnTypeName;
   }
 
   u32 registersUsed = 0;
@@ -180,10 +166,16 @@ DeclarationResult declareParamRegisters(
   }
 
   for (auto paramType : Pool().tupleElements(function.type.parameters)) {
+    RegisterAssignment registers = Pool().registerStorage(paramType);
+    if (registers.isVoid()) {
+      continue;
+    }
     if (needsComma) {
       outputFile << ", ";
     }
-    auto newRegisters = declareParameterRegisters(outputFile, paramType);
+    AbiDeclaration visitor{.outputFile = outputFile, .registerIndex = 0};
+    abiVisit(paramType, registers, visitor);
+    u32 newRegisters = visitor.registerIndex;
     needsComma = (bool)newRegisters;
     registersUsed += newRegisters;
   }
@@ -192,16 +184,13 @@ DeclarationResult declareParamRegisters(
   return {returnTypeName, registersUsed};
 }
 
-void loadParameterRegisters(
-  OutContext& ctx,
-  TypeIndex typeIndex,
-  RegisterName stackPointer,
-  RegisterAssignment registers,
-  u32& registerIndex
-) {
-  auto sizing = Pool().getSizing(typeIndex);
-  if (sizing.byteSize == 0) return;
-  if (registers.typeAt() == RegisterType::Memory) {
+struct LoadParameterVisitor {
+  OutContext& ctx;
+  RegisterName stackPointer;
+  u32& registerIndex;
+  bool usedLower;
+
+  void memory(TypeIndex typeIndex, Sizing sizing) {
     fmt::println(
       ctx.outputFile,
       "call void @llvm.memcpy.p0.p0.i8(ptr %{}, ptr %{}, i64 {}, i1 false)",
@@ -211,9 +200,9 @@ void loadParameterRegisters(
     );
     // High-key byteIndex doesn't matter
     registerIndex++;
-    return;
   }
-  if (registers.allInt(sizing.byteSize)) {
+
+  void inRegister(TypeIndex typeIndex, Sizing sizing) {
     fmt::println(
       ctx.outputFile,
       "store {} %{}, ptr %{}",
@@ -221,112 +210,50 @@ void loadParameterRegisters(
       registerIndex,
       stackPointer
     );
-    registers.pop(sizing.byteSize);
     registerIndex++;
-    return;
   }
-  auto type = Pool().getType(typeIndex);
-  std::visit(
-    overloaded{
-      [&]<IntRegister T>(T x) { assert(false); },
-      [&](Float x) {
-        if (x.precision != Float::f32) {
-          TODO("Loading non-f32 floats from parameters");
-        }
-        auto byteSize = x.byteSize();
-        if (registers.typeAt() == RegisterType::Float) {
-          if (registers.readIndex / 8 == 0 &&
-              registers.typeAt(byteSize) == RegisterType::Float) {
-            fmt::println(
-              ctx.outputFile,
-              "store <2 x {}> %{}, ptr %{}",
-              LlvmName(typeIndex),
-              registerIndex,
-              stackPointer
-            );
-            registerIndex++;
-          } else if (registers.readIndex / 8 != 0 &&
-                     registers.typeAt(-byteSize) == RegisterType::Float) {
-            // fmt::println(ctx.outputFile, "store {} %{}, ptr %{}",
-            // LlvmName(typeIndex), registerIndex, stackPointer);
-          } else {
-            fmt::println(
-              ctx.outputFile,
-              "store {} %{}, ptr %{}",
-              LlvmName(typeIndex),
-              registerIndex,
-              stackPointer
-            );
-            registerIndex++;
-          }
-        } else {
-          fmt::println(
-            ctx.outputFile,
-            "store {} %{}, ptr %{}",
-            LlvmName(typeIndex),
-            registerIndex,
-            stackPointer
-          );
-          registerIndex++;
-        }
-        registers.pop(byteSize);
-      },
-      [&]<AggregateType T>(T x) {
-        auto prevRegister = registerIndex;
-        auto fieldIndex = 0;
-        for (auto fieldType : x.fields()) {
-          if (prevRegister != registerIndex) {
-            ctx.outputFile << ", ";
-            fieldIndex++;
-          }
-          auto fieldPointer = ctx.environment.addTemporary();
-          fmt::println(
-            ctx.outputFile,
-            "%{} = getelementptr inbounds {}, ptr %{}, i32 0, i32 {}",
-            fieldPointer,
-            LlvmName(typeIndex),
-            stackPointer,
-            fieldIndex
-          );
-          loadParameterRegisters(
-            ctx,
-            fieldType,
-            stackPointer,
-            registers,
-            registerIndex
-          );
-        }
-      },
-      [&](EnumIndex x) {
-        loadParameterRegisters(
-          ctx,
-          Pool().getEnum(x).rawType,
-          stackPointer,
-          registers,
-          registerIndex
-        );
-      },
-      [&](auto x) { TODO("Can't create args"); },
-    },
-    type
-  );
-}
 
-void loadParameterRegisters(
-  OutContext& ctx,
-  TypeIndex typeIndex,
-  RegisterName stackPointer,
-  u32& registerIndex
-) {
-  RegisterAssignment registers = Pool().registerStorage(typeIndex);
-  loadParameterRegisters(
-    ctx,
-    typeIndex,
-    stackPointer,
-    registers,
-    registerIndex
-  );
-}
+  void sseVectorLow(TypeIndex typeIndex, Sizing sizing) {
+    fmt::println(
+      ctx.outputFile,
+      "store <2 x {}> %{}, ptr %{}",
+      LlvmName(typeIndex),
+      registerIndex,
+      stackPointer
+    );
+    registerIndex++;
+    usedLower = true;
+  }
+
+  void sseVectorHigh(TypeIndex typeIndex, Sizing sizing) {
+    usedLower = false;
+  }
+
+  template <AggregateType T>
+  void aggregate(TypeIndex typeIndex, T x, RegisterAssignment& registers) {
+    auto prevRegister = registerIndex;
+    auto fieldIndex = 0;
+    auto structPointer = stackPointer;
+    for (auto fieldType : x.fields()) {
+      if (prevRegister != registerIndex) {
+        fieldIndex++;
+      }
+      if (!usedLower) {
+        stackPointer = ctx.environment.addTemporary();
+        fmt::println(
+          ctx.outputFile,
+          "%{} = getelementptr inbounds {}, ptr %{}, i32 0, i32 {}",
+          stackPointer,
+          LlvmName(typeIndex),
+          structPointer,
+          fieldIndex
+        );
+      }
+      abiVisit(fieldType, registers, *this);
+    }
+  }
+};
+static_assert(AbiVisitor<LoadParameterVisitor>, "Need to implement");
 
 void loadParameterRegisters(
   OutContext& ctx,
@@ -337,6 +264,9 @@ void loadParameterRegisters(
   assert(paramTypes.size() == paramNames.size());
   u32 paramIndex = 0;
   u32 registerIndex = 0;
+  if (Pool().registerStorage(function.returnType).isMemory()) {
+    registerIndex++;
+  }
   for (auto name : paramNames) {
     auto typeIndex = paramTypes[paramIndex];
     RegisterAssignment assignment = Pool().registerStorage(typeIndex);
@@ -353,23 +283,28 @@ void loadParameterRegisters(
       LlvmName(typeIndex),
       sizing.alignment.byteAlignment()
     );
-    loadParameterRegisters(ctx, typeIndex, name, registerIndex);
+
+    RegisterAssignment registers = Pool().registerStorage(typeIndex);
+    LoadParameterVisitor visitor{
+      .ctx = ctx,
+      .stackPointer = name,
+      .registerIndex = registerIndex
+    };
+    abiVisit(typeIndex, registers, visitor);
     paramIndex++;
   }
 }
 
-bool passArg(
-  OutContext& ctx,
-  TypeIndex typeIndex,
-  RegisterAssignment& registers,
-  Reference& arg,
-  std::stringstream& callSite
-) {
-  auto sizing = Pool().getSizing(typeIndex);
-  if (sizing.byteSize == 0) return false;
-  LlvmName typeName(typeIndex);
-  if (registers.typeAt() == RegisterType::Memory) {
+struct ArgumentVisitor {
+  OutContext& ctx;
+  std::stringstream& callSite;
+  Reference& arg;
+  bool consumedArg = false;
+  u32 lastSseVectorRegister;
+
+  void memory(TypeIndex typeIndex, Sizing sizing) {
     auto ptrRegister = ctx.environment.addTemporary();
+    LlvmName typeName(typeIndex);
     fmt::println(
       ctx.outputFile,
       "%{} = alloca {}, align {}",
@@ -391,104 +326,78 @@ bool passArg(
       sizing.alignment.byteAlignment(),
       ptrRegister
     );
-    registers.pop();
-    return true;
-  }
-  if (registers.allInt(sizing.byteSize)) {
-    registers.pop(sizing.byteSize);
-    fmt::print(callSite, "{} {}", typeName, arg);
-    return true;
+    consumedArg = true;
   }
 
-  auto type = Pool().getType(typeIndex);
-  return std::visit(
-    overloaded{
-      [&]<IntRegister T>(T x) {
-        assert(false);
-        return true;
-      },
-      [&](Float x) {
-        if (x.precision != Float::f32) {
-          TODO("Loading non-f32 floats from parameters");
-        }
-        auto byteSize = x.byteSize();
-        bool consumedParam = true;
-        if (registers.typeAt() == RegisterType::Float) {
-          if (registers.readIndex / 8 == 0 &&
-              registers.typeAt(byteSize) == RegisterType::Float) {
-            fmt::println(
-              ctx.outputFile,
-              "%{} = insertelement <2 x {}> undef, i32 0, {} {}",
-              ctx.environment.addTemporary(),
-              typeName,
-              typeName,
-              arg
-            );
-            consumedParam = false;
-          } else if (registers.readIndex / 8 != 0 &&
-                     registers.typeAt(-byteSize) == RegisterType::Float) {
-            auto prevRegister = ctx.environment.nextTemporary - 1;
-            auto newRegister = ctx.environment.addTemporary();
-            fmt::println(
-              ctx.outputFile,
-              "%{} = insertelement <2 x {}> %{}, i32 1, {} {}",
-              newRegister,
-              typeName,
-              prevRegister,
-              typeName,
-              arg
-            );
-            fmt::print(callSite, "<2 x {}> %{}", typeName, newRegister);
-          } else {
-            fmt::print(callSite, "{} {}", typeName, arg);
-          }
-        } else {
-          fmt::print(callSite, "{} {}", typeName, arg);
-        }
-        registers.pop(byteSize);
-        return consumedParam;
-      },
-      [&]<AggregateType T>(T x) {
-        bool needsComma = false;
-        auto fields = x.fields();
-        for (u32 i = 0; i < fields.size(); i++) {
-          // TODO: ZST
-          if (needsComma) {
-            callSite << ", ";
-          }
-          auto fieldType = fields[i];
-          Reference fieldArg(ctx.environment.makeTemporary(fieldType));
-          fmt::println(
-            ctx.outputFile,
-            "{} = extractvalue {} {}, {}",
-            fieldArg,
-            typeName,
-            arg,
-            i
-          );
+  void inRegister(TypeIndex typeIndex, Sizing sizing) {
+    fmt::print(callSite, "{} {}", LlvmName(typeIndex), arg);
+    consumedArg = true;
+  }
 
-          needsComma = passArg(ctx, fieldType, registers, fieldArg, callSite);
-        }
-        return true;
-      },
-      [&](EnumIndex x) {
-        return passArg(
-          ctx,
-          Pool().getEnum(x).rawType,
-          registers,
-          arg,
-          callSite
-        );
-      },
-      [&](auto x) {
-        TODO("Can't create args");
-        // TODO
-        return false;
-      },
-    },
-    type
-  );
-}
+  void sseVectorLow(TypeIndex typeIndex, Sizing sizing) {
+    auto reg = ctx.environment.addTemporary();
+    fmt::println(
+      ctx.outputFile,
+      "%{} = insertelement <2 x {}> undef, {} {}, i32 0",
+      reg,
+      LlvmName(typeIndex),
+      LlvmName(typeIndex),
+      arg
+    );
+    consumedArg = false;
+    lastSseVectorRegister = reg;
+  }
+
+  void sseVectorHigh(TypeIndex typeIndex, Sizing sizing) {
+    auto prevRegister = ctx.environment.nextTemporary - 2;
+    auto newRegister = ctx.environment.addTemporary();
+    LlvmName typeName(typeIndex);
+    fmt::println(
+      ctx.outputFile,
+      "%{} = insertelement <2 x {}> %{}, {} {}, i32 1",
+      newRegister,
+      typeName,
+      prevRegister,
+      typeName,
+      arg
+    );
+    fmt::print(callSite, "<2 x {}> %{}", typeName, newRegister);
+    consumedArg = true;
+  }
+
+  template <AggregateType T>
+  void aggregate(TypeIndex typeIndex, T x, RegisterAssignment& registers) {
+    bool needsComma = false;
+    auto fields = x.fields();
+    LlvmName typeName(typeIndex);
+    Reference aggregate = arg;
+    bool anyFields = false;
+    for (u32 i = 0; i < fields.size(); i++) {
+      // TODO: ZST
+      if (needsComma) {
+        callSite << ", ";
+      }
+      auto fieldType = fields[i];
+      arg.value = ctx.environment.makeTemporary(fieldType);
+      fmt::println(
+        ctx.outputFile,
+        "{} = extractvalue {} {}, {}",
+        arg,
+        typeName,
+        aggregate,
+        i
+      );
+      consumedArg = false;
+      abiVisit(fieldType, registers, *this);
+      needsComma = consumedArg;
+      if (needsComma) {
+        anyFields = true;
+      }
+    }
+    consumedArg = anyFields;
+  }
+};
+static_assert(AbiVisitor<ArgumentVisitor>, "...");
 
 u32 callAbiFunctionWithArgs(
   OutContext& ctx,
@@ -503,15 +412,12 @@ u32 callAbiFunctionWithArgs(
   callSite << "call ";
   std::string transmuteReturnType;
   if (returnRegisters.isMemory() || returnRegisters.isVoid()) {
-    ctx.outputFile << "void";
+    callSite << "void";
   } else if (returnRegisters.allInt() || !Pool().isAggregate(returnType)) {
-    callSite << TypeName(returnType);
+    callSite << LlvmName(returnType);
   } else {
-    std::stringstream returnStream;
-    returnStream << "{";
-    declareParameterRegisters(returnStream, returnType);
-    returnStream << "}";
-    transmuteReturnType = returnStream.str();
+    transmuteReturnType = aggregateReturnTypeName(returnType);
+    callSite << transmuteReturnType;
   }
 
   bool needsComma = false;
@@ -546,25 +452,41 @@ u32 callAbiFunctionWithArgs(
     auto& arg = args[i];
     auto paramType = paramTypes[i];
     auto registers = Pool().registerStorage(paramType);
-    needsComma = passArg(ctx, paramType, registers, arg, callSite);
+    ArgumentVisitor visitor{
+      .ctx = ctx,
+      .callSite = callSite,
+      .arg = arg,
+      .consumedArg = false
+    };
+    abiVisit(paramType, registers, visitor);
+    needsComma = visitor.consumedArg;
   }
 
   callSite << ")\n";
 
   auto call = callSite.str();
   if (returnRegisters.isMemory()) {
+    ctx.outputFile << callSite.str();
+    auto sret = returnRegister;
+    returnRegister = ctx.environment.addTemporary();
     fmt::println(
       ctx.outputFile,
       "%{} = load {}, ptr %{}",
       returnRegister,
       LlvmName(returnType),
-      returnRegister
+      sret
     );
-  } else if (returnRegisters.allInt() || !transmuteReturnType.empty()) {
+  } else if (
+    returnRegisters.allInt() || Pool().isFloat(returnType) ||
+    !transmuteReturnType.empty()
+  ) {
     returnRegister = ctx.environment.addTemporary();
     fmt::print(ctx.outputFile, "%{} = ", returnRegister);
+    ctx.outputFile << callSite.str();
+  } else {
+    ctx.outputFile << callSite.str();
   }
-  ctx.outputFile << callSite.str();
+
   if (!transmuteReturnType.empty()) {
     auto storage = ctx.environment.addTemporary();
     auto transmuted = ctx.environment.addTemporary();
@@ -606,8 +528,8 @@ TEST_CASE("Passing primative args") {
   SUBCASE("Declaration") {
     stringstream declaration;
     auto declarationResult = declareParamRegisters(declaration, function);
-    CHECK_EQ(declaration.str(), "f32 @testFunc(float, i32)");
-    CHECK_EQ(declarationResult.lastParameterRegister, 2);
+    CHECK_EQ(declaration.str(), "float @testFunc(float, i32)");
+    CHECK_EQ(declarationResult.entryLabel, 2);
   }
   SUBCASE("Loading") {
     stringstream functionBody;
@@ -636,4 +558,200 @@ TEST_CASE("Passing primative args") {
     CHECK_EQ(returnRegister, 2);
     CHECK_EQ(callSite.str(), expectedCallSite);
   }
+}
+
+TEST_CASE("Struct args and returns") {
+  using std::stringstream;
+  TypeIndex f32 = Pool()._f32;
+  auto vec3 = Pool().sizedArrayOf(f32, 3);
+  auto mat4x4 = Pool().sizedArrayOf(Pool().sizedArrayOf(f32, 4), 4);
+  TupleIndex paramTuple = Pool().tupleOf({vec3}).second;
+  Function function{
+    .type = FunctionType{.parameters = paramTuple, .returnType = mat4x4},
+    .globalName = "@translate"
+  };
+  SUBCASE("Declaration") {
+    stringstream declaration;
+    auto declarationResult = declareParamRegisters(declaration, function);
+    CHECK_EQ(
+      declaration.str(),
+      "void @translate(ptr sret([4 x [4 x float]]) align 4, <2 x float>, float)"
+    );
+    CHECK_EQ(declarationResult.entryLabel, 3);
+  }
+  SUBCASE("Loading") {
+    stringstream functionBody;
+    Environment env;
+    env.envType = EnvType::Function;
+    env.nextTemporary = 4;
+    OutContext ctx{.outputFile = functionBody, .environment = env};
+    vector<Identifier> paramNames = {"vec"};
+    loadParameterRegisters(ctx, function.type, paramNames);
+    string_view loadStr = "%vec = alloca [3 x float], align 4\n"
+                          "%4 = getelementptr inbounds [3 x float], "
+                          "ptr %vec, i32 0, i32 0\n"
+                          "store <2 x float> %1, ptr %4\n"
+                          "%5 = getelementptr inbounds [3 x float], "
+                          "ptr %vec, i32 0, i32 2\n"
+                          "store float %2, ptr %5\n";
+    CHECK_EQ(functionBody.str(), loadStr);
+    CHECK_EQ(env.nextTemporary, 6);
+  }
+  SUBCASE("Calling") {
+    Environment env;
+    env.envType = EnvType::Function;
+    stringstream callSite;
+    auto arg1 = env.makeTemporary(vec3);
+    vector<Reference> args = {
+      Reference(arg1),
+    };
+    REQUIRE_EQ(std::get<u32>(arg1.name), 1);
+
+    OutContext ctx{.outputFile = callSite, .environment = env};
+    auto returnRegister = callAbiFunctionWithArgs(ctx, function, args);
+    string_view expectedCallSite =
+      "%2 = alloca [4 x [4 x float]], align 4\n"
+      "%3 = extractvalue [3 x float] %1, 0\n"
+      "%4 = insertelement <2 x float> undef, float %3, i32 0\n"
+      "%5 = extractvalue [3 x float] %1, 1\n"
+      "%6 = insertelement <2 x float> %4, float %5, i32 1\n"
+      "%7 = extractvalue [3 x float] %1, 2\n"
+      "call void @translate(ptr sret([4 x [4 x float]]) align 4 %2, <2 x "
+      "float> %6, float %7)\n"
+      "%8 = load [4 x [4 x float]], ptr %2\n";
+    CHECK_EQ(returnRegister, 8);
+    CHECK_EQ(callSite.str(), expectedCallSite);
+  }
+}
+
+TEST_CASE("Returning SSE") {
+  using std::stringstream;
+  TypeIndex f32 = Pool()._f32;
+
+  // auto [quat, _] = Pool().tupleOf({f32, f32, f32, f32});
+  auto [quat, structIndex] = Pool().makeStruct("quat", "%quat");
+  Pool().getStruct(structIndex).fieldTypes = {f32, f32, f32, f32};
+  TupleIndex paramTuple = Pool().tupleOf({quat, quat}).second;
+  Function function{
+    .type = FunctionType{.parameters = paramTuple, .returnType = quat},
+    .globalName = "@multiply"
+  };
+  SUBCASE("Declaration") {
+    string_view expected = "{<2 x float>, <2 x float>} @multiply(<2 x float>, "
+                           "<2 x float>, <2 x float>, <2 x float>)";
+    stringstream declaration;
+    auto declarationResult = declareParamRegisters(declaration, function);
+    CHECK_EQ(declaration.str(), expected);
+    CHECK_EQ(declarationResult.entryLabel, 4);
+  }
+  SUBCASE("Loading") {
+    stringstream functionBody;
+    Environment env;
+    env.nextTemporary = 5;
+    env.envType = EnvType::Function;
+    OutContext ctx{.outputFile = functionBody, .environment = env};
+    vector<Identifier> paramNames = {"q1", "q2"};
+    loadParameterRegisters(ctx, function.type, paramNames);
+    string_view expected = "%q1 = alloca %quat, align 4\n"
+                           "%5 = getelementptr inbounds %quat, ptr %q1, i32 "
+                           "0, i32 0\n"
+                           "store <2 x float> %0, ptr %5\n"
+                           "%6 = getelementptr inbounds %quat, ptr %q1, i32 "
+                           "0, i32 2\n"
+                           "store <2 x float> %1, ptr %6\n"
+                           "%q2 = alloca %quat, align 4\n"
+                           "%7 = getelementptr inbounds %quat, ptr %q2, i32 "
+                           "0, i32 0\n"
+                           "store <2 x float> %2, ptr %7\n"
+                           "%8 = getelementptr inbounds %quat, ptr %q2, i32 "
+                           "0, i32 2\n"
+                           "store <2 x float> %3, ptr %8\n";
+    CHECK_EQ(functionBody.str(), expected);
+  }
+  SUBCASE("Calling") {
+    Environment env;
+    env.envType = EnvType::Function;
+    stringstream callSite;
+    auto arg1 = env.makeTemporary(quat);
+    auto arg2 = env.makeTemporary(quat);
+    vector<Reference> args = {
+      Reference(arg1),
+      Reference(arg2),
+    };
+    REQUIRE_EQ(std::get<u32>(arg1.name), 1);
+    REQUIRE_EQ(std::get<u32>(arg2.name), 2);
+    OutContext ctx{.outputFile = callSite, .environment = env};
+    auto returnRegister = callAbiFunctionWithArgs(ctx, function, args);
+    string_view expectedCallSite =
+      "%3 = extractvalue %quat %1, 0\n"
+      "%4 = insertelement <2 x float> undef, float %3, i32 0\n"
+      "%5 = extractvalue %quat %1, 1\n"
+      "%6 = insertelement <2 x float> %4, float %5, i32 1\n"
+      "%7 = extractvalue %quat %1, 2\n"
+      "%8 = insertelement <2 x float> undef, float %7, i32 0\n"
+      "%9 = extractvalue %quat %1, 3\n"
+      "%10 = insertelement <2 x float> %8, float %9, i32 1\n"
+      "%11 = extractvalue %quat %2, 0\n"
+      "%12 = insertelement <2 x float> undef, float %11, i32 0\n"
+      "%13 = extractvalue %quat %2, 1\n"
+      "%14 = insertelement <2 x float> %12, float %13, i32 1\n"
+      "%15 = extractvalue %quat %2, 2\n"
+      "%16 = insertelement <2 x float> undef, float %15, i32 0\n"
+      "%17 = extractvalue %quat %2, 3\n"
+      "%18 = insertelement <2 x float> %16, float %17, i32 1\n"
+      "%19 = call {<2 x float>, <2 x float>} @multiply(<2 x float> %6, <2 x "
+      "float> %10, <2 x float> %14, <2 x float> %18)\n"
+      "%20 = alloca {<2 x float>, <2 x float>}, align 4\n"
+      "store {<2 x float>, <2 x float>} %19, ptr %20\n"
+      "%21 = load %quat, ptr %20\n";
+    CHECK_EQ(returnRegister, 21);
+    CHECK_EQ(callSite.str(), expectedCallSite);
+  }
+}
+
+struct TestVisitor {
+  u32 calledMemory = 0;
+  u32 calledSseLow = 0;
+  u32 calledSseHigh = 0;
+  u32 calledRegister = 0;
+  u32 calledAggregate = 0;
+
+  void memory(TypeIndex t, Sizing size) {
+    calledMemory++;
+  }
+
+  void sseVectorLow(TypeIndex t, Sizing size) {
+    calledSseLow++;
+  }
+
+  void sseVectorHigh(TypeIndex t, Sizing size) {
+    calledSseHigh++;
+  }
+
+  template <AggregateType T>
+  void aggregate(TypeIndex typeIndex, T t, RegisterAssignment& registers) {
+    calledAggregate++;
+    for (auto field : t.fields()) {
+      abiVisit(field, registers, *this);
+    }
+  }
+
+  void inRegister(TypeIndex t, Sizing size) {
+    calledRegister++;
+  }
+};
+
+static_assert(AbiVisitor<TestVisitor>, "...");
+TEST_CASE("Visitor is good") {
+  TestVisitor visitor;
+  auto f32 = Pool()._f32;
+  auto [vec3, _] = Pool().tupleOf({f32, f32, f32});
+  RegisterAssignment registers = Pool().registerStorage(vec3);
+  REQUIRE_EQ(registers.types, 0b010101010101010101010101);
+  abiVisit(vec3, registers, visitor);
+  CHECK_EQ(visitor.calledAggregate, 1);
+  CHECK_EQ(visitor.calledSseLow, 1);
+  CHECK_EQ(visitor.calledSseHigh, 1);
+  CHECK_EQ(visitor.calledRegister, 1);
+  CHECK_EQ(visitor.calledMemory, 0);
 }

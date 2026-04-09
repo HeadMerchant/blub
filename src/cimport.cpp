@@ -139,8 +139,10 @@ u32 longestPrefixEndingIn(std::span<std::string_view> strings, char lastChar) {
 
     for (auto string : strings) {
       if (i >= string.length()) return prevLength;
-      if (string.substr(start, i - prevLength) !=
-          strings[0].substr(start, i - prevLength))
+      if (
+        string.substr(start, i - prevLength) !=
+        strings[0].substr(start, i - prevLength)
+      )
         return prevLength;
     }
     prevLength = i;
@@ -200,7 +202,6 @@ TypeIndex parseRecord(
       }
     }
 
-    Pool().setStructSizing(structIndex);
     Pool().defineLLVMStruct(structIndex, globals);
     resultTypeIndex = typeIndex;
   } else if (tagUsed == "union") {
@@ -227,8 +228,10 @@ TypeIndex parseRecord(
         std::string_view fieldTypeName;
         TypeIndex variantType;
         variant["type"]["qualType"].get(fieldTypeName);
-        if (fieldTypeName.starts_with("union ") ||
-            fieldTypeName.starts_with("struct ")) {
+        if (
+          fieldTypeName.starts_with("union ") ||
+          fieldTypeName.starts_with("struct ")
+        ) {
           if (anonType) {
             variantType = anonType.value();
             anonType = std::nullopt;

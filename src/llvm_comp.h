@@ -75,6 +75,20 @@ struct FunctionStub {
   FunctionType functionType;
 };
 
+struct SwitchCase {
+  stringstream instructions;
+  Reference condition;
+  Reference result;
+  u32 entryBlock;
+  RegisterName exitBlock;
+  struct {
+    bool returns : 1;
+    bool breaks : 1;
+    bool isNamed : 1;
+    bool isDefault : 1;
+  };
+};
+
 class TranslationUnit {
 public:
   std::ofstream& outputFileStream;
@@ -266,8 +280,10 @@ public:
           }
           i++;
         }
-        if (auto forceLiteralsToActualTypes =
-              Pool().isAssignable(type, Pool().infer)) {
+        if (
+          auto forceLiteralsToActualTypes =
+            Pool().isAssignable(type, Pool().infer)
+        ) {
           type = forceLiteralsToActualTypes.value();
         } else {
           crash(
@@ -340,19 +356,6 @@ public:
         );
         auto loadedCondition = toRegister(&condition, outputFile, environment);
         auto caseType = condition.getType();
-        struct SwitchCase {
-          stringstream instructions;
-          Reference condition;
-          Reference result;
-          u32 entryBlock;
-          RegisterName exitBlock;
-          struct {
-            bool returns : 1;
-            bool breaks : 1;
-            bool isNamed : 1;
-            bool isDefault : 1;
-          };
-        };
 
         // TODO: Exhaustiveness checking
         if (auto enumType = Pool().getEnum(caseType)) {
@@ -369,6 +372,7 @@ public:
           environment.addTemporary();
           u32 block = environment.addTemporary();
           environment.basicBlock = block;
+          // Else/default block
           if (condition.value == body.value) {
             hasDefault = true;
             cases.push_back({
@@ -554,9 +558,11 @@ public:
         Reference definition =
           interpret(node.definition, environment, outputFile, context);
 
-        if (StackValue* assignee = std::get_if<StackValue>(
-              &std::get<Reference*>(definition.value)->value
-            )) {
+        if (
+          StackValue* assignee = std::get_if<StackValue>(
+            &std::get<Reference*>(definition.value)->value
+          )
+        ) {
           TypeIndex expectedType = assignee->type;
           StatementContext valueContext{
             .name = std::get<Identifier>(assignee->name),
@@ -634,9 +640,11 @@ public:
       if (node.type.has_value()) {
         StatementContext ctx(context);
         ctx.expectedType = std::nullopt;
-        if (auto typeIndex =
-              interpret(node.type.value(), environment, outputFile, ctx)
-                .unboxType()) {
+        if (
+          auto typeIndex =
+            interpret(node.type.value(), environment, outputFile, ctx)
+              .unboxType()
+        ) {
           type = *typeIndex;
         } else {
           crash(
@@ -1447,8 +1455,10 @@ public:
           log("impl {}.{} = {}", TypeName(targetType), name, value);
           if (implEnv.defs.contains(name))
             crash(nameToken, "Duplicate member in impl block '{}'", name);
-          if (parser.getToken(index)->type != TokenType::Colon ||
-              !value.isComptime())
+          if (
+            parser.getToken(index)->type != TokenType::Colon ||
+            !value.isComptime()
+          )
             crash(index, "TODO: non-comptime values");
           implEnv.define(name, value);
         }
@@ -1617,11 +1627,14 @@ public:
 
             if (Pool().isFloat(objectType) && Pool().isFloat(targetType)) {
               typePrefix = "fp";
-            } else if (Pool().isSignedInt(objectType) &&
-                       Pool().isSignedInt(objectType)) {
+            } else if (
+              Pool().isSignedInt(objectType) && Pool().isSignedInt(objectType)
+            ) {
               typePrefix = isTrunc ? "" : "s";
-            } else if (Pool().isUnsignedInt(objectType) &&
-                       Pool().isUnsignedInt(targetType)) {
+            } else if (
+              Pool().isUnsignedInt(objectType) &&
+              Pool().isUnsignedInt(targetType)
+            ) {
               typePrefix = isTrunc ? "" : "z";
             } else {
               crash(
@@ -1760,8 +1773,10 @@ public:
             return Reference::Void();
           }
           case TokenType::BUILTIN_CInclude: {
-            if (argumentNodes.size() == 1 &&
-                parser.nodeType(argumentNodes[0]) == NodeType::Literal) {
+            if (
+              argumentNodes.size() == 1 &&
+              parser.nodeType(argumentNodes[0]) == NodeType::Literal
+            ) {
               auto fileName =
                 parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
               CompilerContext::inst().c.clangArgs.push_back("-include");
@@ -1777,8 +1792,10 @@ public:
             return Reference::Void();
           }
           case TokenType::BUILTIN_CIncludeDir: {
-            if (argumentNodes.size() == 1 &&
-                parser.nodeType(argumentNodes[0]) == NodeType::Literal) {
+            if (
+              argumentNodes.size() == 1 &&
+              parser.nodeType(argumentNodes[0]) == NodeType::Literal
+            ) {
               auto fileName =
                 parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
               CompilerContext::inst().c.clangArgs.push_back(
@@ -1793,8 +1810,10 @@ public:
             return Reference::Void();
           }
           case TokenType::BUILTIN_Link: {
-            if (argumentNodes.size() == 1 &&
-                parser.nodeType(argumentNodes[0]) == NodeType::Literal) {
+            if (
+              argumentNodes.size() == 1 &&
+              parser.nodeType(argumentNodes[0]) == NodeType::Literal
+            ) {
               auto libName =
                 parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
               CompilerContext::inst().c.linkedLibraries.push_back(
@@ -1809,8 +1828,10 @@ public:
             return Reference::Void();
           }
           case TokenType::BUILTIN_LinkDir: {
-            if (argumentNodes.size() == 1 &&
-                parser.nodeType(argumentNodes[0]) == NodeType::Literal) {
+            if (
+              argumentNodes.size() == 1 &&
+              parser.nodeType(argumentNodes[0]) == NodeType::Literal
+            ) {
               auto libName =
                 parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
               CompilerContext::inst().c.linkedLibraries.push_back(
@@ -2091,7 +2112,7 @@ public:
           if (registers.isMemory()) {
             fmt::println(
               outputFile,
-              "store {} {}, ptr %return\nret void",
+              "store {} {}, ptr %0\nret void",
               LlvmName(returnType),
               loadedValue
             );
@@ -2186,24 +2207,21 @@ public:
       auto loadedCondition = toRegister(&condition, outputFile, environment);
 
       auto comptime = condition.isComptime();
-      auto blockIndex = environment.addTemporary();
-      auto resultVariable = Reference(StackValue(blockIndex));
-      auto ifLabel = environment.addLabel("if", blockIndex);
-      auto endLabel = environment.addLabel("endif", blockIndex);
-      auto elseLabel = environment.addLabel("else", blockIndex);
-
-      // If
       std::stringstream ifInstruction;
+      u32 ifLabel = environment.addTemporary();
       if (!comptime) {
-        ifInstruction << ifLabel << ":\n";
+        fmt::println(ifInstruction, "{}:", ifLabel);
       }
       environment.basicBlock = ifLabel;
-      auto ifResult =
-        interpret(node.value, environment, ifInstruction, context);
-      auto ifReturns = environment.hasReturned;
-      auto ifBlock = environment.basicBlock;
+      SwitchCase ifCase{
+        .result = interpret(node.value, environment, ifInstruction, context),
+        .entryBlock = ifLabel,
+        .exitBlock = environment.basicBlock,
+        .returns = environment.hasReturned,
+      };
+      u32 loadedIf = environment.addTemporary();
       environment.hasReturned = false;
-      std::optional<TypeIndex> resultType = ifResult.getType();
+      std::optional<TypeIndex> resultType = ifCase.result.getType();
 
       // Else
       auto hasElse = node.elseValue.has_value();
@@ -2212,21 +2230,24 @@ public:
       if (!context.expectedType) {
         elseContext.expectedType = resultType;
       }
+      u32 elseLabel = hasElse ? environment.addTemporary() : 0;
+      if (hasElse) fmt::println(elseInstruction, "{}:", elseLabel);
       environment.basicBlock = elseLabel;
-      Reference elseResult = node.elseValue.has_value()
-                               ? interpret(
-                                   node.elseValue.value(),
-                                   environment,
-                                   elseInstruction,
-                                   elseContext
-                                 )
-                               : Reference::Void();
-      auto elseReturns = environment.hasReturned;
-      environment.hasReturned = false;
-      auto elseBlock = environment.basicBlock;
+      SwitchCase elseCase = hasElse ? SwitchCase{
+        .result = interpret(
+          *node.elseValue,
+          environment,
+          elseInstruction,
+          elseContext
+        ),
+        .entryBlock = elseLabel,
+        .exitBlock = environment.basicBlock,
+        .returns = environment.hasReturned,
+      } : SwitchCase();
+      environment.hasReturned = ifCase.returns && elseCase.returns;
 
       if (hasElse && resultType) {
-        auto elseType = elseResult.getType();
+        auto elseType = elseCase.result.getType();
         log("Result type: {}", TypeName(*resultType));
         resultType = Pool().coerce(*resultType, elseType);
         log("Result type 2: {}", TypeName(*resultType));
@@ -2240,16 +2261,17 @@ public:
         auto conditionValue = condition.unboxBool().value();
         if (conditionValue) {
           outputFile << ifInstruction.str();
-          environment.hasReturned = ifReturns;
-          return ifResult;
+          environment.hasReturned = ifCase.returns;
+          return ifCase.result;
         } else {
           outputFile << elseInstruction.str();
-          environment.hasReturned = elseReturns;
-          return elseResult;
+          environment.hasReturned = elseCase.returns;
+          return elseCase.result;
         }
       }
 
-      if (node.elseValue.has_value()) {
+      u32 endLabel;
+      if (hasElse) {
         fmt::println(
           outputFile,
           "br i1 {}, label %{}, label %{}",
@@ -2257,16 +2279,41 @@ public:
           ifLabel,
           elseLabel
         );
+        bool lValueIf = ifCase.result.lValue().has_value();
+        bool lValueElse = elseCase.result.lValue().has_value();
+        bool useRValue = !(lValueIf && lValueElse) && resultType.has_value();
         outputFile << ifInstruction.str();
-        if (!ifReturns) {
+        if (useRValue && lValueIf) {
+          fmt::println(
+            outputFile,
+            "%{} = load {}, ptr {}",
+            loadedIf,
+            LlvmName(*resultType),
+            ifCase.result
+          );
+          ifCase.result.value = RegisterValue(loadedIf, *resultType);
+        }
+        if (useRValue && lValueElse) {
+          u32 loadedElse = environment.addTemporary();
+          fmt::println(
+            elseInstruction,
+            "%{} = load {}, ptr {}",
+            loadedElse,
+            LlvmName(*resultType),
+            elseCase.result
+          );
+          elseCase.result.value = RegisterValue(loadedElse, *resultType);
+        }
+        endLabel = environment.addTemporary();
+        if (!ifCase.returns) {
           fmt::println(outputFile, "br label %{}", endLabel);
         }
-        fmt::println(outputFile, "{}:", elseLabel);
         outputFile << elseInstruction.str();
-        if (!elseReturns) {
+        if (!elseCase.returns) {
           fmt::println(outputFile, "br label %{}", endLabel);
         }
       } else {
+        endLabel = environment.addTemporary();
         fmt::println(
           outputFile,
           "br i1 {}, label %{}, label %{}",
@@ -2275,15 +2322,13 @@ public:
           endLabel
         );
         outputFile << ifInstruction.str();
-        if (!ifReturns) {
+        if (!ifCase.returns) {
           fmt::println(outputFile, "br label %{}", endLabel);
         }
       }
+      environment.basicBlock = endLabel;
 
-      // TODO: when does this need to be copied?
-      environment.basicBlock = StringPool::inst().copy(endLabel);
-
-      if (ifReturns && elseReturns) {
+      if (ifCase.returns && elseCase.returns) {
         environment.hasReturned = true;
         return Reference(Never{});
       }
@@ -2292,28 +2337,33 @@ public:
 
       if (resultType && resultType != Pool()._void) {
         auto type = resultType.value();
-        auto phiResult = Reference(environment.makeTemporary(type));
+        bool lValue = ifCase.result.lValue().has_value() &&
+                      elseCase.result.lValue().has_value();
+        auto phiResult =
+          lValue ? Reference(StackValue(environment.addTemporary(), type))
+                 : Reference(environment.makeTemporary(type));
+        LlvmName typeName(lValue ? Pool().pointerTo(Pool()._void) : type);
         if (auto floatType = Pool().unbox<Float>(type)) {
           fmt::println(
             outputFile,
-            "{}  = phi {} [{}, %{}], [{}, %{}]",
+            "{} = phi {} [{}, %{}], [{}, %{}]",
             phiResult,
-            LlvmName(type),
-            ifResult.coerceFloat(floatType->precision),
-            ifBlock,
-            elseResult.coerceFloat(floatType->precision),
-            elseBlock
+            typeName,
+            ifCase.result.coerceFloat(floatType->precision),
+            ifCase.exitBlock,
+            elseCase.result.coerceFloat(floatType->precision),
+            elseCase.exitBlock
           );
         } else {
           fmt::println(
             outputFile,
             "{}  = phi {} [{}, %{}], [{}, %{}]",
             phiResult,
-            LlvmName(type),
-            ifResult,
-            ifBlock,
-            elseResult,
-            elseBlock
+            typeName,
+            ifCase.result,
+            ifCase.exitBlock,
+            elseCase.result,
+            elseCase.exitBlock
           );
         }
         return phiResult;
@@ -2528,8 +2578,10 @@ public:
 
       if (auto range = iterator.unbox<Range>()) {
         TODO("Range iterators");
-      } else if (auto type = iterator.getType();
-                 auto elementType = Pool().sliceElementType(type)) {
+      } else if (
+        auto type = iterator.getType();
+        auto elementType = Pool().sliceElementType(type)
+      ) {
         fmt::println(outputFile, "{}:", loopHeader);
 
         auto sliceRegister = toRegister(&iterator, outputFile, environment);
@@ -2659,8 +2711,9 @@ public:
             TypeName(*type)
           );
         }
-      } else if (auto methodTest =
-                   environment.getStatic(objectType, "multiply")) {
+      } else if (
+        auto methodTest = environment.getStatic(objectType, "multiply")
+      ) {
         // TODO: calling multiply method in arithmeticOperation
         auto lValue = object.lValue();
         if (!lValue) TODO("Calling methods on non-lvalues");
@@ -3039,8 +3092,9 @@ public:
     std::ostream& outputFile
   ) {
     auto usize = Pool()._usize;
-    if (auto type = index.getType();
-        Pool().isUnsignedInt(type) && type != usize) {
+    if (
+      auto type = index.getType(); Pool().isUnsignedInt(type) && type != usize
+    ) {
       auto extended = environment.makeTemporary(Pool()._usize);
       fmt::println(
         outputFile,
@@ -3450,8 +3504,7 @@ public:
     Function function(stub.functionType, stub.name);
 
     auto declarationResult = declareParamRegisters(instruction, function);
-    functionEnvironment.nextTemporary =
-      declarationResult.lastParameterRegister + 1;
+    functionEnvironment.nextTemporary = declarationResult.entryLabel + 1;
     auto node = parser.getFunctionLiteral(stub.definitionNode);
     auto parameters = parser.getParameterList(node.parameters);
 
@@ -3676,14 +3729,18 @@ public:
     std::string binaryOperator;
     switch (opType) {
     case TokenType::Plus: {
-      if (auto left = leftLiteral.unbox<IntLiteral>(),
-          right = rightLiteral.unbox<IntLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<IntLiteral>(),
+        right = rightLiteral.unbox<IntLiteral>();
+        left && right
+      ) {
         return Reference(IntLiteral(left->value + right->value));
       }
-      if (auto left = leftLiteral.unbox<FloatLiteral>(),
-          right = rightLiteral.unbox<FloatLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<FloatLiteral>(),
+        right = rightLiteral.unbox<FloatLiteral>();
+        left && right
+      ) {
         return Reference(FloatLiteral(left->value + right->value));
       }
       if (Pool().isInt(operandType)) binaryOperator = "add";
@@ -3692,14 +3749,18 @@ public:
       break;
     }
     case TokenType::Minus: {
-      if (auto left = leftLiteral.unbox<IntLiteral>(),
-          right = rightLiteral.unbox<IntLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<IntLiteral>(),
+        right = rightLiteral.unbox<IntLiteral>();
+        left && right
+      ) {
         return Reference(IntLiteral(left->value - right->value));
       }
-      if (auto left = leftLiteral.unbox<FloatLiteral>(),
-          right = rightLiteral.unbox<FloatLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<FloatLiteral>(),
+        right = rightLiteral.unbox<FloatLiteral>();
+        left && right
+      ) {
         return Reference(FloatLiteral(left->value - right->value));
       }
       if (Pool().isInt(operandType)) binaryOperator = "sub";
@@ -3708,14 +3769,18 @@ public:
       break;
     }
     case TokenType::Div: {
-      if (auto left = leftLiteral.unbox<IntLiteral>(),
-          right = rightLiteral.unbox<IntLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<IntLiteral>(),
+        right = rightLiteral.unbox<IntLiteral>();
+        left && right
+      ) {
         return Reference(IntLiteral(left->value / right->value));
       }
-      if (auto left = leftLiteral.unbox<FloatLiteral>(),
-          right = rightLiteral.unbox<FloatLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<FloatLiteral>(),
+        right = rightLiteral.unbox<FloatLiteral>();
+        left && right
+      ) {
         return Reference(FloatLiteral(left->value / right->value));
       }
       if (Pool().isSignedInt(operandType)) binaryOperator = "sdiv";
@@ -3730,15 +3795,19 @@ public:
       fmt::println("Multiplying b:");
       parser.locationOf(node.right).underline(std::cout);
 
-      if (auto left = leftLiteral.unbox<IntLiteral>(),
-          right = rightLiteral.unbox<IntLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<IntLiteral>(),
+        right = rightLiteral.unbox<IntLiteral>();
+        left && right
+      ) {
         fmt::println("Two int literals");
         return Reference(IntLiteral(left->value * right->value));
       }
-      if (auto left = leftLiteral.unbox<FloatLiteral>(),
-          right = rightLiteral.unbox<FloatLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<FloatLiteral>(),
+        right = rightLiteral.unbox<FloatLiteral>();
+        left && right
+      ) {
         fmt::println("Two float literals");
         return Reference(FloatLiteral(left->value * right->value));
       }
@@ -3749,14 +3818,18 @@ public:
       break;
     }
     case TokenType::Remainder: {
-      if (auto left = leftLiteral.unbox<IntLiteral>(),
-          right = rightLiteral.unbox<IntLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<IntLiteral>(),
+        right = rightLiteral.unbox<IntLiteral>();
+        left && right
+      ) {
         return Reference(IntLiteral(left->value % right->value));
       }
-      if (auto left = leftLiteral.unbox<FloatLiteral>(),
-          right = rightLiteral.unbox<FloatLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<FloatLiteral>(),
+        right = rightLiteral.unbox<FloatLiteral>();
+        left && right
+      ) {
         auto result = std::remainder(left->value, right->value);
         return Reference(FloatLiteral(result));
       }
@@ -3767,14 +3840,18 @@ public:
       break;
     }
     case TokenType::Lt: {
-      if (auto left = leftLiteral.unbox<IntLiteral>(),
-          right = rightLiteral.unbox<IntLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<IntLiteral>(),
+        right = rightLiteral.unbox<IntLiteral>();
+        left && right
+      ) {
         return Reference(left->value < right->value);
       }
-      if (auto left = leftLiteral.unbox<FloatLiteral>(),
-          right = rightLiteral.unbox<FloatLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<FloatLiteral>(),
+        right = rightLiteral.unbox<FloatLiteral>();
+        left && right
+      ) {
         return Reference(left->value < right->value);
       }
       resultType = Pool()._bool;
@@ -3785,14 +3862,18 @@ public:
       break;
     }
     case TokenType::Gt: {
-      if (auto left = leftLiteral.unbox<IntLiteral>(),
-          right = rightLiteral.unbox<IntLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<IntLiteral>(),
+        right = rightLiteral.unbox<IntLiteral>();
+        left && right
+      ) {
         return Reference(left->value > right->value);
       }
-      if (auto left = leftLiteral.unbox<FloatLiteral>(),
-          right = rightLiteral.unbox<FloatLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<FloatLiteral>(),
+        right = rightLiteral.unbox<FloatLiteral>();
+        left && right
+      ) {
         return Reference(left->value > right->value);
       }
       resultType = Pool()._bool;
@@ -3803,14 +3884,18 @@ public:
       break;
     }
     case TokenType::Leq: {
-      if (auto left = leftLiteral.unbox<IntLiteral>(),
-          right = rightLiteral.unbox<IntLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<IntLiteral>(),
+        right = rightLiteral.unbox<IntLiteral>();
+        left && right
+      ) {
         return Reference(left->value <= right->value);
       }
-      if (auto left = leftLiteral.unbox<FloatLiteral>(),
-          right = rightLiteral.unbox<FloatLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<FloatLiteral>(),
+        right = rightLiteral.unbox<FloatLiteral>();
+        left && right
+      ) {
         return Reference(left->value <= right->value);
       }
       resultType = Pool()._bool;
@@ -3821,14 +3906,18 @@ public:
       break;
     }
     case TokenType::Geq: {
-      if (auto left = leftLiteral.unbox<IntLiteral>(),
-          right = rightLiteral.unbox<IntLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<IntLiteral>(),
+        right = rightLiteral.unbox<IntLiteral>();
+        left && right
+      ) {
         return Reference(left->value >= right->value);
       }
-      if (auto left = leftLiteral.unbox<FloatLiteral>(),
-          right = rightLiteral.unbox<FloatLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<FloatLiteral>(),
+        right = rightLiteral.unbox<FloatLiteral>();
+        left && right
+      ) {
         return Reference(left->value >= right->value);
       }
       resultType = Pool()._bool;
@@ -3839,14 +3928,18 @@ public:
       break;
     }
     case TokenType::DoubleEqual: {
-      if (auto left = leftLiteral.unbox<IntLiteral>(),
-          right = rightLiteral.unbox<IntLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<IntLiteral>(),
+        right = rightLiteral.unbox<IntLiteral>();
+        left && right
+      ) {
         return Reference(left->value == right->value);
       }
-      if (auto left = leftLiteral.unbox<FloatLiteral>(),
-          right = rightLiteral.unbox<FloatLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<FloatLiteral>(),
+        right = rightLiteral.unbox<FloatLiteral>();
+        left && right
+      ) {
         return Reference(left->value == right->value);
       }
       resultType = Pool()._bool;
@@ -3866,14 +3959,18 @@ public:
       break;
     }
     case TokenType::NotEqual: {
-      if (auto left = leftLiteral.unbox<IntLiteral>(),
-          right = rightLiteral.unbox<IntLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<IntLiteral>(),
+        right = rightLiteral.unbox<IntLiteral>();
+        left && right
+      ) {
         return Reference(left->value != right->value);
       }
-      if (auto left = leftLiteral.unbox<FloatLiteral>(),
-          right = rightLiteral.unbox<FloatLiteral>();
-          left && right) {
+      if (
+        auto left = leftLiteral.unbox<FloatLiteral>(),
+        right = rightLiteral.unbox<FloatLiteral>();
+        left && right
+      ) {
         return Reference(left->value != right->value);
       }
       resultType = Pool()._bool;
@@ -3959,8 +4056,13 @@ public:
 
     OutContext callCtx{.outputFile = outputFile, .environment = environment};
 
+    vector<Reference> loadedArgs;
+    loadedArgs.reserve(arguments.size());
+    for (auto& arg : arguments) {
+      loadedArgs.push_back(toRegister(&arg, outputFile, environment));
+    }
     // TODO: ZST
-    u32 resultRegister = callAbiFunctionWithArgs(callCtx, *func, arguments);
+    u32 resultRegister = callAbiFunctionWithArgs(callCtx, *func, loadedArgs);
     if (Pool().isVoid(func->type.returnType)) {
       return Reference::Void();
     }
@@ -4001,8 +4103,10 @@ public:
         if (selfType == type) {
           return function;
         }
-        if (auto ptrType = Pool().dereference(selfType);
-            ptrType && type == *ptrType) {
+        if (
+          auto ptrType = Pool().dereference(selfType);
+          ptrType && type == *ptrType
+        ) {
           TODO("Calling methods on pointers");
         }
 

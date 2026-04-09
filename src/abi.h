@@ -6,7 +6,7 @@
 // Returns how many llvm registers are used for parameters
 struct DeclarationResult {
   std::string aggregateReturnTypeName;
-  u32 lastParameterRegister;
+  u32 entryLabel;
 };
 DeclarationResult declareParamRegisters(
   std::ostream& outputFile,

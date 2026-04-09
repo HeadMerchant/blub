@@ -1,8 +1,9 @@
-#include "types.h"
 #include "abi.h"
 #include "common.h"
 #include "fmt/format.h"
+#include "types.h"
 #include <ranges>
+#include <stdexcept>
 
 Logger logger(LogLevel::Compile);
 
@@ -94,19 +95,18 @@ void TypePool::registerStorage(
   }
 
   auto type = getType(typeIndex);
-  auto startLength = assignment.length;
   std::visit(
     overloaded{
       [&]<IntRegister T>(T) {
         assignment.push(RegisterType::Int, sizing.byteSize);
       },
-      [&](Float x) { assignment.push(RegisterType::Float, x.byteSize()); },
+      [&](Float x) { assignment.push(RegisterType::Float, sizing.byteSize); },
       [&]<AggregateType T>(T x) {
         for (auto element : x.fields()) {
           registerStorage(element, assignment);
         }
       },
-      [&](EnumIndex x) { registerStorage(getEnum(x).rawType, assignment); },
+      [&]<RecursiveType T>(T x) { registerStorage(x.rawType(), assignment); },
       [&](auto x) {
         fmt::println(
           "Error for trying to get storage type for type that can't be passed: "
@@ -121,9 +121,6 @@ void TypePool::registerStorage(
     },
     type
   );
-  if (!assignment.isMemory()) {
-    assert(assignment.length - startLength == sizing.byteSize);
-  }
 }
 
 void TypeIndex::debug() {

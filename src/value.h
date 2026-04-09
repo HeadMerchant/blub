@@ -418,13 +418,13 @@ public:
   std::vector<Environment*> usings;
   EnvType envType;
 
-  u32 nextTemporary = 0;
+  u32 nextTemporary = 1;
   u32 lastTemporary() {
     return nextTemporary - 1;
   }
   bool quotePrefixedNames;
   static u32 nextGlobalTemporary;
-  RegisterName basicBlock;
+  u32 basicBlock;
   bool hasReturned = false;
 
   Environment* parent;
@@ -433,9 +433,9 @@ public:
   struct Impls {
     WitnessTable witnesses;
 
-    ~Impls() {
-      fmt::println("killing witnesses");
-    }
+    // ~Impls() {
+    //   fmt::println("killing witnesses");
+    // }
   };
   Impls impls;
   vector<Impls*> importedImpls;

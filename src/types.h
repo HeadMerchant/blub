@@ -196,7 +196,6 @@ struct Struct {
   // SymbolMap statics;
   std::string name;
   std::string llvmName;
-  Sizing sizing;
   std::vector<TypeIndex> fieldTypes;
 
   Struct(std::string name, std::string llvmName)
@@ -589,8 +588,10 @@ public:
     auto type = coerce(valueIndex, targetIndex);
     if (!type.has_value()) return std::nullopt;
 
-    if (std::holds_alternative<Infer>(valueType) ||
-        std::holds_alternative<VoidType>(valueType)) {
+    if (
+      std::holds_alternative<Infer>(valueType) ||
+      std::holds_alternative<VoidType>(valueType)
+    ) {
       return std::nullopt;
     }
 
@@ -799,8 +800,9 @@ public:
         [](Pointer x) { return Sizing::fromBitSize(64); },
         [](MultiPointer x) { return Sizing::fromBitSize(64); },
         [](Slice x) { return Sizing::alignToPointer(2 * 8); },
-        [this](StructIndex x) { return structPool[x.value].sizing; },
-        [this](TupleIndex x) { return tuplePool[x.value].sizing; },
+        // [this]<AggregateType T>(T x) { return getSizing() },
+        [this](StructIndex x) { return getSizing(getStruct(x).fieldTypes); },
+        [this](TupleIndex x) { return getSizing(tupleElements(x)); },
         [this](EnumIndex x) { return getSizing(enumPool[x.value].rawType); },
         [](FunctionType x) { return Sizing::fromBitSize(64); },
         [](Infer x) {
@@ -973,15 +975,6 @@ public:
       return parentVal->dereferencedType == _void && isAny<MultiPointer>(child);
     }
     return false;
-  }
-
-  void setStructSizing(StructIndex type) {
-    Struct& structDefinition = getStruct(type);
-    std::vector<TypeIndex> fieldTypes;
-    for (auto [_, field] : structDefinition.fields) {
-      fieldTypes.push_back(field.type);
-    }
-    structDefinition.sizing = getSizing(TypeSpan(fieldTypes));
   }
 
   TypeIndex alignType(TypeIndex baseType, Log2Alignment alignment) {

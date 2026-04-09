@@ -72,7 +72,7 @@ private:
   }
 
 public:
-  RegisterType typeAt(char i = 0) const {
+  RegisterType typeAt(s8 i = 0) const {
     assert(readIndex + i >= 0);
     if (i < length) {
       return get(readIndex + i);
@@ -115,7 +115,7 @@ private:
 public:
   bool allInt(u8 endIndex = maxLength) const {
     if (!types) return false;
-    for (auto i = readIndex; i < endIndex; i++) {
+    for (auto i = 0; i < endIndex; i++) {
       auto type = get(i);
       if (type == RegisterType::NONE) {
         break;
@@ -148,7 +148,7 @@ public:
       assert(maxValue <= mask);
       RegisterType type = (RegisterType)maxValue;
       if (type == RegisterType::NONE) continue;
-      for (u32 j = i; j < i + abiByteStride; j++) {
+      for (u32 j = i; j < i + abiByteStride && j < length; j++) {
         if (get(j) == RegisterType::NONE) break;
         result.set(j, type);
       }
@@ -257,5 +257,27 @@ TEST_CASE("Dominate SSE") {
     CHECK_EQ(registers.pop(), RegisterType::Float);
     CHECK_EQ(dominated.pop(), RegisterType::Int);
     CHECK_EQ(dominated.pop(), RegisterType::Int);
+  }
+}
+
+TEST_CASE("SSE Vector Offsets Correct") {
+  RegisterAssignment registers;
+  registers.push(RegisterType::Float, 12);
+  u8 byteSize = 4;
+  SUBCASE("Vector low bytes") {
+    CHECK(registers.typeAt() == RegisterType::Float);
+  }
+
+  SUBCASE("Vector high bytes") {
+    registers.pop(byteSize);
+    REQUIRE_EQ(registers.readIndex, byteSize);
+    REQUIRE_EQ(registers.typeAt(), RegisterType::Float);
+  }
+
+  SUBCASE("Float goes in register") {
+    registers.pop(byteSize);
+    registers.pop(byteSize);
+    REQUIRE_EQ(registers.readIndex, 2 * byteSize);
+    REQUIRE_EQ(registers.typeAt(), RegisterType::Float);
   }
 }
