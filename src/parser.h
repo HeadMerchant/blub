@@ -943,6 +943,12 @@ public:
            )}
         );
         expr = addNode(node, token);
+      } else if (auto token = match(TokenType::MultiPointer)) {
+        auto node = Encodings::UnaryOp{
+          .operand = expr,
+          .operation = UnaryOps::MultiPointerFrom
+        };
+        expr = addNode(node, token);
       } else {
         break;
       }
@@ -1003,8 +1009,10 @@ public:
       acceptN(TokenType::StatementBreak);
     }
 
-    if (canBeUsedAsGrouping && requiredInputs.size() == 1 &&
-        optionalInputs.empty()) {
+    if (
+      canBeUsedAsGrouping && requiredInputs.size() == 1 &&
+      optionalInputs.empty()
+    ) {
       return requiredInputs[0];
     }
 
@@ -1142,8 +1150,7 @@ public:
       );
       bool hasMultiple = false;
       while (
-        !acceptUntil(TokenType::StatementBreak, TokenType::RightCurlyBrace)
-      ) {
+        !acceptUntil(TokenType::StatementBreak, TokenType::RightCurlyBrace)) {
         if (hasMultiple) {
           consumeN(
             TokenType::StatementBreak,
@@ -1162,8 +1169,10 @@ public:
         cases.push_back(caseCondition);
         cases.push_back(caseBody);
 
-        if (auto elseToken =
-              acceptUntil(TokenType::StatementBreak, TokenType::Else)) {
+        if (
+          auto elseToken =
+            acceptUntil(TokenType::StatementBreak, TokenType::Else)
+        ) {
           // Use fat arrow to diambiguate against if/else from previous case
           consume(
             TokenType::FatArrow,
@@ -1315,9 +1324,11 @@ public:
 
       // Disambiguate when/else
       auto lastToken = current;
-      if (auto elseToken =
-            acceptUntil(TokenType::StatementBreak, TokenType::Else);
-          elseToken && !check(TokenType::FatArrow)) {
+      if (
+        auto elseToken =
+          acceptUntil(TokenType::StatementBreak, TokenType::Else);
+        elseToken && !check(TokenType::FatArrow)
+      ) {
         elseNode = assignment();
       } else {
         current = lastToken;
@@ -1379,8 +1390,10 @@ public:
           items.push_back(expression());
 
           // Sized array
-          if (items.size() == 1 && check(TokenType::RightSquareBracket) &&
-              !peek({1}).isClosingToken()) {
+          if (
+            items.size() == 1 && check(TokenType::RightSquareBracket) &&
+            !peek({1}).isClosingToken()
+          ) {
             advance();
             NodeIndex elementType = expression();
             return addNode(

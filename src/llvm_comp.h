@@ -1962,6 +1962,7 @@ public:
         auto value = interpret(node.operand, environment, outputFile, context);
         auto type = value.getType();
         if (auto sizedArray = Pool().sizedArray(type)) {
+          auto lValue = value.lValue();
           if (!value.lValue()) {
             crash(
               nodeIndex,
@@ -1969,9 +1970,7 @@ public:
             );
           }
           auto type = Pool().multiPointerTo(sizedArray->dereferencedType);
-          auto multiPointer = environment.makeTemporary(type);
-          fmt::println(outputFile, "{} = ptr {}", multiPointer, value);
-          return Reference(multiPointer);
+          return Reference(RegisterValue(lValue->name, type, lValue->scope));
         } else if (auto elementType = Pool().sliceElementType(type)) {
           auto slicedObj = toRegister(&value, outputFile, environment);
           auto loadedSlice = *slicedObj.unbox<RegisterValue>();
@@ -1984,6 +1983,7 @@ public:
             LlvmName(multiPointerType),
             loadedSlice
           );
+          TODO("Multipointer from slice");
         } else {
           crash(
             nodeIndex,

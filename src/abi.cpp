@@ -40,8 +40,13 @@ void abiVisit(TypeIndex typeIndex, RegisterAssignment& registers, T& visitor) {
     overloaded{
       [&]<IntRegister I>(I x) { assert(false); },
       [&](Float x) {
-        if (x.precision != Float::f32) {
-          TODO("Declaring non-f32 floats in parameters");
+        if (x.precision == Float::f16) {
+          TODO("Declaring f16 floats in parameters");
+        }
+        if (x.precision == Float::f64) {
+          visitor.inRegister(typeIndex, sizing);
+          registers.pop(x.byteSize());
+          return;
         }
         u32 byteSize = x.byteSize();
         bool isFloat = registers.typeAt() == RegisterType::Float;
@@ -195,8 +200,8 @@ struct LoadParameterVisitor {
       ctx.outputFile,
       "call void @llvm.memcpy.p0.p0.i8(ptr %{}, ptr %{}, i64 {}, i1 false)",
       stackPointer,
-      sizing.byteSize,
-      registerIndex
+      registerIndex,
+      sizing.byteSize
     );
     // High-key byteIndex doesn't matter
     registerIndex++;
@@ -705,6 +710,69 @@ TEST_CASE("Returning SSE") {
       "store {<2 x float>, <2 x float>} %19, ptr %20\n"
       "%21 = load %quat, ptr %20\n";
     CHECK_EQ(returnRegister, 21);
+    CHECK_EQ(callSite.str(), expectedCallSite);
+  }
+}
+
+TEST_CASE("Passing in memory") {
+  TypeIndex f32 = Pool()._f32;
+
+  // auto matrix = ;
+  auto [matrix, structIndex] = Pool().makeStruct("", "%mat");
+  Pool().getStruct(structIndex).fieldTypes = {Pool().sizedArrayOf(f32, 16)};
+  TupleIndex paramTuple =
+    Pool().tupleOf({matrix, Pool().sizedArrayOf(Pool()._s16, 8)}).second;
+  Function function{
+    .type = FunctionType{.parameters = paramTuple, .returnType = matrix},
+    .globalName = "@multiply"
+  };
+  SUBCASE("Declaration") {
+    string_view expected = "void @multiply(ptr sret(%mat) align 4, ptr noundef "
+                           "byval(%mat) align 4, [8 x i16])";
+    stringstream declaration;
+    auto declarationResult = declareParamRegisters(declaration, function);
+    CHECK_EQ(declaration.str(), expected);
+    CHECK_EQ(declarationResult.entryLabel, 3);
+  }
+  SUBCASE("Loading") {
+    stringstream functionBody;
+    Environment env;
+    u32 nextTemporary = 7;
+    env.nextTemporary = nextTemporary;
+    env.envType = EnvType::Function;
+    OutContext ctx{.outputFile = functionBody, .environment = env};
+    vector<Identifier> paramNames = {"q1", "q2"};
+    loadParameterRegisters(ctx, function.type, paramNames);
+    string_view expected =
+      "%q1 = alloca %mat, align 4\n"
+      "call void @llvm.memcpy.p0.p0.i8(ptr %q1, ptr %1, i64 64, i1 false)\n"
+      "%q2 = alloca [8 x i16], align 2\n"
+      "store [8 x i16] %2, ptr %q2\n";
+    CHECK_EQ(functionBody.str(), expected);
+    CHECK_EQ(env.nextTemporary, nextTemporary);
+  }
+  SUBCASE("Calling") {
+    Environment env;
+    env.envType = EnvType::Function;
+    stringstream callSite;
+    auto arg1 = env.makeTemporary(matrix);
+    auto arg2 = env.makeTemporary(matrix);
+    vector<Reference> args = {
+      Reference(arg1),
+      Reference(arg2),
+    };
+    REQUIRE_EQ(std::get<u32>(arg1.name), 1);
+    REQUIRE_EQ(std::get<u32>(arg2.name), 2);
+    OutContext ctx{.outputFile = callSite, .environment = env};
+    auto returnRegister = callAbiFunctionWithArgs(ctx, function, args);
+    string_view expectedCallSite =
+      "%3 = alloca %mat, align 4\n"
+      "%4 = alloca %mat, align 4\n"
+      "store %mat %1, ptr %4\n"
+      "call void @multiply(ptr sret(%mat) align 4 %3, ptr noundef byval(%mat) "
+      "align 4 %4, [8 x i16] %2)\n"
+      "%5 = load %mat, ptr %3\n";
+    CHECK_EQ(returnRegister, 5);
     CHECK_EQ(callSite.str(), expectedCallSite);
   }
 }

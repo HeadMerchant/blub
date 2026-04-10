@@ -99,8 +99,20 @@ int main(int argc, char** argv) {
     "declare void @llvm.trap() nounwind\n"
     "%.ctor = type { i32, ptr, ptr }\n"
     "@llvm.global_ctors = appending global [1 x %.ctor] [%.ctor { i32 65535, "
-    "ptr @.ctor, ptr null }]\n";
+    "ptr @.ctor, ptr null }]\n"
+    "@.doubleFmtString = global [3 x i8] c\"%f\\00\" align 1\n";
   outFile << preamble;
+  // TODO: 32-bit
+  std::string_view printDouble =
+    "declare i32 @snprintf(ptr, i64, ptr, ...)\n"
+    "define void @.doubleToStr(ptr %out, i64 %len, double %arg) {\n"
+    "  %res = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %out, i64 %len, ptr "
+    "@.doubleFmtString, double "
+    "%arg)\n"
+    "  ret void\n"
+    "}\n";
+  outFile << printDouble;
+
   TranslationUnit::compile(sourceFile, outFile, TargetType::Cpu);
   outFile << "define void @.ctor() {\n"
           << CompilerContext::inst().blub.globalInitialization.str()

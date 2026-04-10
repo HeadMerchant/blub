@@ -1225,11 +1225,16 @@ TEST_CASE("Built-in type registers") {
       Pool()._u32,
       Pool()._s16,
       Pool().sliceOf(Pool()._isize),
+      Pool().sizedArrayOf(Pool()._bool, 17)
     };
 
     for (auto type : types) {
       RegisterAssignment registers = Pool().registerStorage(type);
       auto size = Pool().getSizing(type).byteSize;
+      if (size > 16) {
+        CHECK(registers.isMemory());
+        continue;
+      }
       // fmt::println("What {} looks like: {:#b}", TypeName(type),
       // registers.types);
       CHECK_EQ(registers.length, size);
