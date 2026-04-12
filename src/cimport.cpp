@@ -427,7 +427,7 @@ Environment* cBindings(
       }
 
       // TODO: factor out to Types module?
-      auto declareName = StringPool::inst().copy(fmt::format("@{}", valueName));
+      auto declareName = StringPool::inst().copy(valueName);
       TypeIndex type = parseType(qualType, cTypes, globals);
       if (!Pool().functionType(type).has_value()) {
         fmt::println(

@@ -16,6 +16,7 @@ std::unordered_map<std::string_view, TokenType> Tokenizer::builtinFunctions = {
 
 std::unordered_map<std::string_view, TokenType> Tokenizer::keywords = {
   {"fn",        TokenType::Function },
+  {"kernel",    TokenType::Kernel   },
   {"struct",    TokenType::Struct   },
   {"if",        TokenType::If       },
   {"else",      TokenType::Else     },

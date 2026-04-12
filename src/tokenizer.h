@@ -71,6 +71,7 @@ enum class TokenType {
 
   // Keywords
   Function,
+  Kernel,
   Struct,
   Import,
   Union,

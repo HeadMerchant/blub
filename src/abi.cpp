@@ -427,7 +427,7 @@ u32 callAbiFunctionWithArgs(
 
   bool needsComma = false;
   auto returnSizing = Pool().getSizing(returnType);
-  fmt::print(callSite, " {}(", function.globalName);
+  fmt::print(callSite, " {}(", Reference(function));
   LlvmName typeName(returnType);
   if (returnRegisters.isMemory()) {
     returnRegister = ctx.environment.addTemporary();
@@ -528,12 +528,12 @@ TEST_CASE("Passing primative args") {
   auto [_, paramTuple] = Pool().tupleOf({f32, u32});
   Function function{
     .type = FunctionType{.parameters = paramTuple, .returnType = f32},
-    .globalName = "@testFunc"
+    .globalName = "testFunc"
   };
   SUBCASE("Declaration") {
     stringstream declaration;
     auto declarationResult = declareParamRegisters(declaration, function);
-    CHECK_EQ(declaration.str(), "float @testFunc(float, i32)");
+    CHECK_EQ(declaration.str(), "float @\"testFunc\"(float, i32)");
     CHECK_EQ(declarationResult.entryLabel, 2);
   }
   SUBCASE("Loading") {
@@ -559,7 +559,7 @@ TEST_CASE("Passing primative args") {
     OutContext ctx{.outputFile = callSite, .environment = env};
     auto returnRegister = callAbiFunctionWithArgs(ctx, function, args);
     string_view expectedCallSite =
-      "%2 = call float @testFunc(float %1, i32 5)\n";
+      "%2 = call float @\"testFunc\"(float %1, i32 5)\n";
     CHECK_EQ(returnRegister, 2);
     CHECK_EQ(callSite.str(), expectedCallSite);
   }
@@ -573,14 +573,15 @@ TEST_CASE("Struct args and returns") {
   TupleIndex paramTuple = Pool().tupleOf({vec3}).second;
   Function function{
     .type = FunctionType{.parameters = paramTuple, .returnType = mat4x4},
-    .globalName = "@translate"
+    .globalName = "translate"
   };
   SUBCASE("Declaration") {
     stringstream declaration;
     auto declarationResult = declareParamRegisters(declaration, function);
     CHECK_EQ(
       declaration.str(),
-      "void @translate(ptr sret([4 x [4 x float]]) align 4, <2 x float>, float)"
+      "void @\"translate\"(ptr sret([4 x [4 x float]]) align 4, <2 x float>, "
+      "float)"
     );
     CHECK_EQ(declarationResult.entryLabel, 3);
   }
@@ -621,7 +622,7 @@ TEST_CASE("Struct args and returns") {
       "%5 = extractvalue [3 x float] %1, 1\n"
       "%6 = insertelement <2 x float> %4, float %5, i32 1\n"
       "%7 = extractvalue [3 x float] %1, 2\n"
-      "call void @translate(ptr sret([4 x [4 x float]]) align 4 %2, <2 x "
+      "call void @\"translate\"(ptr sret([4 x [4 x float]]) align 4 %2, <2 x "
       "float> %6, float %7)\n"
       "%8 = load [4 x [4 x float]], ptr %2\n";
     CHECK_EQ(returnRegister, 8);
@@ -639,11 +640,12 @@ TEST_CASE("Returning SSE") {
   TupleIndex paramTuple = Pool().tupleOf({quat, quat}).second;
   Function function{
     .type = FunctionType{.parameters = paramTuple, .returnType = quat},
-    .globalName = "@multiply"
+    .globalName = "multiply"
   };
   SUBCASE("Declaration") {
-    string_view expected = "{<2 x float>, <2 x float>} @multiply(<2 x float>, "
-                           "<2 x float>, <2 x float>, <2 x float>)";
+    string_view expected =
+      "{<2 x float>, <2 x float>} @\"multiply\"(<2 x float>, "
+      "<2 x float>, <2 x float>, <2 x float>)";
     stringstream declaration;
     auto declarationResult = declareParamRegisters(declaration, function);
     CHECK_EQ(declaration.str(), expected);
@@ -704,7 +706,8 @@ TEST_CASE("Returning SSE") {
       "%16 = insertelement <2 x float> undef, float %15, i32 0\n"
       "%17 = extractvalue %quat %2, 3\n"
       "%18 = insertelement <2 x float> %16, float %17, i32 1\n"
-      "%19 = call {<2 x float>, <2 x float>} @multiply(<2 x float> %6, <2 x "
+      "%19 = call {<2 x float>, <2 x float>} @\"multiply\"(<2 x float> %6, <2 "
+      "x "
       "float> %10, <2 x float> %14, <2 x float> %18)\n"
       "%20 = alloca {<2 x float>, <2 x float>}, align 4\n"
       "store {<2 x float>, <2 x float>} %19, ptr %20\n"
@@ -727,8 +730,9 @@ TEST_CASE("Passing in memory") {
     .globalName = "@multiply"
   };
   SUBCASE("Declaration") {
-    string_view expected = "void @multiply(ptr sret(%mat) align 4, ptr noundef "
-                           "byval(%mat) align 4, [8 x i16])";
+    string_view expected =
+      "void @\"multiply\"(ptr sret(%mat) align 4, ptr noundef "
+      "byval(%mat) align 4, [8 x i16])";
     stringstream declaration;
     auto declarationResult = declareParamRegisters(declaration, function);
     CHECK_EQ(declaration.str(), expected);
@@ -765,13 +769,13 @@ TEST_CASE("Passing in memory") {
     REQUIRE_EQ(std::get<u32>(arg2.name), 2);
     OutContext ctx{.outputFile = callSite, .environment = env};
     auto returnRegister = callAbiFunctionWithArgs(ctx, function, args);
-    string_view expectedCallSite =
-      "%3 = alloca %mat, align 4\n"
-      "%4 = alloca %mat, align 4\n"
-      "store %mat %1, ptr %4\n"
-      "call void @multiply(ptr sret(%mat) align 4 %3, ptr noundef byval(%mat) "
-      "align 4 %4, [8 x i16] %2)\n"
-      "%5 = load %mat, ptr %3\n";
+    string_view expectedCallSite = "%3 = alloca %mat, align 4\n"
+                                   "%4 = alloca %mat, align 4\n"
+                                   "store %mat %1, ptr %4\n"
+                                   "call void @\"multiply\"(ptr sret(%mat) "
+                                   "align 4 %3, ptr noundef byval(%mat) "
+                                   "align 4 %4, [8 x i16] %2)\n"
+                                   "%5 = load %mat, ptr %3\n";
     CHECK_EQ(returnRegister, 5);
     CHECK_EQ(callSite.str(), expectedCallSite);
   }

@@ -1523,13 +1523,12 @@ public:
       auto token = parser.getToken(nodeIndex);
       token++;
       if (token->type == TokenType::String) {
-        llvmName =
-          StringPool::inst().copy(fmt::format("@\"{}\"", token->lexeme));
+        llvmName = token->lexeme;
       } else if (context.name.has_value()) {
         prefix = context.name.value();
         llvmName = StringPool::inst().copy(
-          forwardDeclare ? fmt::format("@\"{}\"", prefix)
-                         : environment.addConstant(prefix)
+          // TODO: figure out anonymous function naming here
+          forwardDeclare ? prefix : environment.addConstant(prefix)
         );
       } else {
         if (forwardDeclare) {
@@ -1540,11 +1539,7 @@ public:
           );
         }
         llvmName = StringPool::inst().copy(
-          fmt::format(
-            "@{}{}",
-            environment.prefix,
-            environment.nextGlobalIndex()
-          )
+          fmt::format("{}{}", environment.prefix, environment.nextGlobalIndex())
         );
       }
 

@@ -360,7 +360,7 @@ struct Reference {
         },
         [&o](RegisterValue x) { o << x; },
         [&o](IntLiteral x) { o << x.value; },
-        [&o](Function x) { o << x.globalName; },
+        [&o](Function x) { fmt::print(o, "@\"{}\"", x.globalName); },
         [&o](BoundFunction x) { o << x.method.globalName; },
         [&o](Reference* x) { o << *x; },
         [&o](Environment* x) {

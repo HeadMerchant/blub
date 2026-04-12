@@ -270,6 +270,11 @@ public:
     crash(advance(), "{}", message);
   }
 
+  TokenPointer consume(span<TokenType> type, std::string message) {
+    if (check(type)) return advance();
+    crash(advance(), "{}", message);
+  }
+
   void consumeN(TokenType needed, std::string message) {
     consume(needed, message);
     while (check(needed))
@@ -1441,7 +1446,8 @@ public:
   }
 
   NodeIndex function() {
-    consume(TokenType::Function, "Expected 'fn' keyword");
+    static vector<TokenType> types{TokenType::Function, TokenType::Kernel};
+    consume(types, "Expected 'fn' keyword");
     auto keyword = previous();
     accept(TokenType::String);
     // Params
