@@ -1,9 +1,12 @@
 #include "common.h"
 #include "fmt/base.h"
+#include "fmt/format.h"
 #include "fmt/ostream.h"
 #include "llvm_comp.h"
+#include <cstdlib>
 #include <filesystem>
 #include <getopt.h>
+#include <iostream>
 #include <ranges>
 #include <string>
 #include <string_view>
@@ -31,9 +34,7 @@ int main(int argc, char** argv) {
                   transform([](char* x) { return string_view(x); });
       fmt::println("Running tests with args: {}", fmt::join(args, " "));
     }
-    // for (auto i = 0; i < argc; i++) {
-    //   fmt::println("{}", string_view(argv[i]));
-    // }
+
     doctest::Context ctx;
     ctx.applyCommandLine(argc, argv);
     int res = ctx.run();
@@ -45,26 +46,49 @@ int main(int argc, char** argv) {
 
   std::string executable;
   int opt;
-  while ((opt = getopt(argc, argv, "tpico:")) != -1) {
-    switch (opt) {
-    case 't':
-      Logger::globalLevels = Logger::globalLevels | LogLevel::Tokenize;
-      break;
-    case 'p':
-      Logger::globalLevels = Logger::globalLevels | LogLevel::Parsing;
-      break;
-    case 'i':
-      Logger::globalLevels = Logger::globalLevels | LogLevel::CImport;
-      break;
-    case 'c':
-      Logger::globalLevels = Logger::globalLevels | LogLevel::Compile;
-      break;
-    case 'o':
+  enum class ArgFlags {
+    output = 'o',
+    log = 'l',
+    cudaArch = 1001,
+    cudaDir = 1002,
+  };
+  option longArgs[] = {
+    {"cuda-arch", required_argument, 0, (int)ArgFlags::cudaArch},
+    {"cuda-dir",  required_argument, 0, (int)ArgFlags::cudaDir },
+    {"output",    required_argument, 0, (int)ArgFlags::output  },
+    // TODO: log flags
+    {"log",       optional_argument, 0, (int)ArgFlags::log     },
+    {0,           0,                 0, 0                      },
+  };
+  string_view cudaArch = "sm_86";
+  string_view cudaApiDir = "/opt/cuda";
+  while ((opt = getopt_long(argc, argv, "o:l:", longArgs, nullptr)) != -1) {
+    auto flag = (ArgFlags)opt;
+    switch (flag) {
+    case ArgFlags::output: {
       executable = optarg;
       break;
+    }
+    case ArgFlags::cudaArch: {
+      cudaArch = optarg;
+      break;
+    }
+    case ArgFlags::cudaDir: {
+      cudaApiDir = optarg;
+      break;
+    }
+    case ArgFlags::log:
+      TODO("Logging flags");
+      break;
     default: {
-      fmt::println(std::cerr, "Unknown command line flag: {}", opt);
-      return 1;
+      fmt::println(
+        std::cerr,
+        "Usage: {} [--cuda-arch CUDA_VERSION] [--cuda-dir CUDA_DIR (parent of "
+        "cuda lib and include folders)] [--output "
+        " OUTPUT] [MAIN FILE]",
+        argv[0]
+      );
+      abort();
     }
     }
   }
@@ -83,7 +107,9 @@ int main(int argc, char** argv) {
   fs::path inputFile(sourceFile);
   fs::path buildDir = inputFile.parent_path().append(".blub");
   fs::create_directories(buildDir);
-  fmt::println("Build dir: {}", buildDir.string());
+  std::string buildDirString = buildDir.string();
+  string_view buildDirName = buildDirString;
+  fmt::println("Build dir: {}", buildDirName);
 
   std::string outFilename = buildDir.append("main.ll");
 
@@ -166,4 +192,69 @@ int main(int argc, char** argv) {
     abort();
   }
   fmt::println("clanged");
+}
+
+void compileCuda(string_view buildDir, string_view cudaArch) {
+  auto& importedFiles = CompilerContext::inst().cuda.linkedFiles;
+  std::string kernelIr = fmt::format("{}/main.cu.ll", buildDir);
+  std::string outPtx = fmt::format("{}/out.ptx", buildDir);
+  std::string finalCubin = fmt::format("{}/kernel.cubin", buildDir);
+  std::string cudaObjFile = fmt::format("{}/kernel_cubin.o", buildDir);
+
+  // # 2. lower your IR to PTX
+  auto compileCommand = fmt::format(
+    "llc -march=nvptx64 -mcpu={} {} -o {}",
+    cudaArch,
+    kernelIr,
+    outPtx
+  );
+  fmt::println("Compiling blub cuda code: {}", compileCommand);
+  if (auto rc = std::system(compileCommand.c_str())) {
+    fmt::println(std::cerr, "Error compiling blub LLVM IR to ptx");
+    abort();
+  }
+
+  auto assembleCommand =
+    fmt::format("ptxas -arch={} {} -o {}", cudaArch, outPtx, finalCubin);
+
+  if (!importedFiles.empty()) {
+    std::string linkedPtx = fmt::format("{}/linked.ptx", buildDir);
+    std::string linkedCubin = fmt::format("{}/linked.cubin", buildDir);
+    auto cudaImportCommand = fmt::format(
+      "nvcc --ptx -arch={} {} -o {}",
+      cudaArch,
+      fmt::join(importedFiles, " "),
+      linkedPtx
+    );
+    fmt::println("Compiling imported cuda files: {}", cudaImportCommand);
+    if (auto rc = std::system(cudaImportCommand.c_str())) {
+      fmt::println(std::cerr, "Error compiling linked imported cuda files");
+      abort();
+    }
+    auto assembleImportCommand =
+      fmt::format("ptxas -arch={} {} -o {}", cudaArch, linkedPtx, linkedCubin);
+    if (auto rc = std::system(assembleImportCommand.c_str())) {
+      fmt::println(std::cerr, "Error assembling imported cuda");
+      abort();
+    }
+    auto linkCommand = fmt::format(
+      "nvlink -arch={} {} {} -o {}",
+      cudaArch,
+      linkedCubin,
+      finalCubin,
+      finalCubin
+    );
+    if (auto rc = std::system(linkCommand.c_str())) {
+      fmt::println(
+        std::cerr,
+        "Failed to link imported cuda cubin with blub cuda cubin"
+      );
+      abort();
+    }
+  }
+
+  if (auto rc = std::system(assembleCommand.c_str())) {
+    fmt::println(std::cerr, "Error assembling ptx to cubin");
+    abort();
+  }
 }

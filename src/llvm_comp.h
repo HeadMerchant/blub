@@ -42,9 +42,9 @@ struct StatementContext {
   struct {
     OptionalType type;
     string_view aggregateTypename;
+    // Used bc llvm return types with floats are sussy
     RegisterAssignment registers;
   } returns;
-  // Used bc llvm return types with floats are sussy
 };
 
 struct CompilerContext {
@@ -53,12 +53,13 @@ struct CompilerContext {
     std::stringstream globalInitialization;
   } blub;
   struct {
-    std::vector<std::string> linkedLibraries;
-    std::vector<std::string> clangArgs;
+    vector<std::string> linkedLibraries;
+    vector<std::string> clangArgs;
   } c;
   struct {
     std::ofstream* outputFileStream;
     std::stringstream globalInitialization;
+    vector<std::string> linkedFiles;
   } cuda;
 
   static CompilerContext& inst() {
@@ -1550,7 +1551,12 @@ public:
            .functionType = functionType}
         );
       } else {
-        functionType.forwardDeclare(llvmName, globalsStack);
+        bool isKernel = parser.getToken(nodeIndex)->type == TokenType::Kernel;
+        functionType.forwardDeclare(
+          llvmName,
+          globalsStack,
+          isKernel ? "ptx_kernel " : ""
+        );
       }
 
       return Reference(Function(functionType, llvmName));
@@ -2181,6 +2187,21 @@ public:
           TODO("using for non-environment objects");
         }
         return Reference::Void();
+      }
+      case UnaryOps::CudaImport: {
+        if (targetType != TargetType::Cpu) {
+          crash(
+            nodeIndex,
+            "Unable to run '@cudaImport' in gpu-targetting file. Did you mean "
+            "'import'?"
+          );
+        }
+        auto fileName = parser.getToken(TokenIndex{node.operand.value})->lexeme;
+        auto filePath = inputFilePath.parent_path().append(fileName);
+        fmt::println("Importing: {}", filePath.string());
+        Environment* import =
+          compile(filePath, outputFileStream, TargetType::Gpu);
+        return Reference(CudaEnv{import});
       }
       }
       break;
@@ -3495,6 +3516,9 @@ public:
 
     auto& instruction = outputFileStream;
     instruction << "define ";
+    if (parser.getToken(stub.definitionNode)->type == TokenType::Kernel) {
+      instruction << "ptx_kernel ";
+    }
 
     Function function(stub.functionType, stub.name);
 
@@ -3636,6 +3660,33 @@ public:
       auto members = fileEnv->defs | std::views::transform([](const auto& x) {
                        return x.first;
                      });
+      for (auto [name, value] : fileEnv->defs) {
+        log("{}: {}", name, TypeName(value.getType()));
+      }
+      crash(
+        node.fieldName,
+        "Unable to find member '{}' in module\nAvailable fields are {}",
+        fieldName,
+        fmt::join(members, ", ")
+      );
+    } else if (auto cudaImport = object.unbox<CudaEnv>()) {
+      auto fileEnv = *import;
+      if (auto value = fileEnv->find(fieldName)) {
+        if (auto kernel = value->unbox<Kernel>()) {
+          return Reference(*kernel);
+        }
+        crash(
+          node.fieldName,
+          "Cuda-imported member '{}' can't be accessed because it's not a "
+          "kernel",
+          fieldName
+        );
+      }
+      auto members =
+        fileEnv->defs | std::views::filter([](pair<string_view, Reference> x) {
+          return x.second.unbox<Kernel>() != nullptr;
+        }) |
+        std::views::transform([](const auto& x) { return x.first; });
       for (auto [name, value] : fileEnv->defs) {
         log("{}: {}", name, TypeName(value.getType()));
       }

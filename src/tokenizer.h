@@ -117,6 +117,7 @@ enum class TokenType {
   BUILTIN_Align,
 
   // CUDA
+  CudaImport,
   CudaBlockIdxX,
   CudaBlockIdxY,
   CudaBlockIdxZ,

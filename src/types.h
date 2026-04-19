@@ -119,7 +119,11 @@ struct FunctionType {
     return parameters == other.parameters && returnType == other.returnType;
   }
 
-  void forwardDeclare(std::string_view name, std::queue<std::string>& globals);
+  void forwardDeclare(
+    std::string_view name,
+    std::queue<std::string>& globals,
+    string_view extraDeclarationInfo
+  );
 };
 template <> struct std::hash<FunctionType> {
   std::size_t operator()(const FunctionType& k) const {

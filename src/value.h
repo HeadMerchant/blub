@@ -137,9 +137,23 @@ struct Range {
 struct Reference;
 struct VoidRef {};
 struct ZeroInit {};
+struct CudaEnv {
+  Environment* env;
+};
+struct Kernel {
+  u32 index;
+  FunctionType function;
+};
+struct InstancedKernel {
+  Kernel kernel;
+  RegisterValue blockDim;
+  RegisterValue gridDim;
+};
+
 using UnderlyingValue = std::variant<
   TypeIndex,
   Environment*,
+  CudaEnv,
   GenericValue,
   bool,
   StackValue,
@@ -152,7 +166,9 @@ using UnderlyingValue = std::variant<
   Never,
   Range,
   VoidRef,
-  ZeroInit>;
+  ZeroInit,
+  Kernel,
+  InstancedKernel>;
 
 struct Reference {
   using Opt = OptionalType;
@@ -263,12 +279,15 @@ struct Reference {
         [](Never) { return Pool().never; },
         [](TypeIndex) { return Pool().type; },
         [](Environment*) { return Pool().environment; },
+        [](CudaEnv) { return Pool().environment; },
         [](GenericValue) { return Pool().generic; },
         [](Function x) { return Pool().addFunction(x.type); },
         [](BoundFunction x) { return Pool().addFunction(x.method.type); },
         [](Range x) { return Pool().rangeLiteral; },
         [](VoidRef x) { return Pool()._void; },
         [](ZeroInit) { return Pool().never; },
+        [](Kernel x) { return Pool().addFunction(x.function); },
+        [](InstancedKernel x) { return Pool().addFunction(x.kernel.function); }
       },
       value
     );
@@ -366,6 +385,7 @@ struct Reference {
         [&o](Environment* x) {
           TODO("Can't convert environments into llvm names");
         },
+        [&o](CudaEnv x) { TODO("Can't convert environments into llvm names"); },
         [&o](GenericValue x) {
           TODO("Can't convert environments into llvm names");
         },
@@ -373,6 +393,8 @@ struct Reference {
         [&o](Range x) { TODO("Can't convert ranges into llvm names"); },
         [&o](VoidRef x) { TODO("Can't convert void into llvm name"); },
         [&o](ZeroInit) { o << "zeroinitializer"; },
+        [&o](Kernel x) { o << x.index; },
+        [&o](InstancedKernel x) { o << x.kernel.index; },
       },
       x.value
     );

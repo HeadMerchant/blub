@@ -41,6 +41,7 @@ enum class UnaryOps {
   MultiPointerFrom,
   CompilerBuiltin,
   Import,
+  CudaImport,
   Minus,
   BitNot,
   Return,
@@ -1346,8 +1347,31 @@ public:
       return argumentList(TokenType::RightParen, true);
     }
 
-    if (check(TokenType::Import)) {
-      return import();
+    if (auto token = match(TokenType::Import)) {
+      auto fileNode = consume(
+        TokenType::String,
+        "import must be followed by a file path string"
+      );
+      return addNode(
+        Encodings::UnaryOp(
+          {.operand = {toIndex(fileNode).value}, .operation = UnaryOps::Import}
+        ),
+        token
+      );
+    }
+
+    if (auto token = match(TokenType::CudaImport)) {
+      auto fileNode = consume(
+        TokenType::String,
+        "@cudaImport must be followed by a file path string"
+      );
+      return addNode(
+        Encodings::UnaryOp({
+          .operand = {toIndex(fileNode).value},
+          .operation = UnaryOps::CudaImport,
+        }),
+        token
+      );
     }
 
     if (auto token = match(TokenType::MultiPointer)) {
@@ -1542,21 +1566,6 @@ public:
     Encodings::BinaryOp loop =
       {.left = condition, .right = loopBody, .operation = token};
     return addNode(loop);
-  }
-
-  NodeIndex import() {
-    auto token =
-      consume(TokenType::Import, "import token required for import expression");
-    auto fileNode = consume(
-      TokenType::String,
-      "import must be followed by a file path string"
-    );
-    return addNode(
-      Encodings::UnaryOp(
-        {.operand = {toIndex(fileNode).value}, .operation = UnaryOps::Import}
-      ),
-      token
-    );
   }
 
   NodeIndex enumLiteral() {

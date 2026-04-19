@@ -70,10 +70,12 @@ void TypePool::debugTypes() {
 
 void FunctionType::forwardDeclare(
   std::string_view name,
-  std::queue<std::string>& globals
+  std::queue<std::string>& globals,
+  string_view extraDeclarationInfo
 ) {
   std::stringstream instruction;
   fmt::print(instruction, "declare ");
+  instruction << extraDeclarationInfo;
   Function function{.type = *this, .globalName = name};
   declareParamRegisters(instruction, function);
   globals.push(instruction.str());
