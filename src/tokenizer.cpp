@@ -12,6 +12,9 @@ std::unordered_map<std::string_view, TokenType> Tokenizer::builtinFunctions = {
   {"linkDir",      TokenType::BUILTIN_LinkDir     },
   {"cImport",      TokenType::BUILTIN_CImport     },
   {"align",        TokenType::BUILTIN_Align       },
+  {"local",        TokenType::BUILTIN_Local       },
+  {"shared",       TokenType::BUILTIN_Shared      },
+  {"global",       TokenType::BUILTIN_Global      },
 };
 
 std::unordered_map<std::string_view, TokenType> Tokenizer::keywords = {

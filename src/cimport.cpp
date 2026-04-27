@@ -445,7 +445,7 @@ Environment* cBindings(
         qualType
       );
       log("Internal name: {}", valueName);
-      functionType.forwardDeclare(declareName, globals);
+      functionType.forwardDeclare(declareName, globals, "");
       blubInterface.value = Function(functionType, declareName);
     } else if (kind == "RecordDecl") {
       blubInterface.value = parseRecord(

@@ -14,6 +14,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "../deps/doctest.h"
 
+string_view kernelIr = "main.cu.ll";
+
 int main(int argc, char** argv) {
   bool shouldRunTests = false;
   fmt::println("Arg count: {}", argc);
@@ -112,6 +114,7 @@ int main(int argc, char** argv) {
   fmt::println("Build dir: {}", buildDirName);
 
   std::string outFilename = buildDir.append("main.ll");
+  std::string kernelFilename = buildDir.append(kernelIr);
 
   std::ofstream outFile(outFilename, std::ofstream::out | std::ofstream::trunc);
   if (!outFile.is_open()) {
@@ -119,14 +122,22 @@ int main(int argc, char** argv) {
       "Unable to write llvm bytecode to " + outFilename
     );
   }
+  std::ofstream outKernel(kernelFilename, std::ofstream::out | std::ofstream::trunc);
+  if (!outKernel.is_open()) {
+    throw std::invalid_argument(
+      "Unable to write llvm bytecode to " + kernelFilename
+    );
+  }
+
   fmt::println("Writing to file {}", outFilename);
+  string_view sliceDef = "%.slice = type {ptr, i64}\n";
   std::string_view preamble =
-    "%.slice = type {ptr, i64}\n"
     "declare void @llvm.trap() nounwind\n"
     "%.ctor = type { i32, ptr, ptr }\n"
     "@llvm.global_ctors = appending global [1 x %.ctor] [%.ctor { i32 65535, "
     "ptr @.ctor, ptr null }]\n"
     "@.doubleFmtString = global [3 x i8] c\"%f\\00\" align 1\n";
+  outFile << sliceDef;
   outFile << preamble;
   // TODO: 32-bit
   std::string_view printDouble =
@@ -138,8 +149,12 @@ int main(int argc, char** argv) {
     "  ret void\n"
     "}\n";
   outFile << printDouble;
+  outKernel << sliceDef;
 
-  TranslationUnit::compile(sourceFile, outFile, TargetType::Cpu);
+  auto& contextInst = CompilerContext::inst();
+  contextInst.blub.outputFileStream = &outFile;
+  contextInst.cuda.outputFileStream = &outKernel;
+  TranslationUnit::compile(sourceFile, TargetType::Cpu);
   outFile << "define void @.ctor() {\n"
           << CompilerContext::inst().blub.globalInitialization.str()
           << "ret void\n}";

@@ -115,6 +115,9 @@ enum class TokenType {
   BUILTIN_CImport,
   BUILTIN_Type,
   BUILTIN_Align,
+  BUILTIN_Local,
+  BUILTIN_Shared,
+  BUILTIN_Global,
 
   // CUDA
   CudaImport,

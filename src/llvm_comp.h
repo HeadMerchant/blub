@@ -1868,7 +1868,7 @@ public:
         auto fileName = parser.getToken(TokenIndex{node.operand.value})->lexeme;
         auto filePath = inputFilePath.parent_path().append(fileName);
         fmt::println("Importing: {}", filePath.string());
-        Environment* import = compile(filePath, outputFileStream, targetType);
+        Environment* import = compile(filePath, targetType);
         if (!import->impls.witnesses.empty()) {
           environment.importedImpls.push_back(&import->impls);
         }
@@ -2200,7 +2200,7 @@ public:
         auto filePath = inputFilePath.parent_path().append(fileName);
         fmt::println("Importing: {}", filePath.string());
         Environment* import =
-          compile(filePath, outputFileStream, TargetType::Gpu);
+          compile(filePath, TargetType::Gpu);
         return Reference(CudaEnv{import});
       }
       }
@@ -2903,24 +2903,17 @@ public:
   static Environment* cudaImport(fs::path fileName) {
     return compile(
       fileName,
-      *CompilerContext::inst().cuda.outputFileStream,
       TargetType::Gpu
     );
   }
 
   static Environment* compile(
     fs::path fileName,
-    std::ofstream& outFile,
     TargetType targetType
   ) {
     using Imports = std::unordered_map<std::string, Environment>;
     static Imports cpuFiles;
     static Imports gpuFiles;
-    if (targetType == TargetType::Cpu) {
-      CompilerContext::inst().blub.outputFileStream = &outFile;
-    } else {
-      CompilerContext::inst().cuda.outputFileStream = &outFile;
-    }
 
     Imports& compiledFiles =
       targetType == TargetType::Cpu ? cpuFiles : gpuFiles;
@@ -2937,6 +2930,7 @@ public:
     Parser parser(tokenizer);
     std::vector<NodeIndex> program = parser.parse();
 
+    std::ofstream& outFile = *(targetType == TargetType::Cpu ? CompilerContext::inst().blub.outputFileStream : CompilerContext::inst().cuda.outputFileStream);
     TranslationUnit interpreter(parser, program, fileName, outFile, targetType);
     auto [env, success] =
       compiledFiles.emplace(std::move(fileName), interpreter.run());
