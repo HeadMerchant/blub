@@ -157,18 +157,27 @@ using namespace Tokenization;
 class Parser {
 public:
   Parser(Tokenizer& tokenizer)
-      : tokenizer(tokenizer), tokens(tokenizer.tokens), log(LogLevel::Parsing),
-        endLocation(tokens.size()) {}
+      : tokenizer(tokenizer), tokens(tokenizer.tokens), log(LogLevel::Parsing) {
+  }
   const Tokenizer& tokenizer;
   const std::vector<Token>& tokens;
   std::vector<u32> extraData;
   std::vector<ASTNode> nodes;
   TokenIndex current = {0};
   Logger log;
-  u32 endLocation;
 
   const Token& peek(TokenIndex ahead = {0}) {
-    return tokens[current.value + ahead.value];
+    auto index = current.value + ahead.value;
+    if (index >= tokens.size()) {
+      fmt::println(
+        std::cerr,
+        "Peeking too far ahead: {} > {}",
+        index,
+        tokens.size()
+      );
+      abort();
+    }
+    return tokens[index];
   }
 
   const TokenPointer advance() {
@@ -230,7 +239,7 @@ public:
   }
 
   bool isAtEnd(TokenIndex ahead = {0}) {
-    return current.value + ahead.value >= endLocation ||
+    return current.value + ahead.value >= tokens.size() ||
            peek(ahead).type == TokenType::EndOfFile;
   }
 
@@ -678,29 +687,16 @@ public:
   }
 
   NodeIndex assignment() {
-    auto startToken = current;
-    while (!check(TokenType::StatementBreak)) {
-      if (peek().isArithmeticOperation() && check(TokenType::Assign, {1})) {
-        endLocation = current.value;
-        break;
-      } else advance();
-    }
-    current = startToken;
     NodeIndex expr = expression();
 
-    endLocation = tokens.size();
     if (auto token = match(TokenType::Assign)) {
+      log("Regular assignment");
       auto value = expression();
       return addAssignment(expr, value, token);
     }
-
-    // +=, -=, etc
-    if (peek().isArithmeticOperation() && check(TokenType::Assign, {1})) {
+    if (peek().binopAssignment().has_value()) {
+      log("Binop assignment");
       auto token = advance();
-      consume(
-        TokenType::Assign,
-        "Expected '=' in compound assignment operator"
-      );
       auto value = expression();
       return addAssignment(expr, value, token);
     }
@@ -710,10 +706,6 @@ public:
 
   NodeIndex expression() {
     auto expr = logicalOr();
-    // while (!peek().isClosingToken()) {
-    //   auto arg = logicalOr();
-    //   expr =
-    // }
     return expr;
   }
 
@@ -856,7 +848,7 @@ public:
         expr = addNode(
           Encodings::BinaryOp{.left = expr, .right = block, .operation = token}
         );
-      } else if (!(peek().isClosingToken() || peek().isBinaryOp())) {
+      } else if (peek().canApply()) {
         auto token = current;
         auto applicant = expression();
         expr = addNode(
@@ -917,7 +909,7 @@ public:
         expr = addNode(node);
       } else if (auto token = match(TokenType::LeftSquareBracket)) {
         if (match(TokenType::RightSquareBracket)) {
-          fmt::println("We making a slice");
+          log("We making a slice");
           return addNode(
             Encodings::UnaryOp{
               .operand = expr,
@@ -1168,7 +1160,7 @@ public:
         }
         auto caseCondition = expression();
         consume(
-          TokenType::FatArrow,
+          TokenType::ThinArrow,
           "Expected '=>' between case condition and body"
         );
         auto caseBody = assignment();
@@ -1181,7 +1173,7 @@ public:
         ) {
           // Use fat arrow to diambiguate against if/else from previous case
           consume(
-            TokenType::FatArrow,
+            TokenType::ThinArrow,
             "Expected '=>' between else case and body"
           );
           auto caseBlock = assignment();
@@ -1275,7 +1267,7 @@ public:
       );
     }
 
-    if (check(TokenType::Function)) {
+    if (check(TokenType::Function) || check(TokenType::Kernel)) {
       return function();
     }
 
@@ -1471,8 +1463,7 @@ public:
 
   NodeIndex function() {
     static vector<TokenType> types{TokenType::Function, TokenType::Kernel};
-    consume(types, "Expected 'fn' keyword");
-    auto keyword = previous();
+    auto keyword = consume(types, "Expected 'fn'/'kernel' keyword");
     accept(TokenType::String);
     // Params
     consume(TokenType::LeftParen, "Expected '(' for parameter declaration");

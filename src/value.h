@@ -102,8 +102,9 @@ public:
 
 class BoundFunction {
 public:
-  StackValue self;
+  std::variant<StackValue, RegisterValue> self;
   Function& method;
+  Reference getSelf();
 };
 
 struct Never {};
@@ -313,7 +314,9 @@ struct Reference {
       bool,
       Function,
       GenericValue,
-      Environment*>(value);
+      Environment*,
+      Kernel,
+      CudaEnv>(value);
     if (comptime) {
       return true;
     } else if (auto ref = std::get_if<Reference*>(&value)) {
@@ -561,7 +564,7 @@ public:
   }
 
   std::string addConstant(std::string_view name) {
-    return fmt::format("@\"{}{}\"", prefix, name);
+    return fmt::format("{}{}", prefix, name);
   }
 
   std::string addGlobal(std::string_view name) {

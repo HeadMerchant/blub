@@ -137,9 +137,13 @@ struct Logger {
   static inline LogLevel globalLevels = static_cast<LogLevel>(0);
   LogLevel logLevel;
 
+  bool canLog() const {
+    return globalLevels & logLevel;
+  }
+
   template <typename... Args>
   void operator()(fmt::format_string<Args...> fmt, Args&&... args) const {
-    if (globalLevels & logLevel) {
+    if (canLog()) {
       fmt::println(fmt, std::forward<Args>(args)...);
     }
   }

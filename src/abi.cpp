@@ -158,7 +158,8 @@ DeclarationResult declareParamRegisters(
 
   u32 registersUsed = 0;
   bool needsComma = false;
-  fmt::print(outputFile, " {}(", function.globalName);
+  // fmt::print(outputFile, "@TODONAME(");
+  fmt::print(outputFile, " @\"{}\"(", function.globalName);
   if (returnRegisters.isMemory()) {
     fmt::print(
       outputFile,
@@ -727,7 +728,7 @@ TEST_CASE("Passing in memory") {
     Pool().tupleOf({matrix, Pool().sizedArrayOf(Pool()._s16, 8)}).second;
   Function function{
     .type = FunctionType{.parameters = paramTuple, .returnType = matrix},
-    .globalName = "@multiply"
+    .globalName = "multiply"
   };
   SUBCASE("Declaration") {
     string_view expected =

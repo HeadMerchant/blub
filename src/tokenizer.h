@@ -4,6 +4,7 @@
 #include "fmt/ostream.h"
 #include <cctype>
 #include <iostream>
+#include <optional>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -43,14 +44,14 @@ enum class TokenType {
   Assign,
   Subtype,
 
-  DoubleEqual,
+  // Binops
+  BINOP_START,
+  DoubleEqual = BINOP_START,
   NotEqual,
   Lt,
   Gt,
   Leq,
   Geq,
-
-  // Binops
   Plus,
   Minus,
   Mult,
@@ -64,8 +65,11 @@ enum class TokenType {
   Remainder,
   ShiftLeft,
   ShiftRight,
-  ThinArrow,
+  BINOP_END = ShiftRight,
+  BINOP_ASSIGN_START,
+  BINOP_ASSIGN_END = BINOP_ASSIGN_START + BINOP_END - BINOP_START,
 
+  ThinArrow,
   FatArrow,
   ExclusiveRange,
 
@@ -145,27 +149,12 @@ public:
   const int line;
   const TokenType type;
 
-  bool isArithmeticOperation() const {
-    static std::unordered_set<TokenType> ops{
-      TokenType::DoubleEqual,
-      TokenType::NotEqual,
-      TokenType::Lt,
-      TokenType::Gt,
-      TokenType::Leq,
-      TokenType::Geq,
-      TokenType::Plus,
-      TokenType::Minus,
-      TokenType::Mult,
-      TokenType::Div,
-      TokenType::Remainder,
-      TokenType::LogicAnd,
-      TokenType::LogicOr,
-      TokenType::BitAnd,
-      TokenType::BitOr,
-      TokenType::Xor,
-    };
+  static bool isArithmeticOperation(TokenType type) {
+    return type <= TokenType::BINOP_END && type >= TokenType::BINOP_START;
+  }
 
-    return ops.contains(type);
+  bool isArithmeticOperation() const {
+    return isArithmeticOperation(type);
   }
 
   bool isBinaryOp() const {
@@ -177,7 +166,8 @@ public:
       TokenType::Impl,
     };
 
-    return isArithmeticOperation() || ops.contains(this->type);
+    return isArithmeticOperation() || ops.contains(this->type) ||
+           binopAssignment().has_value();
   }
 
   bool isClosingToken() const {
@@ -237,6 +227,25 @@ public:
     };
 
     return literals.contains(this->type);
+  }
+
+  optional<TokenType> binopAssignment() const {
+    auto rawBinop = TokenType(
+      (int)type - (int)TokenType::BINOP_ASSIGN_START +
+      (int)TokenType::BINOP_START
+    );
+    if (isArithmeticOperation(rawBinop)) return rawBinop;
+    return std::nullopt;
+  }
+
+  static optional<TokenType> binopAssign(TokenType type) {
+    if (isArithmeticOperation(type)) {
+      return TokenType(
+        (int)type + (int)TokenType::BINOP_ASSIGN_START -
+        (int)TokenType::BINOP_START
+      );
+    }
+    return std::nullopt;
   }
 };
 
@@ -582,7 +591,19 @@ struct Tokenizer {
   }
 
   void addToken(TokenType type) {
-    tokens.push_back({.lexeme = lexeme(), .line = line, .type = type});
+    auto binopAssign = Token::binopAssign(type);
+    if (binopAssign && peek() == '=') {
+      advance();
+      Token token{
+        .lexeme = lexeme(),
+        .line = line,
+        .type = binopAssign.value()
+      };
+      tokens.push_back(token);
+      log("Adding binop=:{}; '{}'", (int)token.type, token.lexeme);
+    } else {
+      tokens.push_back({.lexeme = lexeme(), .line = line, .type = type});
+    }
   }
 
 public:
@@ -663,3 +684,16 @@ public:
   }
 };
 }; // namespace Tokenization
+
+TEST_CASE("Bro") {
+  fmt::println("Binop start: {}", (int)Tokenization::TokenType::BINOP_START);
+  fmt::println("Double equal: {}", (int)Tokenization::TokenType::DoubleEqual);
+  fmt::println("Binop end: {}", (int)Tokenization::TokenType::BINOP_END);
+  fmt::println("Shift right: {}", (int)Tokenization::TokenType::ShiftRight);
+  fmt::println(
+    "Binop=start: {}",
+    (int)Tokenization::TokenType::BINOP_ASSIGN_START
+  );
+  fmt::println("Binop=end: {}", (int)Tokenization::TokenType::BINOP_ASSIGN_END);
+  FAIL("failing");
+}

@@ -79,9 +79,36 @@ int main(int argc, char** argv) {
       cudaApiDir = optarg;
       break;
     }
-    case ArgFlags::log:
-      TODO("Logging flags");
+    case ArgFlags::log: {
+      fmt::println("log flags: {}", optarg);
+      string_view flags(optarg);
+      for (auto c : flags) {
+        int logLevel = 0;
+        switch (c) {
+        case 'i': {
+          logLevel = (int)LogLevel::CImport;
+          break;
+        }
+        case 'p': {
+          logLevel = (int)LogLevel::Parsing;
+          break;
+        }
+        case 'c': {
+          logLevel = (int)LogLevel::Compile;
+          break;
+        }
+        case 't': {
+          logLevel = (int)LogLevel::Tokenize;
+          break;
+        }
+        default: {
+          fmt::println(std::cerr, "Unknown logging flag: '{}'", c);
+        }
+        }
+        Logger::globalLevels = LogLevel((int)Logger::globalLevels | logLevel);
+      }
       break;
+    }
     default: {
       fmt::println(
         std::cerr,
@@ -113,8 +140,8 @@ int main(int argc, char** argv) {
   string_view buildDirName = buildDirString;
   fmt::println("Build dir: {}", buildDirName);
 
-  std::string outFilename = buildDir.append("main.ll");
-  std::string kernelFilename = buildDir.append(kernelIr);
+  std::string outFilename = buildDir / "main.ll";
+  std::string kernelFilename = buildDir / kernelIr;
 
   std::ofstream outFile(outFilename, std::ofstream::out | std::ofstream::trunc);
   if (!outFile.is_open()) {
@@ -122,10 +149,13 @@ int main(int argc, char** argv) {
       "Unable to write llvm bytecode to " + outFilename
     );
   }
-  std::ofstream outKernel(kernelFilename, std::ofstream::out | std::ofstream::trunc);
+  std::ofstream outKernel(
+    kernelFilename,
+    std::ofstream::out | std::ofstream::trunc
+  );
   if (!outKernel.is_open()) {
     throw std::invalid_argument(
-      "Unable to write llvm bytecode to " + kernelFilename
+      "Unable to write cuda llvm bytecode to " + kernelFilename
     );
   }
 

@@ -1,3 +1,4 @@
+#include "common.h"
 #include "tokenizer.h"
 using namespace Tokenization;
 std::unordered_map<std::string_view, TokenType> Tokenizer::builtinFunctions = {
@@ -15,6 +16,7 @@ std::unordered_map<std::string_view, TokenType> Tokenizer::builtinFunctions = {
   {"local",        TokenType::BUILTIN_Local       },
   {"shared",       TokenType::BUILTIN_Shared      },
   {"global",       TokenType::BUILTIN_Global      },
+  {"cudaImport",   TokenType::CudaImport          },
 };
 
 std::unordered_map<std::string_view, TokenType> Tokenizer::keywords = {

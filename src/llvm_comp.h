@@ -798,57 +798,33 @@ public:
       auto node = parser.getNode(nodeIndex);
       NodeIndex assigneeNode(node.left), valueNode{node.right};
       TokenPointer token = parser.getToken(node.token);
-      if (token->isArithmeticOperation()) {
-        auto rValue = parser.addNode(
-          Encodings::BinaryOp{
-            .left = assigneeNode,
-            .right = valueNode,
-            .operation = token
-          }
-        );
-        fmt::println("Operator: {}", token->lexeme);
-        auto node = parser.addAssignment(assigneeNode, rValue, &token[1]);
-        fmt::println("Equals: {}", token[1].lexeme);
-        return interpret(node, environment, outputFile, context);
+      if (auto opType = token->binopAssignment()) {
+        log("Operator: {}", token->lexeme);
+        Encodings::BinaryOp binOp{
+          .left = assigneeNode,
+          .right = valueNode,
+          .operation = parser.getToken(nodeIndex)
+        };
+
+        auto leftVal =
+          interpret(assigneeNode, environment, outputFile, context);
+        OutContext ctx{.outputFile = outputFile, .environment = environment};
+        auto opResult =
+          arithmeticOperation(opType.value(), binOp, leftVal, nodeIndex, ctx);
+        assign(leftVal, opResult, nodeIndex, ctx);
+        return Reference::Void();
       } else if (token->type != TokenType::Assign) {
-        crash(token, "Unknown compound assignment operator");
+        crash(
+          token,
+          "Unknown compound assignment operator '{}'",
+          token->lexeme
+        );
       }
 
       auto assignee = interpret(assigneeNode, environment, outputFile, context);
       StatementContext valueContext(context);
       valueContext.expectedType = assignee.getType();
       auto value = interpret(valueNode, environment, outputFile, valueContext);
-
-      Reference lValue;
-      TypeIndex leftType;
-      if (auto stackValue = assignee.lValue()) {
-        lValue.value = stackValue.value();
-        leftType = stackValue.value().type;
-      } else {
-        crash(nodeIndex, "Can't assign to literal");
-      }
-      OptionalType valueType = value.isAssignableTo(leftType);
-      if (!valueType) {
-        crash(
-          nodeIndex,
-          "Can't assign value of type {} to symbol of type {}",
-          TypeName(value.getType()),
-          TypeName(leftType)
-        );
-      }
-      if (Pool().isFloat(*valueType)) {
-        if (auto literal = value.unbox<IntLiteral>()) {
-          value.value = FloatLiteral(literal->value);
-        }
-      }
-      auto loaded = toRegister(&value, outputFile, environment);
-      fmt::println(
-        outputFile,
-        "store {} {}, ptr {}",
-        LlvmName(*valueType),
-        loaded,
-        assignee
-      );
 
       // TODO: consider value
       return Reference::Void();
@@ -864,8 +840,7 @@ public:
           node,
           leftVal,
           nodeIndex,
-          environment,
-          outputFile
+          OutContext{.outputFile = outputFile, .environment = environment}
         );
       }
 
@@ -1174,7 +1149,7 @@ public:
             nullptr
           );
         } else if (auto bound = function.unbox<BoundFunction>()) {
-          auto ref = Reference(bound->self);
+          auto ref = bound->getSelf();
           return callFunction(
             &bound->method,
             argsNode,
@@ -1466,7 +1441,7 @@ public:
 
         // TODO: figure out if we can do a move here
         environment.impls.witnesses[targetType] = std::move(implEnv.defs);
-        if (log.logLevel & log.globalLevels) {
+        if (log.canLog()) {
           for (auto& [name, value] : environment.impls.witnesses[targetType]) {
             log("impl {}.{} = {}", TypeName(targetType), name, value);
           }
@@ -1898,7 +1873,10 @@ public:
             Pool().pointerTo(lValue->type),
             lValue->scope
           ));
-          parser.locationOf(node.operand).underline(std::cout);
+          log("Making l-value from pointer");
+          if (log.canLog()) {
+            parser.locationOf(node.operand).underline(std::cout);
+          }
           return address;
         } else {
           crash(
@@ -2181,7 +2159,7 @@ public:
           for (auto import : (*env)->usings) {
             environment.usings.push_back(import);
           }
-          fmt::println("New symbols");
+          log("New symbols");
           environment.debug();
         } else {
           TODO("using for non-environment objects");
@@ -2199,8 +2177,7 @@ public:
         auto fileName = parser.getToken(TokenIndex{node.operand.value})->lexeme;
         auto filePath = inputFilePath.parent_path().append(fileName);
         fmt::println("Importing: {}", filePath.string());
-        Environment* import =
-          compile(filePath, TargetType::Gpu);
+        Environment* import = compile(filePath, TargetType::Gpu);
         return Reference(CudaEnv{import});
       }
       }
@@ -2701,8 +2678,10 @@ public:
       Parser::ArgumentList argsNode{
         .requiredArgs = span((NodeIndex*)&node.right, 1)
       };
-      fmt::println("Applying!!!");
-      parser.locationOf(nodeIndex).underline(std::cout);
+      log("Applying!!!");
+      if (log.canLog()) {
+        parser.locationOf(nodeIndex).underline(std::cout);
+      }
       if (auto function = object.unboxFunction()) {
         return callFunction(
           function,
@@ -2756,8 +2735,7 @@ public:
           binOp,
           object,
           nodeIndex,
-          environment,
-          outputFile
+          OutContext{.outputFile = outputFile, .environment = environment}
         );
       }
     }
@@ -2782,6 +2760,9 @@ public:
       if (!isEscaping) {
         if (c == '\\') {
           isEscaping = true;
+        } else if (c == '\n') {
+          escaped.append("\\0A");
+          byteLength++;
         } else {
           escaped.push_back(c);
           byteLength++;
@@ -2799,6 +2780,9 @@ public:
           break;
         case 'n':
           escaped.append("\\0A");
+          break;
+        case '\n':
+          // Allows for continuing on next line
           break;
         case 'x': {
           char hex1 = str[++i];
@@ -2831,10 +2815,50 @@ public:
           crash(token, "Unknown escape sequence \\{}", c);
         }
         isEscaping = false;
-        byteLength++;
+        if (c != '\n') {
+          byteLength++;
+        }
       }
     }
     return {escaped, byteLength};
+  }
+
+  void assign(
+    Reference& assignee,
+    Reference& value,
+    NodeIndex nodeIndex,
+    OutContext ctx
+  ) {
+    Reference lValue;
+    TypeIndex leftType;
+    if (auto stackValue = assignee.lValue()) {
+      lValue.value = stackValue.value();
+      leftType = stackValue.value().type;
+    } else {
+      crash(nodeIndex, "Can't assign to literal");
+    }
+    OptionalType valueType = value.isAssignableTo(leftType);
+    if (!valueType) {
+      crash(
+        nodeIndex,
+        "Can't assign value of type {} to symbol of type {}",
+        TypeName(value.getType()),
+        TypeName(leftType)
+      );
+    }
+    if (Pool().isFloat(*valueType)) {
+      if (auto literal = value.unbox<IntLiteral>()) {
+        value.value = FloatLiteral(literal->value);
+      }
+    }
+    auto loaded = toRegister(&value, ctx.outputFile, ctx.environment);
+    fmt::println(
+      ctx.outputFile,
+      "store {} {}, ptr {}",
+      LlvmName(*valueType),
+      loaded,
+      assignee
+    );
   }
 
   void crashBinOp(TokenPointer token, Reference* leftVal, Reference* rightVal) {
@@ -2901,16 +2925,10 @@ public:
   }
 
   static Environment* cudaImport(fs::path fileName) {
-    return compile(
-      fileName,
-      TargetType::Gpu
-    );
+    return compile(fileName, TargetType::Gpu);
   }
 
-  static Environment* compile(
-    fs::path fileName,
-    TargetType targetType
-  ) {
+  static Environment* compile(fs::path fileName, TargetType targetType) {
     using Imports = std::unordered_map<std::string, Environment>;
     static Imports cpuFiles;
     static Imports gpuFiles;
@@ -2930,7 +2948,10 @@ public:
     Parser parser(tokenizer);
     std::vector<NodeIndex> program = parser.parse();
 
-    std::ofstream& outFile = *(targetType == TargetType::Cpu ? CompilerContext::inst().blub.outputFileStream : CompilerContext::inst().cuda.outputFileStream);
+    std::ofstream& outFile =
+      *(targetType == TargetType::Cpu
+          ? CompilerContext::inst().blub.outputFileStream
+          : CompilerContext::inst().cuda.outputFileStream);
     TranslationUnit interpreter(parser, program, fileName, outFile, targetType);
     auto [env, success] =
       compiledFiles.emplace(std::move(fileName), interpreter.run());
@@ -3301,7 +3322,8 @@ public:
       environment,
       outputFile,
       (*structDefinition)->fields,
-      nullptr
+      nullptr,
+      nodeIndex
     );
     std::vector<bool> setArguments(fieldTypes.size(), false);
 
@@ -3341,7 +3363,7 @@ public:
           TypeName(type)
         );
       } else {
-        fmt::println(
+        log(
           "Assigning value of type {} to field of type {}",
           TypeName(value.getType()),
           TypeName(field->type)
@@ -3396,10 +3418,26 @@ public:
     Environment& environment,
     std::ostream& outputFile,
     FieldMap& fieldNames,
-    Reference* firstArg
+    Reference* firstArg,
+    NodeIndex callSiteNode
   ) {
     vector<Reference> arguments;
-    if (firstArg) arguments.push_back(*firstArg);
+    if (firstArg) {
+      if (Pool().dereference(paramTypes[0])) {
+        if (auto lValue = firstArg->lValue()) {
+          arguments.push_back(Reference(RegisterValue(lValue->name)));
+        } else {
+          crash(
+            callSiteNode,
+            "Unable to treat temporary value as reference for first argument "
+            "in method call. Expected type '{}'",
+            TypeName(paramTypes[0])
+          );
+        }
+      } else {
+        arguments.push_back(*firstArg);
+      }
+    }
     u32 i = arguments.size();
     for (auto arg : argsNode.requiredArgs) {
       auto paramType = paramTypes[i];
@@ -3517,6 +3555,7 @@ public:
     Function function(stub.functionType, stub.name);
 
     auto declarationResult = declareParamRegisters(instruction, function);
+    fmt::println("Defining function: {}", stub.name);
     functionEnvironment.nextTemporary = declarationResult.entryLabel + 1;
     auto node = parser.getFunctionLiteral(stub.definitionNode);
     auto parameters = parser.getParameterList(node.parameters);
@@ -3707,10 +3746,14 @@ public:
     auto boxedField = Pool().getFieldIndex(type, fieldName);
 
     if (!boxedField.has_value()) {
-      auto lValue = object.lValue();
-      if (!lValue) TODO("Calling methods on non-lvalues");
       auto method = findMethod(nodeIndex, fieldName, type, environment);
-      return Reference(BoundFunction(*lValue, *method));
+      if (auto lValue = object.lValue()) {
+        return Reference(BoundFunction(*lValue, *method));
+      } else if (auto lValue = object.unbox<RegisterValue>()) {
+        return Reference(BoundFunction(*lValue, *method));
+      } else {
+        TODO("Method calling on literals");
+      }
     }
 
     auto [fieldType, fieldIndex] = boxedField->first;
@@ -3749,12 +3792,12 @@ public:
     Encodings::BinaryOp& node,
     Reference& leftVal,
     NodeIndex nodeIndex,
-    Environment& environment,
-    std::ostream& outputFile
+    OutContext ctx
   ) {
 
     StatementContext context{.expectedType = leftVal.getType()};
-    auto rightVal = interpret(node.right, environment, outputFile, context);
+    auto rightVal =
+      interpret(node.right, ctx.environment, ctx.outputFile, context);
     auto coercedType = Reference::coerceType(&leftVal, &rightVal);
     if (!coercedType.has_value()) {
       crash(
@@ -3763,8 +3806,10 @@ public:
       );
     }
     auto [operandType, coercedLeft, coeredRight] = coercedType.value();
-    auto leftLiteral = toRegister(&coercedLeft, outputFile, environment);
-    auto rightLiteral = toRegister(&coeredRight, outputFile, environment);
+    auto leftLiteral =
+      toRegister(&coercedLeft, ctx.outputFile, ctx.environment);
+    auto rightLiteral =
+      toRegister(&coeredRight, ctx.outputFile, ctx.environment);
     auto resultType = operandType;
     std::string binaryOperator;
     switch (opType) {
@@ -3830,17 +3875,19 @@ public:
       break;
     }
     case TokenType::Mult: {
-      fmt::println("Multiplying a:");
-      parser.locationOf(node.left).underline(std::cout);
-      fmt::println("Multiplying b:");
-      parser.locationOf(node.right).underline(std::cout);
+      if (Logger::globalLevels & LogLevel::Compile) {
+        log("Multiplying a:");
+        parser.locationOf(node.left).underline(std::cout);
+        log("Multiplying b:");
+        parser.locationOf(node.right).underline(std::cout);
+      }
 
       if (
         auto left = leftLiteral.unbox<IntLiteral>(),
         right = rightLiteral.unbox<IntLiteral>();
         left && right
       ) {
-        fmt::println("Two int literals");
+        log("Two int literals");
         return Reference(IntLiteral(left->value * right->value));
       }
       if (
@@ -3848,10 +3895,10 @@ public:
         right = rightLiteral.unbox<FloatLiteral>();
         left && right
       ) {
-        fmt::println("Two float literals");
+        log("Two float literals");
         return Reference(FloatLiteral(left->value * right->value));
       }
-      fmt::println("Two ints or floats");
+      log("Two ints or floats");
       if (Pool().isInt(operandType)) binaryOperator = "mul";
       else if (Pool().isFloat(operandType)) binaryOperator = "fmul";
       else crashBinOp(node.operation, &leftVal, &rightVal);
@@ -4036,9 +4083,9 @@ public:
         parser.getToken(nodeIndex)->lexeme
       );
     }
-    auto resultName = Reference(environment.makeTemporary(resultType));
+    auto resultName = Reference(ctx.environment.makeTemporary(resultType));
     fmt::println(
-      outputFile,
+      ctx.outputFile,
       "{} = {} {} {}, {}",
       resultName,
       binaryOperator,
@@ -4077,7 +4124,8 @@ public:
       environment,
       outputFile,
       namedArgs,
-      selfArg
+      selfArg,
+      nodeIndex
     );
 
     // TODO: optional arguments

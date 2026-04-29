@@ -1,5 +1,7 @@
+#include "common.h"
 #include "types.h"
 #include "value.h"
+#include <variant>
 
 Environment* Environment::baseEnvironment() {
   static FunctionType printType{
@@ -13,7 +15,7 @@ Environment* Environment::baseEnvironment() {
   };
   static Function printDouble{
     .type = printType,
-    .globalName = "@.doubleToStr",
+    .globalName = ".doubleToStr",
   };
   static Environment baseEnvironment(
     std::unordered_map<Identifier, Reference>{
@@ -41,3 +43,7 @@ Environment* Environment::baseEnvironment() {
 
 u32 Environment::globalIndex = 0;
 u32 Environment::nextGlobalTemporary = 1;
+
+Reference BoundFunction::getSelf() {
+  return std::visit(overloaded{[](auto x) { return Reference(x); }}, self);
+}
