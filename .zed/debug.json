@@ -18,4 +18,11 @@
     "adapter": "GDB",
     "args": ["--test", "--breaks"],
   },
+  {
+    "label": "Debug abi test",
+    "program": "$ZED_WORKTREE_ROOT/build/blub",
+    "request": "launch",
+    "adapter": "GDB",
+    "args": ["--test", "--test-case=Visitor is Good"],
+  },
 ]

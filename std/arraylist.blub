@@ -1,0 +1,30 @@
+ArrayList :: [Element] struct {
+	data: []Element
+	capacity: usize
+}
+
+impl ArrayList {
+	# reserve :: fn(self: ^Self, usize)
+
+	push :: fn(self: ^Self, e: Element) {
+		using self
+		if (data.size >= capacity) {
+			capacity *= 2
+			data.data = realloc(data.data, capacity)
+		}
+
+		data.length += 1
+		data[data.length - 1] = e
+	}
+
+	# extend :: fn(^self, []Element)
+	free :: fn(self: Self) {
+		free(self.data.data)
+	}
+
+	pop :: fn(using self: ^Self) -> Element {
+		e := data[data.length-1]
+		data.length -= 1
+		return e
+	}
+}

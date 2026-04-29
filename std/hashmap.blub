@@ -1,0 +1,40 @@
+RobinHoodIndexMap :: [Key <: Hashable, Value] struct {
+	keys: [^]Key
+	values: [^]Value
+	robinHood: [^]u8
+	bucketCount: usize
+
+	impl {
+		Insertion :: union {
+			key: Key
+			value: Value
+			none: void
+		}
+
+		find :: fn(self: ^Self, key: Key) ?^Value {
+			hash := key.hash()
+			index := hash % buckets
+			startIndex := index
+			while (true) {
+				if (keys[index] == key) return ^values[index]
+				index += 1
+				index = index % buckets
+			}
+			return none
+		}
+		
+		remove :: fn(self: ^Self, key: ^Key) ?Value {
+			
+		}
+
+		add :: fn(self: ^Self, key: Key, value: Value) Self.Insertion {
+			bucket := self.find(^key)
+
+		}
+
+		# TODO: linear
+		# get :: fn(key: Key) ?^Value
+		# remove :: fn(key: ^Key) ?Value
+		# set :: fn(key: Key, value: Value) (?Key, ?Value)
+	}
+}
