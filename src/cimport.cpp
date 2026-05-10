@@ -163,11 +163,10 @@ TypeIndex parseRecord(
   node["tagUsed"].get(tagUsed);
   TypeIndex resultTypeIndex;
   if (tagUsed == "struct") {
-    static u32 anonIndex;
     auto [typeIndex, structIndex] = Pool().makeStruct(
       std::string(unprefixedName),
-      cName.empty() ? fmt::format("%.cstruct.{}", anonIndex++)
-                    : fmt::format("%.cstruct.{}", cName)
+      cName.empty() ? RegisterName(Environment::structIndex())
+                    : RegisterName(cName)
     );
 
     ondemand::array structFields;
@@ -188,7 +187,7 @@ TypeIndex parseRecord(
 
         TypeIndex fieldType;
         if (anonType) {
-          fieldType = anonType.value();
+          fieldType = anonType;
         } else {
           std::string_view fieldTypeName;
           structField["type"]["qualType"].get(fieldTypeName);
@@ -233,8 +232,8 @@ TypeIndex parseRecord(
           fieldTypeName.starts_with("struct ")
         ) {
           if (anonType) {
-            variantType = anonType.value();
-            anonType = std::nullopt;
+            variantType = anonType;
+            anonType = TypeIndex::null();
           } else {
             throw std::invalid_argument("Unknown type for union variant");
           }

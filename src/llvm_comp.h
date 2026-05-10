@@ -47,34 +47,34 @@ struct StatementContext {
   } returns;
 };
 
-struct CompilerContext {
-  struct {
-    std::ofstream* outputFileStream;
-    std::stringstream globalInitialization;
-  } blub;
-  struct {
-    vector<std::string> linkedLibraries;
-    vector<std::string> clangArgs;
-  } c;
-  struct {
-    std::ofstream* outputFileStream;
-    std::stringstream globalInitialization;
-    vector<std::string> linkedFiles;
-  } cuda;
+// struct CompilerContext {
+//   struct {
+//     std::ofstream* outputFileStream;
+//     std::stringstream globalInitialization;
+//   } blub;
+//   struct {
+//     vector<std::string> linkedLibraries;
+//     vector<std::string> clangArgs;
+//   } c;
+//   struct {
+//     std::ofstream* outputFileStream;
+//     std::stringstream globalInitialization;
+//     vector<std::string> linkedFiles;
+//   } cuda;
 
-  static CompilerContext& inst() {
-    static CompilerContext instance;
-    return instance;
-  }
-};
+//   static CompilerContext& inst() {
+//     static CompilerContext instance;
+//     return instance;
+//   }
+// };
 
 enum class TargetType { Cpu, Gpu };
 
-struct FunctionStub {
-  std::string_view name;
-  NodeIndex definitionNode;
-  FunctionType functionType;
-};
+// struct FunctionStub {
+//   std::string_view name;
+//   NodeIndex definitionNode;
+//   FunctionType functionType;
+// };
 
 struct SwitchCase {
   stringstream instructions;
@@ -97,10 +97,8 @@ public:
   Environment fileEnvironment;
   Parser& parser;
   std::span<NodeIndex> program;
-  std::queue<std::string> globalsStack;
   Logger log;
   TargetType targetType;
-  std::vector<FunctionStub> functionStubs;
 
   TranslationUnit(
     Parser& parser,
@@ -1454,87 +1452,6 @@ public:
       }
     }
     case NodeType::FunctionLiteral: {
-      auto node = parser.getFunctionLiteral(nodeIndex);
-      TypeIndex returnType = Pool()._void;
-      if (node.returnType.has_value()) {
-        StatementContext context;
-        auto boxedReturnType =
-          interpret(node.returnType.value(), environment, outputFile, context)
-            .unboxType();
-        if (!boxedReturnType) {
-          crash(
-            nodeIndex,
-            "Return type of function must be a compile-time known type"
-          );
-        }
-        returnType = *boxedReturnType;
-      }
-
-      std::string_view llvmName;
-      bool forwardDeclare = !node.body.has_value();
-      auto parameters = parser.getParameterList(node.parameters);
-      std::vector<TypeIndex> parameterTypes;
-      for (NodeIndex parameterIndex : parameters.requiredParameters) {
-        auto parameterDefinition = parser.getDefinition(parameterIndex);
-        if (!parameterDefinition.type.has_value()) {
-          crash(parameterIndex, "Parameters must have a type");
-        }
-
-        auto parameterType =
-          interpret(*parameterDefinition.type, environment, outputFile, context)
-            .unboxType();
-        if (!parameterType) {
-          crash(
-            parameterIndex,
-            "Parameter type must be a compile time-known type"
-          );
-        }
-
-        parameterTypes.push_back(*parameterType);
-      }
-      auto [_, tupleType] = Pool().tupleOf(std::move(parameterTypes));
-      auto functionType = FunctionType(tupleType, returnType);
-
-      // auto token = parser.getTokenIndex()
-      auto token = parser.getToken(nodeIndex);
-      token++;
-      if (token->type == TokenType::String) {
-        llvmName = token->lexeme;
-      } else if (context.name.has_value()) {
-        prefix = context.name.value();
-        llvmName = StringPool::inst().copy(
-          // TODO: figure out anonymous function naming here
-          forwardDeclare ? prefix : environment.addConstant(prefix)
-        );
-      } else {
-        if (forwardDeclare) {
-          crash(
-            nodeIndex,
-            "Can't forward declare anoymnous function; Anonymous functions "
-            "require a body"
-          );
-        }
-        llvmName = StringPool::inst().copy(
-          fmt::format("{}{}", environment.prefix, environment.nextGlobalIndex())
-        );
-      }
-
-      if (!forwardDeclare) {
-        functionStubs.push_back(
-          {.name = llvmName,
-           .definitionNode = nodeIndex,
-           .functionType = functionType}
-        );
-      } else {
-        bool isKernel = parser.getToken(nodeIndex)->type == TokenType::Kernel;
-        functionType.forwardDeclare(
-          llvmName,
-          globalsStack,
-          isKernel ? "ptx_kernel " : ""
-        );
-      }
-
-      return Reference(Function(functionType, llvmName));
     }
     case NodeType::Unary: {
       auto node = parser.getUnary(nodeIndex);
@@ -2207,7 +2124,7 @@ public:
       }
       environment.basicBlock = ifLabel;
       SwitchCase ifCase{
-        .result = interpret(node.value, environment, ifInstruction, context),
+        .result = interpret(node.ifClause, environment, ifInstruction, context),
         .entryBlock = ifLabel,
         .exitBlock = environment.basicBlock,
         .returns = environment.hasReturned,
@@ -2217,7 +2134,7 @@ public:
       std::optional<TypeIndex> resultType = ifCase.result.getType();
 
       // Else
-      auto hasElse = node.elseValue.has_value();
+      auto hasElse = node.elseClause.has_value();
       std::stringstream elseInstruction;
       auto elseContext(context);
       if (!context.expectedType) {
@@ -2228,7 +2145,7 @@ public:
       environment.basicBlock = elseLabel;
       SwitchCase elseCase = hasElse ? SwitchCase{
         .result = interpret(
-          *node.elseValue,
+          *node.elseClause,
           environment,
           elseInstruction,
           elseContext
@@ -2411,7 +2328,7 @@ public:
           break;
         }
         default:
-          TODO("TODO: implement struct fields");
+          TODO("TODO: implement default struct fields");
         }
       }
       typeInstruction << "}";
@@ -3648,15 +3565,13 @@ public:
     std::string_view fieldName = node.fieldName->lexeme;
 
     if (auto type = object.unboxType()) {
-      {
-        auto sizing = Pool().getSizing(*type);
-        if (fieldName == "size") {
-          return Reference(IntLiteral(sizing.byteSize));
-        } else if (fieldName == "alignment") {
-          return Reference(IntLiteral(sizing.alignment.byteAlignment()));
-        } else if (fieldName == "bitSize") {
-          return Reference(IntLiteral(sizing.bitSize));
-        }
+      auto sizing = Pool().getSizing(*type);
+      if (fieldName == "size") {
+        return Reference(IntLiteral(sizing.byteSize));
+      } else if (fieldName == "alignment") {
+        return Reference(IntLiteral(sizing.alignment.byteAlignment()));
+      } else if (fieldName == "bitSize") {
+        return Reference(IntLiteral(sizing.bitSize));
       }
 
       if (auto enumDefinition = Pool().getEnum(*type)) {

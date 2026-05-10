@@ -30,8 +30,15 @@ struct TypeIndex {
     return value == other.value;
   }
   bool isInfer();
+  explicit operator bool() const {
+    return value != 0;
+  }
 
   __attribute__((noinline, used)) void debug();
+
+  static inline TypeIndex null() {
+    return {0};
+  }
 };
 
 template <> struct std::hash<TypeIndex> {
@@ -56,7 +63,7 @@ const std::string_view SliceName = "%.slice";
 
 enum class LLVMStorage { VOID, LITERAL, VARIABLE };
 
-using OptionalType = std::optional<TypeIndex>;
+using OptionalType = TypeIndex;
 using TypeSpan = std::span<TypeIndex>;
 
 struct TypeField {
@@ -199,10 +206,10 @@ struct Struct {
   FieldMap fields;
   // SymbolMap statics;
   std::string name;
-  std::string llvmName;
+  RegisterName llvmName;
   std::vector<TypeIndex> fieldTypes;
 
-  Struct(std::string name, std::string llvmName)
+  Struct(std::string name, RegisterName llvmName)
       : name(name), llvmName(llvmName) {}
 
   std::optional<TypeField> getField(std::string_view fieldName) {
@@ -427,6 +434,7 @@ public:
   TypeIndex environment;
   TypeIndex generic;
   TypeIndex rangeLiteral;
+  TypeIndex unsignedRangeLiteral;
 
   TypeIndex addType(UnderlyingType type) {
     u32 index = underlyingTypes.size();
@@ -437,6 +445,9 @@ public:
   TypePool() {
     // 23 builtins initialized
     underlyingTypes.reserve(256);
+
+    // Index 0 is a null
+    underlyingTypes.push_back({});
 
     _void = addType(VoidType{});
     _u8 = addType(UnsignedInt(8));
@@ -467,6 +478,7 @@ public:
     environment = addType(EnvironmentType{});
     generic = addType(TypeOfGeneric{});
     rangeLiteral = addType(RangeLiteral{});
+    unsignedRangeLiteral = addType(RangeLiteral{});
   }
 
   TypeIndex pointerTo(TypeIndex type) {
@@ -499,6 +511,7 @@ public:
   }
 
   UnderlyingType& getType(TypeIndex type) {
+    assert(type.value != 0);
     return underlyingTypes[type.value];
   }
 
@@ -506,7 +519,7 @@ public:
 
   std::pair<TypeIndex, StructIndex> makeStruct(
     std::string name,
-    std::string llvmName
+    RegisterName llvmName
   ) {
     StructIndex structIndex{(u32)structPool.size()};
     structPool.emplace_back(name, llvmName);
@@ -590,13 +603,13 @@ public:
     UnderlyingType targetType = getType(targetIndex);
 
     auto type = coerce(valueIndex, targetIndex);
-    if (!type.has_value()) return std::nullopt;
+    if (!type) return TypeIndex::null();
 
     if (
       std::holds_alternative<Infer>(valueType) ||
       std::holds_alternative<VoidType>(valueType)
     ) {
-      return std::nullopt;
+      return TypeIndex::null();
     }
 
     if (type == intLiteral) return _s32;
@@ -613,16 +626,14 @@ public:
     std::span<TypeIndex> valueElements = tupleElements(value);
     std::span<TypeIndex> targetElements = tupleElements(targetType);
     if (valueElements.size() != targetElements.size()) {
-      return std::nullopt;
+      return TypeIndex::null();
     }
 
     for (int i = 0; i < valueElements.size(); i++) {
-      if (!isAssignable(
-             value = valueElements[i],
-             targetType = targetElements[i]
-          )
-             .has_value())
-        return std::nullopt;
+      if (
+        isAssignable(value = valueElements[i], targetType = targetElements[i])
+      )
+        return TypeIndex::null();
     }
 
     return targetType;
@@ -704,24 +715,24 @@ public:
     if (auto boxed = std::get_if<Slice>(&getType(type))) {
       return boxed->dereferencedType;
     }
-    return std::nullopt;
+    return TypeIndex::null();
   }
 
   OptionalType multiPointerElement(TypeIndex type) {
     if (auto boxed = std::get_if<MultiPointer>(&getType(type))) {
       return boxed->dereferencedType;
     }
-    return std::nullopt;
+    return TypeIndex::null();
   }
 
-  std::optional<SizedArray> sizedArray(TypeIndex type) {
+  SizedArray* sizedArray(TypeIndex type) {
     if (auto boxed = std::get_if<AlignedType>(&getType(type))) {
       return sizedArray(boxed->baseType);
     }
     if (auto boxed = std::get_if<SizedArray>(&getType(type))) {
-      return *boxed;
+      return boxed;
     }
-    return std::nullopt;
+    return nullptr;
   }
 
   TypeIndex sizedArrayOf(TypeIndex elementType, u32 size) {
@@ -758,6 +769,15 @@ public:
 
   Enum& getEnum(EnumIndex type) {
     return enumPool[type.value];
+  }
+
+  bool isNumber(TypeIndex type) {
+    return isAny<
+      Float,
+      FloatLiteralType,
+      IntLiteralType,
+      UnsignedInt,
+      SignedInt>(getType(type));
   }
 
   bool isFloat(TypeIndex type) {
@@ -935,33 +955,20 @@ public:
     };
   }
 
-  OptionalType coerce(TypeIndex a, TypeIndex b) {
+  TypeIndex coerce(TypeIndex a, TypeIndex b) {
     if (a == b) {
       return a;
     }
-    // {
-    //   auto unboxedA = a;
-    //   if (auto aAligned = std::get_if<AlignedType>(&aType)) {
-    //     unboxedA = aAligned->baseType;
-    //     aType = getType(aAligned->baseType);
-    //   }
-    //   auto unboxedB = b;
-    //   if (auto bAligned = std::get_if<AlignedType>(&bType)) {
-    //     unboxedB = bAligned->baseType;
-    //     bType = getType(bAligned->baseType);
-    //   }
-    //   if (unboxedA == unboxedB) {
-    //     return a;
-    //   }
-    // }
     auto aType = getType(a);
     auto bType = getType(b);
 
     if (subTypes(aType, bType)) return b;
     if (subTypes(bType, aType)) return a;
 
-    return std::nullopt;
+    return {0};
   }
+
+  span<TypeIndex> coerceableTypes(TypeIndex type);
 
   bool subTypes(UnderlyingType& child, UnderlyingType& parent) {
     if (isAny<Infer>(child)) return true;
@@ -1155,7 +1162,9 @@ struct LlvmName {
         [&o](Pointer x) { o << "ptr"; },
         [&o](MultiPointer x) { o << "ptr"; },
         [&o](Slice x) { o << "%.slice"; },
-        [&o](StructIndex x) { o << Pool().structPool[x.value].llvmName; },
+        [&o](StructIndex x) {
+          fmt::print(o, "%.struct.{}", Pool().structPool[x.value].llvmName);
+        },
         [&o](TupleIndex x) {
           bool hasMultiple = false;
           o << "{";

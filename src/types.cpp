@@ -3,7 +3,6 @@
 #include "fmt/format.h"
 #include "types.h"
 #include <ranges>
-#include <stdexcept>
 
 Logger logger(LogLevel::Compile);
 
@@ -38,7 +37,7 @@ OptionalType TypePool::dereference(TypeIndex type) {
     return ptr->dereferencedType;
   }
 
-  return std::nullopt;
+  return TypeIndex::null();
 }
 
 template <> struct fmt::formatter<TypeIndex> : ostream_formatter {};
@@ -127,4 +126,14 @@ void TypePool::registerStorage(
 
 void TypeIndex::debug() {
   fmt::println("{}: {}", TypeName(*this), LlvmName(*this));
+}
+
+span<TypeIndex> TypePool::coerceableTypes(TypeIndex type) {
+  static vector<TypeIndex> floatTypes = {Pool()._f32, Pool()._f16, Pool()._f64};
+  // TODO: add ints
+  static vector<TypeIndex> intTypes = {Pool().floatLiteral};
+  auto underlying = getType(type);
+  if (isAny<FloatLiteralType>(underlying)) return floatTypes;
+  if (isAny<IntLiteralType>(underlying)) return intTypes;
+  return {};
 }

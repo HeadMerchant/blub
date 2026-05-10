@@ -37,8 +37,8 @@ enum class CompTimeStatus { ComptimeOnly, Runtime, ComptimeKnown };
 struct TranslationUnit;
 class GenericValue {
 public:
-  TranslationUnit& translationUnit;
-  Environment& definitionEnvironment;
+  TranslationUnit* translationUnit;
+  Environment* definitionEnvironment;
   NodeIndex astNode;
   std::vector<std::string_view> parameterNames;
   std::unordered_map<TupleIndex, Reference*> cache;
@@ -65,8 +65,6 @@ struct FloatLiteral {
   FloatLiteral(double value, Float::Precision precision = Float::Precision::f32)
       : value(value), precision(precision) {}
 };
-
-using RegisterName = std::variant<std::string_view, u32>;
 
 enum class ValueScope { Local, Global };
 struct RegisterValue {
@@ -97,13 +95,13 @@ template <> struct fmt::formatter<StackValue> : ostream_formatter {};
 class Function {
 public:
   FunctionType type;
-  std::string_view globalName;
+  RegisterName globalName;
 };
 
 class BoundFunction {
 public:
   std::variant<StackValue, RegisterValue> self;
-  Function& method;
+  Function* method;
   Reference getSelf();
 };
 
@@ -131,11 +129,10 @@ struct Range {
       }
     }
 
-    return Pool().coerce(lowerType, upperType).value();
+    return Pool().coerce(lowerType, upperType);
   }
 };
 
-struct Reference;
 struct VoidRef {};
 struct ZeroInit {};
 struct CudaEnv {
@@ -194,7 +191,7 @@ struct Reference {
     if (auto type = std::get_if<TypeIndex>(&value)) return *type;
     if (auto type = std::get_if<Reference*>(&value))
       return (*type)->unboxType();
-    return std::nullopt;
+    return TypeIndex::null();
   }
 
   Function* unboxFunction() {
@@ -244,12 +241,11 @@ struct Reference {
     auto targetType = Pool().coerce(typeA, typeB);
     if (!targetType) return std::nullopt;
 
-    auto type = *targetType;
-    if (type == Pool().floatLiteral) {
+    if (targetType == Pool().floatLiteral) {
       if (typeA == Pool().intLiteral) {
         auto value = a->unbox<IntLiteral>()->value;
         return std::make_tuple(
-          type,
+          targetType,
           Reference(FloatLiteral(value)),
           Reference(b)
         );
@@ -258,14 +254,14 @@ struct Reference {
       if (typeB == Pool().intLiteral) {
         auto value = b->unbox<IntLiteral>()->value;
         return std::make_tuple(
-          type,
+          targetType,
           Reference(a),
           Reference(FloatLiteral(value))
         );
       }
     }
 
-    return std::make_tuple(type, Reference(a), Reference(b));
+    return std::make_tuple(targetType, Reference(a), Reference(b));
   }
 
   TypeIndex getType() const {
@@ -283,7 +279,7 @@ struct Reference {
         [](CudaEnv) { return Pool().environment; },
         [](GenericValue) { return Pool().generic; },
         [](Function x) { return Pool().addFunction(x.type); },
-        [](BoundFunction x) { return Pool().addFunction(x.method.type); },
+        [](BoundFunction x) { return Pool().addFunction(x.method->type); },
         [](Range x) { return Pool().rangeLiteral; },
         [](VoidRef x) { return Pool()._void; },
         [](ZeroInit) { return Pool().never; },
@@ -383,7 +379,9 @@ struct Reference {
         [&o](RegisterValue x) { o << x; },
         [&o](IntLiteral x) { o << x.value; },
         [&o](Function x) { fmt::print(o, "@\"{}\"", x.globalName); },
-        [&o](BoundFunction x) { o << x.method.globalName; },
+        [&o](BoundFunction x) {
+          fmt::print(o, "@\"{}\"", x.method->globalName);
+        },
         [&o](Reference* x) { o << *x; },
         [&o](Environment* x) {
           TODO("Can't convert environments into llvm names");
@@ -438,8 +436,6 @@ public:
   std::unordered_map<std::string_view, Reference> defs;
   std::vector<Environment*> imports;
   std::string prefix;
-  // TODO: scoping
-  std::vector<std::vector<std::string_view>> scope;
   std::vector<Environment*> usings;
   EnvType envType;
 
@@ -449,86 +445,78 @@ public:
   }
   bool quotePrefixedNames;
   static u32 nextGlobalTemporary;
+  static u32 nextStructIndex;
+
   u32 basicBlock;
   bool hasReturned = false;
 
-  Environment* parent;
   using WitnessTable =
     unordered_map<TypeIndex, unordered_map<Identifier, Reference>>;
+
   struct Impls {
     WitnessTable witnesses;
-
-    // ~Impls() {
-    //   fmt::println("killing witnesses");
-    // }
   };
   Impls impls;
   vector<Impls*> importedImpls;
+
+  std::vector<string_view> defsInsertionOrder;
+  struct Scope {
+    u32 namesIndex = 0;
+    OptionalType selfType = TypeIndex::null();
+    OptionalType returnType = TypeIndex::null();
+    struct {
+      bool hasReturned : 1 = false;
+    };
+  };
+  std::vector<Scope> scopes;
 
   std::string_view getPrefix() {
     return prefix;
   }
 
-  Environment()
-      : parent(Environment::baseEnvironment()), imports(), defs(), prefix(""),
-        envType(EnvType::Global), basicBlock(0u), log(LogLevel::Compile) {}
-
-  Environment(
-    Environment* parent,
-    std::string_view prefix,
-    bool quoteTemporaries = false
-  )
-      : parent(parent), imports(), defs(),
-        quotePrefixedNames(quoteTemporaries | parent->quotePrefixedNames),
-        envType(EnvType::Function), log(LogLevel::Compile) {
-    std::stringstream ss;
-    ss << parent->prefix << prefix << ".";
-    this->prefix = ss.str();
-  }
-
-  Environment(
-    Environment* parent,
-    std::string prefix,
-    bool quoteTemporaries = false
-  )
-      : parent(parent), prefix(prefix), imports(), defs(),
-        quotePrefixedNames(quoteTemporaries | parent->quotePrefixedNames) {}
-  Environment(
-    std::unordered_map<std::string_view, Reference> defs,
-    Environment* parent = nullptr
-  )
-      : parent(parent), defs(defs), imports() {}
-
-  Reference* find(std::string_view name) {
-    Environment* env = this;
-    while (env) {
-      auto it = env->defs.find(name);
-      if (it != env->defs.end()) {
-        return &it->second;
-      }
-      for (auto imported : env->usings) {
-        auto it = imported->defs.find(name);
-        if (it != imported->defs.end()) {
-          return &it->second;
-        }
-      }
-      env = env->parent;
-    }
-
-    return nullptr;
-  }
+  static unordered_map<string_view, Reference> defaults;
 
   bool isDefined(std::string_view name) {
     return defs.contains(name);
   }
 
-  std::optional<Reference*> define(std::string_view name, Reference value) {
+  Reference* define(std::string_view name, Reference value) {
     auto [ref, succeeded] = defs.emplace(name, value);
     if (succeeded) {
+      defsInsertionOrder.push_back(name);
       return &ref->second;
     } else {
-      return std::nullopt;
+      return nullptr;
     }
+  }
+
+private:
+  Reference* findLocal(string_view name) {
+    auto value = defs.find(name);
+    if (value != defs.end()) {
+      return &value->second;
+    }
+    return nullptr;
+  }
+
+public:
+  Reference* find(string_view name) {
+    auto value = defaults.find(name);
+    if (value != defaults.end()) {
+      return &value->second;
+    }
+
+    if (auto found = findLocal(name)) {
+      return found;
+    }
+
+    for (auto& import : usings) {
+      if (auto found = import->findLocal(name)) {
+        return found;
+      }
+    }
+
+    return nullptr;
   }
 
   u32 addTemporary() {
@@ -548,15 +536,6 @@ public:
 
   RegisterValue makeTemporary(TypeIndex type) {
     return RegisterValue(addTemporary(), type);
-  }
-
-  std::string addLabel(std::string name) {
-    return addLabel(std::move(name), addTemporary());
-  }
-
-  // labels only begin with "%" when used
-  std::string addLabel(std::string name, u32 index) {
-    return fmt::format("{}{}{}", parent->prefix, name, index);
   }
 
   StackValue makeGlobal(TypeIndex type) {
@@ -584,7 +563,9 @@ public:
   void debug(u32 depth = 0) {
     if (!(log.logLevel & log.globalLevels)) return;
     if (depth == 0) fmt::println("Symbols:");
-    for (auto& [name, _] : defs) {
+    assert(defs.size() == defsInsertionOrder.size());
+    for (auto name : defsInsertionOrder) {
+      assert(defs.contains(name));
       fmt::println("{: >{}}{}", "", depth * 2, name);
     }
     if (usings.empty()) return;
@@ -596,6 +577,15 @@ public:
 
   Reference* getStatic(Impls& impl, TypeIndex type, Identifier name) {
     auto typeAssociates = impl.witnesses.find(type);
+    // if (name == "size") {
+    //   auto result = typeAssociates->second.("size");
+    //   return Reference(IntLiteral(sizing.byteSize));
+    // } else if (name == "alignment") {
+    //   return Reference(IntLiteral(sizing.alignment.byteAlignment()));
+    // } else if (name == "bitSize") {
+    //   return Reference(IntLiteral(sizing.bitSize));
+    // }
+
     if (typeAssociates == impl.witnesses.end()) return nullptr;
     auto testValue = typeAssociates->second.find(name);
     if (testValue != typeAssociates->second.end()) {
@@ -606,6 +596,37 @@ public:
       log("\t{} = {}", name, value);
     }
     return nullptr;
+  }
+
+  pair<TypeIndex, Reference*> getMethod(TypeIndex type, Identifier fieldName) {
+    auto staticValue = getStatic(type, fieldName);
+    if (staticValue) {
+      log("Testing if {}.{} is a method", TypeName(type), fieldName);
+      log("{}", *staticValue);
+      if (auto function = staticValue->unboxFunction()) {
+        auto paramTypes = Pool().tupleElements(function->type.parameters);
+        if (paramTypes.empty()) {
+          return {{0}, nullptr};
+        }
+
+        auto selfType = paramTypes[0];
+        if (selfType == type) {
+          return {type, staticValue};
+        }
+        if (auto ptrType = Pool().dereference(selfType); type == ptrType) {
+          TODO("Calling methods on pointers");
+        }
+        return {{0}, nullptr};
+      } else {
+        return {{0}, nullptr};
+      }
+    }
+    for (auto targetType : Pool().coerceableTypes(type)) {
+      if (auto method = getMethod(targetType, fieldName); method.second) {
+        return method;
+      }
+    }
+    return {{0}, nullptr};
   }
 
   Reference* getStatic(TypeIndex type, Identifier name) {
@@ -626,16 +647,64 @@ public:
       debugI++;
     }
 
-    if (parent) {
-      log("Testing parent");
-      return parent->getStatic(type, name);
-    }
-
     return nullptr;
   }
 
   bool hasLocalImpl(TypeIndex type) {
     auto typeAssociates = impls.witnesses.find(type);
     return typeAssociates != impls.witnesses.end();
+  }
+
+  struct ScopeGuard {
+    Environment& env;
+    u32 scopeIndex;
+
+    ScopeGuard(Environment& env) : env(env), scopeIndex(env.scopes.size()) {}
+    ~ScopeGuard() {
+      assert(env.scopes.size() == scopeIndex);
+      env.popScope();
+    }
+  };
+
+  ScopeGuard pushScope() {
+    u32 length = defsInsertionOrder.size();
+    if (scopes.empty()) {
+      scopes.push_back({length});
+    } else {
+      auto currentScope = scopes.back();
+      currentScope.namesIndex = length;
+      scopes.push_back(currentScope);
+    }
+    return ScopeGuard(*this);
+  }
+
+private:
+  void popScope() {
+    Scope currentScope = scopes.back();
+    scopes.pop_back();
+    for (auto i = currentScope.namesIndex; i < defsInsertionOrder.size(); i++) {
+      auto name = defsInsertionOrder[i];
+      defs.erase(name);
+    }
+    defsInsertionOrder.resize(currentScope.namesIndex);
+  }
+
+public:
+  TypeIndex returnType() {
+    if (!scopes.empty()) {
+      return scopes.back().returnType;
+    }
+    return TypeIndex::null();
+  }
+
+  TypeIndex selfType() {
+    if (!scopes.empty()) {
+      return scopes.back().returnType;
+    }
+    return TypeIndex::null();
+  }
+
+  static u32 structIndex() {
+    return nextStructIndex++;
   }
 };

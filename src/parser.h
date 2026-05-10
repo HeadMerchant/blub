@@ -6,7 +6,6 @@
 #include <fmt/core.h>
 #include <iostream>
 #include <limits>
-#include <optional>
 #include <span>
 #include <stack>
 #include <vector>
@@ -50,6 +49,13 @@ enum class UnaryOps {
 
 struct NodeIndex {
   u32 value;
+  static inline NodeIndex null() {
+    return {0};
+  }
+
+  explicit operator bool() const {
+    return value != 0;
+  }
 };
 
 struct DataIndex {
@@ -67,12 +73,12 @@ struct ASTNode {
   NodeType nodeType;
 };
 
-using TokenPointer = const Tokenization::Token*;
+using TokenPointer = const Token*;
 using NodeList = std::vector<TokenIndex>;
 using DataSpan = std::span<u32>;
 using ChildSpan = std::span<NodeIndex>;
 using TokenSpan = std::span<TokenIndex>;
-using OptionalNode = std::optional<NodeIndex>;
+using OptionalNode = NodeIndex;
 static u32 MAX_NODE = std::numeric_limits<u32>::max();
 
 namespace Encodings {
@@ -122,11 +128,11 @@ struct Definition {
 
 struct If {
   NodeIndex condition;
-  NodeIndex value;
+  NodeIndex ifClause;
   // Don't need a separate node type for else because else only stores a single
   // expression
   // TODO: consider adding back else node for clearer messages?
-  OptionalNode elseValue;
+  OptionalNode elseClause;
 };
 
 struct Struct {
@@ -151,9 +157,12 @@ struct ForLoop {
   NodeIndex body;
 };
 
+struct ArgumentList {
+  std::span<NodeIndex> requiredArgs;
+  Encodings::NamedValues optionalArgs;
+};
 }; // namespace Encodings
 
-using namespace Tokenization;
 class Parser {
 public:
   Parser(Tokenizer& tokenizer)
@@ -310,7 +319,8 @@ public:
   }
 
   ASTNode getNode(NodeIndex index) {
-    return nodes[index.value];
+    assert(index.value != 0);
+    return nodes[index.value - 1];
   }
 
   NodeType nodeType(NodeIndex index) const {
@@ -416,19 +426,14 @@ public:
   }
 
   OptionalNode readOptional(u32 expectedIndex) const {
-    if (expectedIndex == MAX_NODE) return std::nullopt;
+    if (expectedIndex == MAX_NODE) return NodeIndex::null();
     return NodeIndex{expectedIndex};
-  }
-
-  u32 encodeOptional(OptionalNode child) {
-    if (child.has_value()) return child->value;
-    return MAX_NODE;
   }
 
   NodeIndex addNode(Encodings::FunctionLiteral node, TokenIndex token) {
     // Block stored directed after args
-    auto dataIndex = addData(encodeOptional(node.returnType));
-    addData(encodeOptional(node.body));
+    auto dataIndex = addData(node.returnType);
+    addData(node.body);
     return addNode(
       ASTNode{
         .left = dataIndex.value,
@@ -493,7 +498,7 @@ public:
     return addNode(
       ASTNode{
         .left = toIndex(node.name).value,
-        .right = encodeOptional(node.type),
+        .right = node.type.value,
         .token = toIndex(token),
         .nodeType = NodeType::Definition
       }
@@ -509,13 +514,13 @@ public:
   }
 
   NodeIndex addNode(Encodings::If node, TokenPointer token) {
-    std::vector<NodeIndex> children = {node.condition, node.value};
+    std::vector<NodeIndex> children = {node.condition, node.ifClause};
     auto dataIndex = addData(ChildSpan(children));
 
     return addNode(
       ASTNode{
         .left = dataIndex.value,
-        .right = encodeOptional(node.elseValue),
+        .right = node.elseClause.value,
         .token = toIndex(token),
         .nodeType = NodeType::If
       }
@@ -526,14 +531,14 @@ public:
     auto encoded = getNode(node, NodeType::If);
     return {
       .condition = {extraData[encoded.left]},
-      .value = {extraData[encoded.left + 1]},
-      .elseValue = readOptional(encoded.right)
+      .ifClause = {extraData[encoded.left + 1]},
+      .elseClause = readOptional(encoded.right)
     };
   }
 
   NodeIndex addNode(Encodings::Struct node, TokenPointer token) {
     auto dataIndex = addData(node.children);
-    addData(encodeOptional(node.implBlock));
+    addData(node.implBlock);
     return addNode(
       ASTNode{
         .left = dataIndex.value,
@@ -557,7 +562,7 @@ public:
   NodeIndex addNode(Encodings::DotAccessor node, TokenPointer token) {
     return addNode(
       ASTNode{
-        .left = encodeOptional(node.object),
+        .left = node.object.value,
         .right = toIndex(node.fieldName).value,
         .token = toIndex(token),
         .nodeType = NodeType::DotAccess
@@ -574,7 +579,7 @@ public:
   }
 
   NodeIndex addNode(Encodings::Enum node, TokenPointer token) {
-    auto dataIndex = addData(encodeOptional(node.rawType));
+    auto dataIndex = addData(node.rawType);
     addData(node.entries);
     return addNode(
       ASTNode{
@@ -650,7 +655,7 @@ public:
     bool infer = check(TokenType::Colon) || check(TokenType::Assign);
     if (infer) {
       return addNode(
-        Encodings::Definition{.name = name, .type = std::nullopt},
+        Encodings::Definition{.name = name, .type = NodeIndex::null()},
         token
       );
     }
@@ -694,7 +699,7 @@ public:
       auto value = expression();
       return addAssignment(expr, value, token);
     }
-    if (peek().binopAssignment().has_value()) {
+    if (Token::binopFromCompoundAssignment(peek().type).has_value()) {
       log("Binop assignment");
       auto token = advance();
       auto value = expression();
@@ -873,11 +878,11 @@ public:
       TokenPointer token;
       if ((token = match(TokenType::Not))) {
         op = UnaryOps::Not;
-      } else if ((token = match(Tokenization::TokenType::Pointer))) {
+      } else if ((token = match(TokenType::Pointer))) {
         op = UnaryOps::Reference;
-      } else if ((token = match(Tokenization::TokenType::Minus))) {
+      } else if ((token = match(TokenType::Minus))) {
         op = UnaryOps::Minus;
-      } else if ((token = match(Tokenization::TokenType::Xor))) {
+      } else if ((token = match(TokenType::Xor))) {
         op = UnaryOps::BitNot;
       } else if ((token = match(TokenType::MultiPointer))) {
         op = UnaryOps::MultiPointerTo;
@@ -1031,22 +1036,16 @@ public:
     );
   }
 
-  struct ArgumentList {
-    std::span<NodeIndex> requiredArgs;
-    Encodings::NamedValues optionalArgs;
-  };
-
-  ArgumentList getArgumentList(NodeIndex node) {
+  Encodings::ArgumentList getArgumentList(NodeIndex node) {
     auto encoded = getNode(node, NodeType::ArgumentList);
     auto [requiredLength, optionalLength, unused, _] = unpackInt(encoded.right);
     auto children = getChildren();
-    ArgumentList item = {
+    return {
       .requiredArgs = children.subspan(encoded.left, requiredLength),
       .optionalArgs = std::bit_cast<Encodings::NamedValues>(
         children.subspan(encoded.left + requiredLength, optionalLength)
       ),
     };
-    return item;
   }
 
   struct ParameterList {
@@ -1235,7 +1234,7 @@ public:
         "Prefix operator '.' must be followed by an identifier"
       );
       auto node =
-        Encodings::DotAccessor{.object = std::nullopt, .fieldName = name};
+        Encodings::DotAccessor{.object = NodeIndex::null(), .fieldName = name};
       return addNode(node, token);
     }
 
@@ -1317,8 +1316,8 @@ public:
       );
       auto value = assignment();
 
-      auto ifNode = Encodings::If{.condition = condition, .value = value};
-      OptionalNode elseNode = std::nullopt;
+      auto ifNode = Encodings::If{.condition = condition, .ifClause = value};
+      OptionalNode elseNode = NodeIndex::null();
 
       // Disambiguate when/else
       auto lastToken = current;
@@ -1331,7 +1330,7 @@ public:
       } else {
         current = lastToken;
       }
-      ifNode.elseValue = elseNode;
+      ifNode.elseClause = elseNode;
       return addNode(ifNode, ifToken);
     }
 
@@ -1470,13 +1469,13 @@ public:
 
     NodeIndex parameters = parameterList();
 
-    std::optional<NodeIndex> returnType = std::nullopt;
+    OptionalNode returnType = NodeIndex::null();
     if (check(TokenType::ThinArrow)) {
       advance();
       returnType = expression();
     }
 
-    OptionalNode body = std::nullopt;
+    OptionalNode body = NodeIndex::null();
     // Forward declaration
     if (!check(TokenType::StatementBreak)) {
       body = block();
@@ -1534,9 +1533,9 @@ public:
       } else if (match(TokenType::Impl)) {
         // TODO Next
         impl = block();
-        acceptN(Tokenization::TokenType::StatementBreak);
+        acceptN(TokenType::StatementBreak);
         consume(
-          Tokenization::TokenType::RightCurlyBrace,
+          TokenType::RightCurlyBrace,
           "Expected a closing '}' after impl block for struct"
         );
         break;
@@ -1610,8 +1609,7 @@ public:
       "Expected '[' for parameter declaration"
     );
 
-    auto parameters =
-      parameterList(Tokenization::TokenType::RightSquareBracket);
+    auto parameters = parameterList(TokenType::RightSquareBracket);
     auto value = expression();
     return addNode(
       Encodings::BinaryOp{
