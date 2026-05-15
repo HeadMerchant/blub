@@ -1,6 +1,7 @@
 #pragma once
 #include "../deps/doctest.h"
 #include "fmt/base.h"
+#include "tsl/ordered_map.h"
 #include <bit>
 #include <cstdint>
 #include <cstdlib>
@@ -115,7 +116,8 @@ struct StringPool {
 
 enum class LogLevel {
   Parsing = 1,
-  Tokenize = 2,
+  Tokenize = 1,
+  TypeCheck = 2,
   CImport = 4,
   Compile = 8,
 };
@@ -153,3 +155,21 @@ struct Logger {
 template <class... Ts> struct overloaded : Ts... {
   using Ts::operator()...;
 };
+
+template <
+  class Key,
+  class T,
+  class Hash = std::hash<Key>,
+  class KeyEqual = std::equal_to<Key>,
+  class Allocator = std::allocator<std::pair<Key, T>>,
+  class IndexType = std::uint_least32_t>
+using ordered_map = tsl::ordered_map<
+  Key,
+  T,
+  Hash,
+  KeyEqual,
+  Allocator,
+  std::vector<std::pair<Key, T>, Allocator>,
+  IndexType>;
+
+using std::abort;

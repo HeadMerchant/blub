@@ -117,7 +117,7 @@ enum class TokenType {
 
   // Builtins
   BUILTIN_NumCast,
-  BUILITN_BitCast,
+  BUILTIN_BitCast,
   BUILTIN_RegisterType,
   BUILTIN_CInclude,
   BUILTIN_CDefine,
@@ -233,7 +233,7 @@ public:
     static unordered_set<TokenType> builtinTokens = {
       TokenType::BUILTIN_RegisterType,
       TokenType::BUILTIN_NumCast,
-      TokenType::BUILITN_BitCast,
+      TokenType::BUILTIN_BitCast,
       TokenType::BUILTIN_CDefine,
       TokenType::BUILTIN_CInclude,
       TokenType::BUILTIN_CIncludeDir,

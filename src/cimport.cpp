@@ -201,6 +201,12 @@ TypeIndex parseRecord(
       }
     }
 
+    log("Struct fields for {}", cName);
+    for (auto [fieldName, type] : Pool().getStruct(structIndex).fields) {
+      fmt::println("Fieldname: {}", fieldName);
+      fmt::println("{}: {}", fieldName, TypeName(type));
+    }
+
     Pool().defineLLVMStruct(structIndex, globals);
     resultTypeIndex = typeIndex;
   } else if (tagUsed == "union") {

@@ -18,7 +18,7 @@ list(REMOVE_ITEM sources src/main.cpp)
 add_executable(blub ${sources} deps/doctest.h)
 target_include_directories(blub PRIVATE src)
 
-target_compile_options(blub PRIVATE -Werror=unused-variable)
+target_compile_options(blub PRIVATE -Werror=unused-variable -Werror=implicit-fallthrough)
 
 # option(ENABLE_TESTING "Enable doctest" ON)
 # if (NOT ENABLE_TESTING)
@@ -33,18 +33,30 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/fmtlib/fmt
   GIT_TAG        12.0.0)
 FetchContent_MakeAvailable(fmt)
-target_link_libraries(blub fmt::fmt)
 
 FetchContent_Declare(
   simdjson
   GIT_REPOSITORY https://github.com/simdjson/simdjson.git
   GIT_TAG  tags/v4.0.7
   GIT_SHALLOW TRUE)
-
 FetchContent_MakeAvailable(simdjson)
-target_link_libraries(blub simdjson)
 
-add_custom_command(
+FetchContent_Declare(
+    ordered_map
+    GIT_REPOSITORY https://github.com/Tessil/ordered-map.git
+    GIT_TAG        master
+)
+FetchContent_MakeAvailable(ordered_map)
+
+target_link_libraries(blub
+  PRIVATE
+    fmt::fmt
+    simdjson
+    tsl::ordered_map
+)
+
+
+add_custom_command (
     TARGET blub POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E create_symlink
             ${CMAKE_SOURCE_DIR}/lib

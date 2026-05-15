@@ -10,6 +10,7 @@
 #include <fmt/ostream.h>
 #include <fmt/ranges.h>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <queue>
@@ -17,6 +18,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -66,23 +68,59 @@ enum class LLVMStorage { VOID, LITERAL, VARIABLE };
 using OptionalType = TypeIndex;
 using TypeSpan = std::span<TypeIndex>;
 
-struct TypeField {
-  TypeIndex type;
-  u32 index;
-};
-
-using FieldMap = std::unordered_map<Identifier, TypeField>;
-
 using std::same_as;
+template <typename Range>
+concept TypeRange =
+  std::same_as<std::ranges::range_value_t<Range>, TypeIndex> &&
+  std::ranges::random_access_range<Range>;
 template <typename T>
 concept AggregateType = requires(T t) {
   { t.fields() } -> std::ranges::range;
-  requires same_as<std::ranges::range_value_t<decltype(t.fields())>, TypeIndex>;
+  requires TypeRange<decltype(t.fields())>;
 };
+
+using FieldMap = ordered_map<Identifier, TypeIndex>;
+struct FieldIndex {
+  TypeIndex type;
+  u32 index;
+  explicit operator bool() const {
+    return type.value != 0;
+  }
+};
+
+struct Struct {
+  FieldMap fields;
+  string_view name;
+  RegisterName llvmName;
+
+  Struct(string_view name, RegisterName llvmName)
+      : name(name), llvmName(llvmName) {}
+
+  FieldIndex getField(std::string_view fieldName) {
+    auto field = fields.find(fieldName);
+    if (field != fields.end()) {
+      return {field.value(), (u32)std::distance(fields.begin(), field)};
+    }
+
+    return {TypeIndex::null()};
+  }
+
+  bool defineField(Identifier name, TypeIndex type) {
+    auto [_, success] = fields.insert({name, type});
+    return success;
+  }
+
+  auto fieldTypes() {
+    return fields.values_container() | std::views::values;
+  }
+};
+
+using StructFieldType = decltype(std::declval<Struct>().fieldTypes());
+static_assert(TypeRange<StructFieldType>);
 
 struct StructIndex {
   u32 value;
-  TypeSpan fields();
+  StructFieldType fields();
 };
 static_assert(
   AggregateType<StructIndex>,
@@ -127,11 +165,14 @@ struct FunctionType {
   }
 
   void forwardDeclare(
-    std::string_view name,
+    RegisterName name,
     std::queue<std::string>& globals,
     string_view extraDeclarationInfo
   );
 };
+
+struct BoundFunctionType : FunctionType {};
+
 template <> struct std::hash<FunctionType> {
   std::size_t operator()(const FunctionType& k) const {
     using std::hash;
@@ -202,42 +243,13 @@ struct Sizing {
   }
 };
 
-struct Struct {
-  FieldMap fields;
-  // SymbolMap statics;
-  std::string name;
-  RegisterName llvmName;
-  std::vector<TypeIndex> fieldTypes;
-
-  Struct(std::string name, RegisterName llvmName)
-      : name(name), llvmName(llvmName) {}
-
-  std::optional<TypeField> getField(std::string_view fieldName) {
-    if (fields.contains(fieldName)) {
-      return fields[fieldName];
-    }
-
-    return std::nullopt;
-  }
-
-  bool defineField(Identifier name, TypeIndex type) {
-    auto [_, success] = fields.insert({
-      name,
-      TypeField{.type = type, .index = (u32)fields.size()}
-    });
-    fieldTypes.push_back(type);
-
-    return success;
-  }
-};
-
 struct Enum {
   std::unordered_map<Identifier, uint64_t> values;
-  std::string name;
+  string_view name;
   TypeIndex rawType;
   TypeIndex enumType;
 
-  Enum(std::string name, TypeIndex rawType)
+  Enum(string_view name, TypeIndex rawType)
       : values(), name(name), rawType(rawType) {}
 
   bool define(Identifier valueName, uint64_t value) {
@@ -351,6 +363,7 @@ using UnderlyingType = std::variant<
   TupleIndex,
   EnumIndex,
   FunctionType,
+  BoundFunctionType,
   Infer,
   Opaque,
   SizedArray,
@@ -367,7 +380,8 @@ using UnderlyingType = std::variant<
 template <typename T>
 concept IntRegister =
   same_as<T, SignedInt> || same_as<T, UnsignedInt> || same_as<T, Pointer> ||
-  same_as<T, MultiPointer> || same_as<T, FunctionType> || same_as<T, Slice>;
+  same_as<T, MultiPointer> || same_as<T, FunctionType> ||
+  same_as<T, FunctionType> || same_as<T, Slice>;
 
 struct Tuple {
   std::span<TypeIndex> types;
@@ -518,7 +532,7 @@ public:
   OptionalType dereference(TypeIndex type);
 
   std::pair<TypeIndex, StructIndex> makeStruct(
-    std::string name,
+    string_view name,
     RegisterName llvmName
   ) {
     StructIndex structIndex{(u32)structPool.size()};
@@ -526,25 +540,16 @@ public:
     return {addType(structIndex), structIndex};
   }
 
-  std::optional<Struct*> getStruct(TypeIndex type) {
-    if (auto structIndex = std::get_if<StructIndex>(&getType(type))) {
+  Struct* getStruct(TypeIndex type) {
+    if (auto structIndex = unbox<StructIndex>(type)) {
       return &structPool[structIndex->value];
     }
-    return std::nullopt;
+    return nullptr;
   }
 
   Struct& getStruct(StructIndex index) {
     return structPool[index.value];
   }
-
-  // std::optional<Struct*> getStruct(TypeIndex index) {
-  //   Type definition = (*this)[index];
-  //   if (definition.type == Intrinsic::STRUCT) {
-  //     return &getStruct(StructIndex{definition.definition});
-  //   }
-
-  //   return std::nullopt;
-  // }
 
   bool isPointer(TypeIndex index) {
     auto underlying = underlyingTypes[index.value];
@@ -559,30 +564,17 @@ public:
     return std::nullopt;
   }
 
-  std::optional<pair<TypeField, TypeIndex>> getFieldIndex(
-    TypeIndex typeIndex,
-    std::string_view fieldName
-  ) {
-    auto structDefinition = getStruct(typeIndex);
-    if (structDefinition) {
-      if (auto fieldDef = (*structDefinition)->getField(fieldName)) {
-        return pair(*fieldDef, typeIndex);
-      }
-      return std::nullopt;
+  FieldIndex getFieldIndex(TypeIndex typeIndex, string_view fieldName) {
+    if (auto structDefinition = getStruct(typeIndex)) {
+      return structDefinition->getField(fieldName);
     }
 
     if (auto slice = std::get_if<Slice>(&getType(typeIndex))) {
       if (fieldName == "data") {
-        return pair(
-          TypeField{
-            .type = multiPointerTo(slice->dereferencedType),
-            .index = 0
-          },
-          typeIndex
-        );
+        return {.type = multiPointerTo(slice->dereferencedType), .index = 0};
       }
       if (fieldName == "length") {
-        return pair(TypeField{.type = _usize, .index = 1}, typeIndex);
+        return {.type = _usize, .index = 1};
       }
     }
 
@@ -593,7 +585,7 @@ public:
       }
     }
 
-    return std::nullopt;
+    return {0};
   }
 
   // TODO: function overloading???
@@ -694,8 +686,14 @@ public:
     // );
     auto typeIndex = addType(type);
     functionCache[type] = typeIndex;
+    BoundFunctionType bound{type.parameters, type.returnType};
+    addType(bound);
 
     return typeIndex;
+  }
+
+  TypeIndex boundFunction(FunctionType type) {
+    return {addFunction(type).value + 1};
   }
 
   std::optional<FunctionType> functionType(TypeIndex type) {
@@ -704,6 +702,14 @@ public:
       return *function;
     }
 
+    return std::nullopt;
+  }
+
+  std::optional<FunctionType> boundFunctionType(TypeIndex type) {
+    auto underlyingType = getType(type);
+    if (auto function = std::get_if<BoundFunctionType>(&underlyingType)) {
+      return *function;
+    }
     return std::nullopt;
   }
 
@@ -756,8 +762,8 @@ public:
     return {addType(enumIndex), enumIndex};
   }
 
-  std::pair<TypeIndex, EnumIndex> addEnum(TypeIndex rawType, std::string name) {
-    return addEnum(Enum(name, std::move(rawType)));
+  std::pair<TypeIndex, EnumIndex> addEnum(TypeIndex rawType, string_view name) {
+    return addEnum(Enum(name, rawType));
   }
 
   Enum* getEnum(TypeIndex type) {
@@ -824,8 +830,11 @@ public:
         [](Pointer x) { return Sizing::fromBitSize(64); },
         [](MultiPointer x) { return Sizing::fromBitSize(64); },
         [](Slice x) { return Sizing::alignToPointer(2 * 8); },
-        // [this]<AggregateType T>(T x) { return getSizing() },
-        [this](StructIndex x) { return getSizing(getStruct(x).fieldTypes); },
+        [this](StructIndex x) {
+          auto fields =
+            getStruct(x).fields.values_container() | std::views::values;
+          return getSizing(fields);
+        },
         [this](TupleIndex x) { return getSizing(tupleElements(x)); },
         [this](EnumIndex x) { return getSizing(enumPool[x.value].rawType); },
         [](FunctionType x) { return Sizing::fromBitSize(64); },
@@ -934,7 +943,7 @@ public:
     return (size + alignment - 1) & ~(alignment - 1);
   }
 
-  Sizing getSizing(TypeSpan types) {
+  template <TypeRange Range> Sizing getSizing(Range types) {
     u32 structSize = 0;
     u32 structAlignment = 1;
 
@@ -1143,6 +1152,8 @@ struct TypeName {
     return o;
   }
 };
+template <typename... Args>
+concept LlvmNamesOnly = (!std::is_same_v<Args, TypeName> && ...);
 
 struct LlvmName {
   TypeIndex type;

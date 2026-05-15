@@ -11,8 +11,8 @@ TypePool& Pool() {
   return pool;
 }
 
-TypeSpan StructIndex::fields() {
-  return Pool().getStruct(*this).fieldTypes;
+StructFieldType StructIndex::fields() {
+  return Pool().getStruct(*this).fieldTypes();
 }
 
 TypeSpan TupleIndex::fields() {
@@ -49,10 +49,10 @@ void TypePool::defineLLVMStruct(
   Struct& structDefinition = getStruct(structIndex);
   globals.push(
     fmt::format(
-      "{} = type {{{}}}",
+      "%.struct.{} = type {{{}}}",
       structDefinition.llvmName,
       fmt::join(
-        structDefinition.fieldTypes |
+        structDefinition.fieldTypes() |
           transform([this](const auto x) { return LlvmName(x); }),
         ", "
       )
@@ -68,7 +68,7 @@ void TypePool::debugTypes() {
 }
 
 void FunctionType::forwardDeclare(
-  std::string_view name,
+  RegisterName name,
   std::queue<std::string>& globals,
   string_view extraDeclarationInfo
 ) {

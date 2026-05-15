@@ -589,7 +589,8 @@ TEST_CASE("Struct args and returns") {
   SUBCASE("Loading") {
     stringstream functionBody;
     Environment env;
-    env.envType = EnvType::Function;
+    auto guard = env.pushScope();
+    env.scopes.back().envType = EnvType::Function;
     env.nextTemporary = 4;
     OutContext ctx{.outputFile = functionBody, .environment = env};
     vector<Identifier> paramNames = {"vec"};
@@ -606,7 +607,8 @@ TEST_CASE("Struct args and returns") {
   }
   SUBCASE("Calling") {
     Environment env;
-    env.envType = EnvType::Function;
+    auto guard = env.pushScope();
+    env.scopes.back().envType = EnvType::Function;
     stringstream callSite;
     auto arg1 = env.makeTemporary(vec3);
     vector<Reference> args = {
@@ -637,7 +639,12 @@ TEST_CASE("Returning SSE") {
 
   // auto [quat, _] = Pool().tupleOf({f32, f32, f32, f32});
   auto [quat, structIndex] = Pool().makeStruct("quat", "%quat");
-  Pool().getStruct(structIndex).fieldTypes = {f32, f32, f32, f32};
+  Pool().getStruct(structIndex).fields = {
+    {"x", f32},
+    {"y", f32},
+    {"z", f32},
+    {"w", f32}
+  };
   TupleIndex paramTuple = Pool().tupleOf({quat, quat}).second;
   Function function{
     .type = FunctionType{.parameters = paramTuple, .returnType = quat},
@@ -656,7 +663,8 @@ TEST_CASE("Returning SSE") {
     stringstream functionBody;
     Environment env;
     env.nextTemporary = 5;
-    env.envType = EnvType::Function;
+    auto guard = env.pushScope();
+    env.scopes.back().envType = EnvType::Function;
     OutContext ctx{.outputFile = functionBody, .environment = env};
     vector<Identifier> paramNames = {"q1", "q2"};
     loadParameterRegisters(ctx, function.type, paramNames);
@@ -678,7 +686,8 @@ TEST_CASE("Returning SSE") {
   }
   SUBCASE("Calling") {
     Environment env;
-    env.envType = EnvType::Function;
+    auto guard = env.pushScope();
+    env.scopes.back().envType = EnvType::Function;
     stringstream callSite;
     auto arg1 = env.makeTemporary(quat);
     auto arg2 = env.makeTemporary(quat);
@@ -723,7 +732,9 @@ TEST_CASE("Passing in memory") {
 
   // auto matrix = ;
   auto [matrix, structIndex] = Pool().makeStruct("", "%mat");
-  Pool().getStruct(structIndex).fieldTypes = {Pool().sizedArrayOf(f32, 16)};
+  Pool().getStruct(structIndex).fields = {
+    {"array", Pool().sizedArrayOf(f32, 16)}
+  };
   TupleIndex paramTuple =
     Pool().tupleOf({matrix, Pool().sizedArrayOf(Pool()._s16, 8)}).second;
   Function function{
@@ -744,7 +755,8 @@ TEST_CASE("Passing in memory") {
     Environment env;
     u32 nextTemporary = 7;
     env.nextTemporary = nextTemporary;
-    env.envType = EnvType::Function;
+    auto guard = env.pushScope();
+    env.scopes.back().envType = EnvType::Function;
     OutContext ctx{.outputFile = functionBody, .environment = env};
     vector<Identifier> paramNames = {"q1", "q2"};
     loadParameterRegisters(ctx, function.type, paramNames);
@@ -758,7 +770,8 @@ TEST_CASE("Passing in memory") {
   }
   SUBCASE("Calling") {
     Environment env;
-    env.envType = EnvType::Function;
+    auto guard = env.pushScope();
+    env.scopes.back().envType = EnvType::Function;
     stringstream callSite;
     auto arg1 = env.makeTemporary(matrix);
     auto arg2 = env.makeTemporary(matrix);

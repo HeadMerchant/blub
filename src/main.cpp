@@ -2,7 +2,7 @@
 #include "fmt/base.h"
 #include "fmt/format.h"
 #include "fmt/ostream.h"
-#include "llvm_comp.h"
+#include "llvmcomp.h"
 #include <cstdlib>
 #include <filesystem>
 #include <getopt.h>
@@ -80,7 +80,11 @@ int main(int argc, char** argv) {
       break;
     }
     case ArgFlags::log: {
-      fmt::println("log flags: {}", optarg);
+      if (!optarg) {
+        fmt::println("Setting all log flags");
+        Logger::globalLevels = LogLevel(-1);
+        break;
+      }
       string_view flags(optarg);
       for (auto c : flags) {
         int logLevel = 0;
@@ -98,7 +102,7 @@ int main(int argc, char** argv) {
           break;
         }
         case 't': {
-          logLevel = (int)LogLevel::Tokenize;
+          logLevel = (int)LogLevel::TypeCheck;
           break;
         }
         default: {
@@ -128,6 +132,8 @@ int main(int argc, char** argv) {
   }
 
   std::string_view sourceFile(argv[optind]);
+  fmt::print("Input filename: ");
+  fmt::println("{}", sourceFile);
 
   if (executable.empty()) {
     executable = fs::path(sourceFile).stem().string();
@@ -184,7 +190,7 @@ int main(int argc, char** argv) {
   auto& contextInst = CompilerContext::inst();
   contextInst.blub.outputFileStream = &outFile;
   contextInst.cuda.outputFileStream = &outKernel;
-  TranslationUnit::compile(sourceFile, TargetType::Cpu);
+  Compiler::compile(sourceFile, TargetType::Cpu);
   outFile << "define void @.ctor() {\n"
           << CompilerContext::inst().blub.globalInitialization.str()
           << "ret void\n}";

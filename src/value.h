@@ -6,16 +6,12 @@
 #include "types.h"
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 #include <string_view>
+#include <tsl/ordered_map.h>
 #include <unordered_map>
 #include <variant>
 #include <vector>
-
-struct Reference;
-
-using StringType = std::string;
-using ArrayType = std::vector<Reference*>;
-using FloatType = float;
 
 class Environment;
 std::string_view getEnvPrefix(Environment* env);
@@ -160,7 +156,6 @@ using UnderlyingValue = std::variant<
   IntLiteral,
   Function,
   BoundFunction,
-  Reference*,
   Never,
   Range,
   VoidRef,
@@ -176,28 +171,24 @@ struct Reference {
     int isInitialized : 1 = false;
   } flags;
 
-  static Reference assigned(const Reference& other) {
-    if (auto boxed = std::get_if<Reference*>(&other.value)) {
-      return Reference(*boxed);
-    }
-    return Reference(other.value);
-  }
-
   static Reference Void() {
     return Reference(VoidRef{});
   }
 
   Opt unboxType() {
     if (auto type = std::get_if<TypeIndex>(&value)) return *type;
-    if (auto type = std::get_if<Reference*>(&value))
-      return (*type)->unboxType();
     return TypeIndex::null();
+  }
+
+  Environment* unboxEnv() {
+    if (auto env = unbox<Environment*>()) {
+      return *env;
+    }
+    return nullptr;
   }
 
   Function* unboxFunction() {
     if (auto func = std::get_if<Function>(&value)) return func;
-    if (auto func = std::get_if<Reference*>(&value))
-      return (*func)->unboxFunction();
     return nullptr;
   }
 
@@ -220,48 +211,12 @@ struct Reference {
     if (auto intLit = std::get_if<IntLiteral>(&value)) {
       return Reference(FloatLiteral(intLit->value));
     }
-    if (auto ref = std::get_if<Reference*>(&value)) {
-      return (*ref)->coerceFloat(precision);
-    }
     throw std::invalid_argument(
       fmt::format(
         "Attempted to coerce value of type {} to float",
         TypeName(type)
       )
     );
-  }
-
-  static optional<std::tuple<TypeIndex, Reference, Reference>> coerceType(
-    Reference* a,
-    Reference* b
-  ) {
-    auto typeA = a->getType();
-    auto typeB = b->getType();
-
-    auto targetType = Pool().coerce(typeA, typeB);
-    if (!targetType) return std::nullopt;
-
-    if (targetType == Pool().floatLiteral) {
-      if (typeA == Pool().intLiteral) {
-        auto value = a->unbox<IntLiteral>()->value;
-        return std::make_tuple(
-          targetType,
-          Reference(FloatLiteral(value)),
-          Reference(b)
-        );
-      }
-
-      if (typeB == Pool().intLiteral) {
-        auto value = b->unbox<IntLiteral>()->value;
-        return std::make_tuple(
-          targetType,
-          Reference(a),
-          Reference(FloatLiteral(value))
-        );
-      }
-    }
-
-    return std::make_tuple(targetType, Reference(a), Reference(b));
   }
 
   TypeIndex getType() const {
@@ -279,27 +234,19 @@ struct Reference {
         [](CudaEnv) { return Pool().environment; },
         [](GenericValue) { return Pool().generic; },
         [](Function x) { return Pool().addFunction(x.type); },
-        [](BoundFunction x) { return Pool().addFunction(x.method->type); },
+        [](BoundFunction x) { return Pool().boundFunction(x.method->type); },
         [](Range x) { return Pool().rangeLiteral; },
         [](VoidRef x) { return Pool()._void; },
         [](ZeroInit) { return Pool().never; },
         [](Kernel x) { return Pool().addFunction(x.function); },
-        [](InstancedKernel x) { return Pool().addFunction(x.kernel.function); }
+        [](InstancedKernel x) { return Pool().addFunction(x.kernel.function); },
       },
       value
     );
   }
 
-  using OptStack = std::optional<StackValue>;
-  OptStack lValue() {
-    return std::visit(
-      overloaded{
-        [](StackValue x) -> OptStack { return x; },
-        [](Reference* x) -> OptStack { return x->lValue(); },
-        [](auto x) -> OptStack { return std::nullopt; },
-      },
-      value
-    );
+  StackValue* lValue() {
+    return unbox<StackValue>();
   }
 
   bool isComptime() {
@@ -315,41 +262,28 @@ struct Reference {
       CudaEnv>(value);
     if (comptime) {
       return true;
-    } else if (auto ref = std::get_if<Reference*>(&value)) {
-      return (*ref)->isComptime();
     }
     return false;
   }
 
-  std::optional<bool> unboxBool() {
-    if (auto x = std::get_if<bool>(&value)) return *x;
-    if (auto x = std::get_if<Reference*>(&value)) return (*x)->unboxBool();
-    return std::nullopt;
-  }
-
-  std::optional<int64_t> getInt() {
-    if (auto x = std::get_if<IntLiteral>(&value)) return x->value;
-    if (auto x = std::get_if<Reference*>(&value)) return (*x)->getInt();
-    return std::nullopt;
+  int64_t* getInt() {
+    if (auto x = unbox<IntLiteral>()) return &x->value;
+    return nullptr;
   }
 
   std::optional<double> getFloat() {
     if (auto x = std::get_if<FloatLiteral>(&value)) return x->value;
     if (auto x = std::get_if<IntLiteral>(&value)) return x->value;
-    if (auto x = std::get_if<Reference*>(&value)) return (*x)->getFloat();
-    return std::nullopt;
-  }
-
-  std::optional<Environment*> unboxEnv() {
-    if (auto x = std::get_if<Environment*>(&value)) return *x;
-    if (auto x = std::get_if<Reference*>(&value)) return (*x)->unboxEnv();
     return std::nullopt;
   }
 
   template <typename T> T* unbox() {
     if (auto x = std::get_if<T>(&value)) return x;
-    if (auto x = std::get_if<Reference*>(&value)) return (*x)->unbox<T>();
     return nullptr;
+  }
+
+  bool* unboxBool() {
+    return unbox<bool>();
   }
 
   friend std::ostream& operator<<(std::ostream& o, const Reference& x) {
@@ -431,13 +365,12 @@ enum class EnvType { Global, Function };
 
 class Environment {
 public:
-  Logger log;
+  static Logger log;
   static u32 globalIndex;
-  std::unordered_map<std::string_view, Reference> defs;
+  ordered_map<string_view, Reference> defs;
   std::vector<Environment*> imports;
   std::string prefix;
   std::vector<Environment*> usings;
-  EnvType envType;
 
   u32 nextTemporary = 1;
   u32 lastTemporary() {
@@ -447,7 +380,7 @@ public:
   static u32 nextGlobalTemporary;
   static u32 nextStructIndex;
 
-  u32 basicBlock;
+  u32 currentLabel = 0;
   bool hasReturned = false;
 
   using WitnessTable =
@@ -459,7 +392,6 @@ public:
   Impls impls;
   vector<Impls*> importedImpls;
 
-  std::vector<string_view> defsInsertionOrder;
   struct Scope {
     u32 namesIndex = 0;
     OptionalType selfType = TypeIndex::null();
@@ -467,6 +399,7 @@ public:
     struct {
       bool hasReturned : 1 = false;
     };
+    EnvType envType = EnvType::Global;
   };
   std::vector<Scope> scopes;
 
@@ -481,31 +414,25 @@ public:
   }
 
   Reference* define(std::string_view name, Reference value) {
+    if (log.canLog()) log("Defining {}: {}", name, TypeName(value.getType()));
     auto [ref, succeeded] = defs.emplace(name, value);
     if (succeeded) {
-      defsInsertionOrder.push_back(name);
-      return &ref->second;
-    } else {
-      return nullptr;
+      return &ref.value();
     }
+    return nullptr;
   }
 
 private:
   Reference* findLocal(string_view name) {
     auto value = defs.find(name);
     if (value != defs.end()) {
-      return &value->second;
+      return &value.value();
     }
     return nullptr;
   }
 
 public:
   Reference* find(string_view name) {
-    auto value = defaults.find(name);
-    if (value != defaults.end()) {
-      return &value->second;
-    }
-
     if (auto found = findLocal(name)) {
       return found;
     }
@@ -516,11 +443,20 @@ public:
       }
     }
 
+    auto value = defaults.find(name);
+    if (value != defaults.end()) {
+      return &value->second;
+    }
     return nullptr;
   }
 
+  EnvType envType() {
+    if (scopes.empty()) return EnvType::Global;
+    return scopes.back().envType;
+  }
+
   u32 addTemporary() {
-    switch (envType) {
+    switch (envType()) {
     case EnvType::Function: {
       u32 index = nextTemporary;
       nextTemporary += 1;
@@ -530,6 +466,9 @@ public:
       u32 index = nextGlobalTemporary;
       nextGlobalTemporary += 1;
       return index;
+    }
+    default: {
+      throw std::invalid_argument("Internal error: missed environment type");
     }
     }
   }
@@ -558,14 +497,10 @@ public:
     return globalIndex++;
   }
 
-  static Environment* baseEnvironment();
-
   void debug(u32 depth = 0) {
-    if (!(log.logLevel & log.globalLevels)) return;
+    if (!log.canLog()) return;
     if (depth == 0) fmt::println("Symbols:");
-    assert(defs.size() == defsInsertionOrder.size());
-    for (auto name : defsInsertionOrder) {
-      assert(defs.contains(name));
+    for (auto [name, _] : defs) {
       fmt::println("{: >{}}{}", "", depth * 2, name);
     }
     if (usings.empty()) return;
@@ -655,19 +590,32 @@ public:
     return typeAssociates != impls.witnesses.end();
   }
 
-  struct ScopeGuard {
+  struct [[nodiscard]] ScopeGuard {
     Environment& env;
     u32 scopeIndex;
 
-    ScopeGuard(Environment& env) : env(env), scopeIndex(env.scopes.size()) {}
+    ScopeGuard(const ScopeGuard&) = delete;
+    ScopeGuard& operator=(const ScopeGuard&) = delete;
+
+    explicit ScopeGuard(Environment& env)
+        : env(env), scopeIndex(env.scopes.size()) {
+      log("Pushing scope");
+    }
+
     ~ScopeGuard() {
       assert(env.scopes.size() == scopeIndex);
+      log(
+        "Popping scope: Current: {}, Prev: {}",
+        env.defs.size(),
+        env.scopes.back().namesIndex
+      );
       env.popScope();
     }
   };
 
   ScopeGuard pushScope() {
-    u32 length = defsInsertionOrder.size();
+    fmt::println("Creating pushed scope");
+    u32 length = defs.size();
     if (scopes.empty()) {
       scopes.push_back({length});
     } else {
@@ -680,13 +628,12 @@ public:
 
 private:
   void popScope() {
-    Scope currentScope = scopes.back();
+    u32 prevScopeSize = scopes.back().namesIndex;
     scopes.pop_back();
-    for (auto i = currentScope.namesIndex; i < defsInsertionOrder.size(); i++) {
-      auto name = defsInsertionOrder[i];
-      defs.erase(name);
+    while (defs.size() != prevScopeSize) {
+      log("Removing '{}' from scope", defs.back().first);
+      defs.pop_back();
     }
-    defsInsertionOrder.resize(currentScope.namesIndex);
   }
 
 public:

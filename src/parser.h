@@ -158,9 +158,15 @@ struct ForLoop {
 };
 
 struct ArgumentList {
-  std::span<NodeIndex> requiredArgs;
-  Encodings::NamedValues optionalArgs;
+  std::span<NodeIndex> positional;
+  Encodings::NamedValues named;
 };
+
+struct ParameterList {
+  std::span<NodeIndex> requiredParameters;
+  std::span<NodeIndex> optionalParameters;
+};
+
 }; // namespace Encodings
 
 class Parser {
@@ -261,11 +267,11 @@ public:
   }
 
   TokenIndex getTokenIndex(NodeIndex node) const {
-    return nodes[node.value].token;
+    return getNode(node).token;
   }
 
   TokenPointer getToken(NodeIndex node) const {
-    return toPointer(nodes[node.value].token);
+    return toPointer(getNode(node).token);
   }
 
   TokenPointer match(TokenType type) {
@@ -305,30 +311,26 @@ public:
     return tokens[last > current.value ? current.value : last];
   }
 
-  const NodeIndex nodeIndex() {
-    return NodeIndex{.value = (u32)nodes.size() - 1};
-  }
-
   const DataIndex dataIndex() {
     return {(u32)extraData.size() - 1};
   }
 
   NodeIndex addNode(ASTNode node) {
     nodes.push_back(node);
-    return nodeIndex();
+    return {(u32)nodes.size()};
   }
 
-  ASTNode getNode(NodeIndex index) {
+  ASTNode getNode(NodeIndex index) const {
     assert(index.value != 0);
     return nodes[index.value - 1];
   }
 
   NodeType nodeType(NodeIndex index) const {
-    return nodes[index.value].nodeType;
+    return getNode(index).nodeType;
   }
 
   ASTNode getNode(NodeIndex index, NodeType type) const {
-    auto encoded = nodes[index.value];
+    auto encoded = getNode(index);
     assert(encoded.nodeType == type);
     return encoded;
   }
@@ -371,7 +373,7 @@ public:
   }
 
   TokenPointer toPointer(TokenIndex index) const {
-    return tokens.data() + index.value;
+    return &tokens[index.value];
   }
 
   NodeIndex addNode(Encodings::Declaration node, TokenIndex token) {
@@ -676,7 +678,6 @@ public:
       );
     }
 
-    log("Defining {}", getDefinition(name).name->lexeme);
     return name;
   }
 
@@ -1041,19 +1042,14 @@ public:
     auto [requiredLength, optionalLength, unused, _] = unpackInt(encoded.right);
     auto children = getChildren();
     return {
-      .requiredArgs = children.subspan(encoded.left, requiredLength),
-      .optionalArgs = std::bit_cast<Encodings::NamedValues>(
+      .positional = children.subspan(encoded.left, requiredLength),
+      .named = std::bit_cast<Encodings::NamedValues>(
         children.subspan(encoded.left + requiredLength, optionalLength)
       ),
     };
   }
 
-  struct ParameterList {
-    std::span<NodeIndex> requiredParameters;
-    std::span<NodeIndex> optionalParameters;
-  };
-
-  ParameterList getParameterList(NodeIndex node) {
+  Encodings::ParameterList getParameterList(NodeIndex node) {
     auto encoded = getNode(node, NodeType::ParameterList);
     auto [requiredLength, optionalLength, inputType, _] =
       unpackInt(encoded.right);
@@ -1343,6 +1339,7 @@ public:
         TokenType::String,
         "import must be followed by a file path string"
       );
+      log("Import file: {}", fileNode->lexeme);
       return addNode(
         Encodings::UnaryOp(
           {.operand = {toIndex(fileNode).value}, .operation = UnaryOps::Import}
@@ -1634,6 +1631,18 @@ public:
     crash(getToken(node), fmt, std::forward<Args>(args)...);
   }
 
+  [[clang::noinline]] void underline(NodeIndex node) const {
+    underline(getToken(node));
+  }
+
+  [[clang::noinline]] void underline(TokenPointer token) const {
+    tokenizer.locationOf(token->lexeme).underline(std::cerr);
+  }
+
+  [[clang::noinline]] void underline(Tokenizer::TokenLocation loc) const {
+    loc.underline(std::cerr);
+  }
+
   template <typename... Args>
   [[noreturn]] void crash(
     TokenPointer token,
@@ -1649,7 +1658,7 @@ public:
       location.line,
       location.column
     );
-    location.underline(out);
+    underline(location);
     fmt::println(out, fmt, std::forward<Args>(args)...);
     dumpNodes();
     abort();
@@ -1657,7 +1666,7 @@ public:
 
   void dumpNodes() const {
     if (!(Logger::globalLevels & LogLevel::Parsing)) return;
-    for (u32 i = 0; i < nodes.size(); i++) {
+    for (u32 i = 1; i <= nodes.size(); i++) {
       fmt::println("Node type: {}", (u32)nodeType({i}));
       locationOf({i}).underline(std::cout);
     }

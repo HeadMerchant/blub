@@ -3,27 +3,22 @@
 #include "tokenizer.h"
 template <typename T>
 
-concept AstVisitor = requires(
-  T t,
-  NodeIndex nodeIndex,
-  TokenPointer token,
-  Encodings::UnaryOp& unaryOp,
-  Encodings::Block& block,
-  Encodings::If& ifExpr,
-  Encodings::Enum& enumExpr,
-  Encodings::Declaration& declaration,
-  Encodings::Definition& definition,
-  Encodings::ArgumentList& argList
-) {
+concept AstVisitor = requires(T t, NodeIndex nodeIndex, TokenPointer token) {
   typename T::ReturnType;
   { t.setVisitedNode(nodeIndex) };
-  { t.block(block) } -> std::same_as<typename T::ReturnType>;
-  { t.arrayLiteral(block) } -> std::same_as<typename T::ReturnType>;
+  { t.block(Encodings::Block{}) } -> std::same_as<typename T::ReturnType>;
+  {
+    t.arrayLiteral(Encodings::Block{})
+  } -> std::same_as<typename T::ReturnType>;
   {
     t.when(nodeIndex, span<pair<NodeIndex, NodeIndex>>{})
   } -> std::same_as<typename T::ReturnType>;
-  { t.declaration(declaration) } -> std::same_as<typename T::ReturnType>;
-  { t.definition(definition) } -> std::same_as<typename T::ReturnType>;
+  {
+    t.declaration(Encodings::Declaration{})
+  } -> std::same_as<typename T::ReturnType>;
+  {
+    t.definition(Encodings::Definition{})
+  } -> std::same_as<typename T::ReturnType>;
   { t.character(token) } -> std::same_as<typename T::ReturnType>;
   { t.string(token) } -> std::same_as<typename T::ReturnType>;
   { t.nullString(token) } -> std::same_as<typename T::ReturnType>;
@@ -47,38 +42,60 @@ concept AstVisitor = requires(
     t.sizedArray(nodeIndex, nodeIndex)
   } -> std::same_as<typename T::ReturnType>;
   { t.index(nodeIndex, nodeIndex) } -> std::same_as<typename T::ReturnType>;
-  { t.call(nodeIndex, argList) } -> std::same_as<typename T::ReturnType>;
-  { t.exclusiveRange(nodeIndex) } -> std::same_as<typename T::ReturnType>;
-  { t.align(nodeIndex) } -> std::same_as<typename T::ReturnType>;
-  { t.impl(nodeIndex) } -> std::same_as<typename T::ReturnType>;
-  { t.functionLiteral(nodeIndex) } -> std::same_as<typename T::ReturnType>;
-  { t.numCast(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.bitCast(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.cImport(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.cDefine(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.cInclude(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.cIncludeDir(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.link(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.linkDir(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.type(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.import(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.dereference(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.reference(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.unaryNot(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.sliceType(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.multiPointerTo(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.multiPointerFrom(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.unaryMinus(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.bitwiseNot(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.makeSlice(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.returnExpr(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.usingExpr(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.cudaImport(unaryOp) } -> std::same_as<typename T::ReturnType>;
-  { t.ifExpr(ifExpr) } -> std::same_as<typename T::ReturnType>;
-  { t.structExpr(nodeIndex) } -> std::same_as<typename T::ReturnType>;
-  { t.dotAccess(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  {
+    t.call(nodeIndex, Encodings::ArgumentList{})
+  } -> std::same_as<typename T::ReturnType>;
+  {
+    t.exclusiveRange(nodeIndex, nodeIndex)
+  } -> std::same_as<typename T::ReturnType>;
+  { t.align(nodeIndex, nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.impl(nodeIndex, nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  {
+    t.functionLiteral(Encodings::ParameterList{}, nodeIndex, nodeIndex)
+  } -> std::same_as<typename T::ReturnType>;
+  {
+    t.numCast(Encodings::ArgumentList{})
+  } -> std::same_as<typename T::ReturnType>;
+  {
+    t.bitCast(Encodings::ArgumentList{})
+  } -> std::same_as<typename T::ReturnType>;
+  {
+    t.cImport(Encodings::ArgumentList{})
+  } -> std::same_as<typename T::ReturnType>;
+  {
+    t.cDefine(Encodings::ArgumentList{})
+  } -> std::same_as<typename T::ReturnType>;
+  {
+    t.cInclude(Encodings::ArgumentList{})
+  } -> std::same_as<typename T::ReturnType>;
+  {
+    t.cIncludeDir(Encodings::ArgumentList{})
+  } -> std::same_as<typename T::ReturnType>;
+  { t.link(Encodings::ArgumentList{}) } -> std::same_as<typename T::ReturnType>;
+  {
+    t.linkDir(Encodings::ArgumentList{})
+  } -> std::same_as<typename T::ReturnType>;
+  { t.type(Encodings::ArgumentList{}) } -> std::same_as<typename T::ReturnType>;
+  { t.import(token) } -> std::same_as<typename T::ReturnType>;
+  { t.dereference(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.reference(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.unaryNot(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.sliceType(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.multiPointerTo(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.multiPointerFrom(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.unaryMinus(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.bitwiseNot(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.makeSlice(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.returnExpr(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.usingExpr(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.cudaImport(token) } -> std::same_as<typename T::ReturnType>;
+  { t.ifExpr(Encodings::If{}) } -> std::same_as<typename T::ReturnType>;
+  { t.structExpr(Encodings::Struct{}) } -> std::same_as<typename T::ReturnType>;
+  {
+    t.dotAccess(Encodings::DotAccessor{})
+  } -> std::same_as<typename T::ReturnType>;
   { t.argList(nodeIndex) } -> std::same_as<typename T::ReturnType>;
-  { t.enumExpr(enumExpr) } -> std::same_as<typename T::ReturnType>;
+  { t.enumExpr(Encodings::Enum{}) } -> std::same_as<typename T::ReturnType>;
   { t.multiLineString(nodeIndex) } -> std::same_as<typename T::ReturnType>;
   { t.forLoop(nodeIndex) } -> std::same_as<typename T::ReturnType>;
   { t.apply(nodeIndex, nodeIndex) } -> std::same_as<typename T::ReturnType>;
@@ -229,16 +246,17 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
   t.setVisitedNode(nodeIndex);
   switch (encoded.nodeType) {
   case NodeType::Block: {
+    auto block = parser.getBlock(nodeIndex);
     auto token = parser.getToken(nodeIndex);
     switch (token->type) {
     case TokenType::LeftCurlyBrace: {
-      return t.block(nodeIndex);
+      return t.block(block);
     }
     case TokenType::LeftSquareBracket: {
-      return t.arrayLiteral(nodeIndex);
+      return t.arrayLiteral(block);
     }
     case TokenType::LeftParen: {
-      return TODO("remove");
+      TODO("remove");
     }
     case TokenType::When: {
       auto node = parser.getBlock(nodeIndex);
@@ -313,8 +331,10 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
   case NodeType::Assignment: {
     auto node = parser.getNode(nodeIndex);
     TokenPointer token = parser.getToken(node.token);
+    NodeIndex left{node.left};
+    NodeIndex right{node.right};
     if (auto opType = Token::binopFromCompoundAssignment(token->type)) {
-      t.binopAssign(node.left, node.right, opType);
+      return t.binopAssign(left, right, *opType);
     } else if (token->type != TokenType::Assign) {
       parser.crash(
         token,
@@ -322,7 +342,7 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
         token->lexeme
       );
     } else {
-      return t.assign(node.left, node.right);
+      return t.assign(left, right);
     }
   }
 
@@ -331,92 +351,95 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
 
     auto opType = node.operation->type;
 
-    auto a = node.left;
-    auto b = node.right;
-    return binopVisit(a, b, opType, parser, t);
+    NodeIndex a = node.left;
+    NodeIndex b = node.right;
+    return binopVisit(a, b, nodeIndex, opType, parser, t);
   }
   case NodeType::FunctionLiteral: {
-    t.functionLiteral(nodeIndex);
+    auto func = parser.getFunctionLiteral(nodeIndex);
+    auto params = parser.getParameterList(func.parameters);
+    return t.functionLiteral(params, func.returnType, func.body);
   }
   case NodeType::Unary: {
     auto node = parser.getUnary(nodeIndex);
 
     switch (node.operation) {
-    case UnaryOps::CompilerBuiltin:
+    case UnaryOps::CompilerBuiltin: {
+      auto builtinToken = parser.getToken(parser.getNode(nodeIndex).token);
       if (node.operation == UnaryOps::CompilerBuiltin) {
-        auto builtinToken = parser.getToken(parser.getNode(nodeIndex).token);
+        auto argsList = parser.getArgumentList(node.operand);
         switch (builtinToken->type) {
         case TokenType::BUILTIN_NumCast: {
-          return t.numCast(node);
+          return t.numCast(argsList);
         }
-        case TokenType::BUILITN_BitCast: {
-          return t.bitCast(node);
+        case TokenType::BUILTIN_BitCast: {
+          return t.bitCast(argsList);
         }
         case TokenType::BUILTIN_CImport: {
-          return t.cImport(node);
+          return t.cImport(argsList);
         }
         case TokenType::BUILTIN_CDefine: {
-          return t.cDefine(node);
+          return t.cDefine(argsList);
         }
         case TokenType::BUILTIN_CInclude: {
-          return t.cInclude(node);
+          return t.cInclude(argsList);
         }
         case TokenType::BUILTIN_CIncludeDir: {
-          return t.cIncludeDir(node);
+          return t.cIncludeDir(argsList);
         }
         case TokenType::BUILTIN_Link: {
-          return t.link(node);
+          return t.link(argsList);
         }
         case TokenType::BUILTIN_LinkDir: {
-          return t.linkDir(node);
+          return t.linkDir(argsList);
         }
         case TokenType::BUILTIN_Type: {
-          return t.type(node);
+          return t.type(argsList);
         }
         default: {
-          parser
-            .crash(nodeIndex, "Malformed builtin '@{}'", builtinToken->lexeme);
         }
         }
       }
+      parser.crash(nodeIndex, "Malformed builtin '@{}'", builtinToken->lexeme);
+    }
     case UnaryOps::Import: {
-      return t.import(node);
+      return t.import(parser.toPointer({node.operand.value}));
     }
     case UnaryOps::Dereference: {
-      return t.dereference(node);
+      return t.dereference(node.operand);
     }
     case UnaryOps::Reference: {
-      return t.reference(node);
+      return t.reference(node.operand);
     }
     case UnaryOps::Not: {
-      return t.unaryNot(node);
+      return t.unaryNot(node.operand);
     }
     case UnaryOps::SliceType: {
-      return t.sliceType(node);
+      return t.sliceType(node.operand);
     }
     case UnaryOps::MultiPointerTo: {
-      return t.multiPointerTo(node);
+      return t.multiPointerTo(node.operand);
     }
     case UnaryOps::MultiPointerFrom: {
-      return t.multiPointerFrom(node);
+      return t.multiPointerFrom(node.operand);
     }
     case UnaryOps::Minus: {
-      return t.unaryMinus(node);
+      return t.unaryMinus(node.operand);
     }
     case UnaryOps::BitNot: {
-      return t.bitwiseNot(node);
+      return t.bitwiseNot(node.operand);
     }
     case UnaryOps::MakeSlice: {
-      return t.makeSlice(node);
+      return t.makeSlice(node.operand);
     }
     case UnaryOps::Return: {
-      return t.returnExpr(node);
+      return t.returnExpr(node.operand);
     }
     case UnaryOps::Using: {
-      return t.usingExpr(node);
+      return t.usingExpr(node.operand);
     }
     case UnaryOps::CudaImport: {
-      return t.cudaImport(node);
+      return t.cudaImport(parser.getToken(nodeIndex));
     }
     }
   }
@@ -425,10 +448,11 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
     return t.ifExpr(node);
   }
   case NodeType::Struct: {
-    return t.structExpr(nodeIndex);
+    return t.structExpr(parser.getStruct(nodeIndex));
   }
   case NodeType::DotAccess: {
-    return t.dotAccess(nodeIndex);
+    auto node = parser.getDotAccess(nodeIndex);
+    return t.dotAccess(node);
   }
   case NodeType::ArgumentList: {
     return t.argList(nodeIndex);
@@ -440,7 +464,7 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
     );
   }
   case NodeType::Enum: {
-    return t.enumExpr(nodeIndex);
+    return t.enumExpr(parser.getEnumDefinition(nodeIndex));
   }
   case NodeType::MultiLineString: {
     return t.multiLineString(nodeIndex);
@@ -450,7 +474,7 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
   }
   case NodeType::Apply: {
     auto node = parser.getNode(nodeIndex);
-    return t.apply(node.left, node.right);
+    return t.apply({node.left}, {node.right});
   }
   }
   parser.crash(nodeIndex, "Unknown node type");
