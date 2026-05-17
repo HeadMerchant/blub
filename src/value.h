@@ -3,6 +3,7 @@
 #include "fmt/format.h"
 #include "fmt/ostream.h"
 #include "parser.h"
+#include "tokenizer.h"
 #include "types.h"
 #include <cstdint>
 #include <optional>
@@ -14,11 +15,6 @@
 #include <vector>
 
 class Environment;
-std::string_view getEnvPrefix(Environment* env);
-
-using Definition = std::pair<std::string_view, TypeIndex>;
-
-using IntType = int;
 
 class LLVMFunction {
 public:
@@ -101,7 +97,9 @@ public:
   Reference getSelf();
 };
 
-struct Never {};
+struct Never {
+  TypeIndex type = TypeIndex::null();
+};
 
 using RangeBound = std::variant<IntLiteral, RegisterValue>;
 struct Range {
@@ -228,7 +226,7 @@ struct Reference {
         [](Reference* x) { return x->getType(); },
         [](IntLiteral x) { return x.type; },
         [](FloatLiteral x) { return Pool().floatLiteral; },
-        [](Never) { return Pool().never; },
+        [](Never x) { return x.type ? Pool().never : x.type; },
         [](TypeIndex) { return Pool().type; },
         [](Environment*) { return Pool().environment; },
         [](CudaEnv) { return Pool().environment; },
@@ -280,6 +278,15 @@ struct Reference {
   template <typename T> T* unbox() {
     if (auto x = std::get_if<T>(&value)) return x;
     return nullptr;
+  }
+
+  double unboxFloat() {
+    if (auto floatVal = unbox<FloatLiteral>()) {
+      return floatVal->value;
+    } else if (auto intVal = unbox<IntLiteral>()) {
+      return intVal->value;
+    }
+    throw std::invalid_argument("Can't unbox float for non-float/int value");
   }
 
   bool* unboxBool() {
@@ -368,6 +375,7 @@ public:
   static Logger log;
   static u32 globalIndex;
   ordered_map<string_view, Reference> defs;
+  vector<Tokenizer::TokenLocation> defLocations;
   std::vector<Environment*> imports;
   std::string prefix;
   std::vector<Environment*> usings;
@@ -394,7 +402,7 @@ public:
 
   struct Scope {
     u32 namesIndex = 0;
-    OptionalType selfType = TypeIndex::null();
+    OptionalType self = TypeIndex::null();
     OptionalType returnType = TypeIndex::null();
     struct {
       bool hasReturned : 1 = false;
@@ -413,11 +421,24 @@ public:
     return defs.contains(name);
   }
 
-  Reference* define(std::string_view name, Reference value) {
+  Reference* define(
+    std::string_view name,
+    Reference value,
+    Tokenizer::TokenLocation location
+  ) {
     if (log.canLog()) log("Defining {}: {}", name, TypeName(value.getType()));
     auto [ref, succeeded] = defs.emplace(name, value);
     if (succeeded) {
+      defLocations.push_back(location);
       return &ref.value();
+    }
+    return nullptr;
+  }
+
+  Tokenizer::TokenLocation* definitionLocation(string_view name) {
+    auto def = defs.find(name);
+    if (def != defs.end()) {
+      return &defLocations[std::distance(defs.begin(), def)];
     }
     return nullptr;
   }
@@ -628,10 +649,12 @@ public:
 
 private:
   void popScope() {
+    assert(defLocations.size() == defs.size());
     u32 prevScopeSize = scopes.back().namesIndex;
     scopes.pop_back();
     while (defs.size() != prevScopeSize) {
       log("Removing '{}' from scope", defs.back().first);
+      defLocations.pop_back();
       defs.pop_back();
     }
   }
@@ -645,10 +668,10 @@ public:
   }
 
   TypeIndex selfType() {
-    if (!scopes.empty()) {
-      return scopes.back().returnType;
+    if (scopes.empty()) {
+      return TypeIndex::null();
     }
-    return TypeIndex::null();
+    return scopes.back().self;
   }
 
   static u32 structIndex() {

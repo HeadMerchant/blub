@@ -36,6 +36,10 @@ struct TypeIndex {
     return value != 0;
   }
 
+  bool operator<(const TypeIndex& other) const {
+    return value < other.value;
+  }
+
   __attribute__((noinline, used)) void debug();
 
   static inline TypeIndex null() {
@@ -409,7 +413,10 @@ public:
 
   std::vector<Tuple> tuplePool;
   std::vector<TypeIndex> tupleTypeIndices;
-  std::unordered_map<std::vector<TypeIndex>, std::pair<TypeIndex, TupleIndex>>
+  std::map<
+    std::vector<TypeIndex>,
+    std::pair<TypeIndex, TupleIndex>,
+    VecSpanCompare<TypeIndex>>
     tuples;
   std::unordered_map<u32, std::unordered_map<TypeIndex, TypeIndex>> sizedArrays;
   // TODO: function
@@ -544,6 +551,13 @@ public:
     if (auto structIndex = unbox<StructIndex>(type)) {
       return &structPool[structIndex->value];
     }
+    return std::visit(
+      overloaded{
+        [&]<RecursiveType T>(T x) { return getStruct(x.rawType()); },
+        [](auto) -> Struct* { return nullptr; }
+      },
+      getType(type)
+    );
     return nullptr;
   }
 
@@ -638,6 +652,24 @@ public:
   //   }
   //   std::cout << std::endl;
   // }
+  std::pair<TypeIndex, TupleIndex> tupleOf(std::span<const TypeIndex> types) {
+    auto it = tuples.find(types);
+    if (it != tuples.end()) {
+      return it->second;
+    }
+
+    TupleIndex tupleIndex{(u32)tuplePool.size()};
+
+    vector ownedTypes(types.begin(), types.end());
+    tuplePool.emplace_back(ownedTypes, getSizing(types));
+
+    auto typeIndex = addType(tupleIndex);
+    tupleTypeIndices.push_back(typeIndex);
+
+    std::pair<TypeIndex, TupleIndex> cached{typeIndex, tupleIndex};
+    tuples[std::move(ownedTypes)] = cached;
+    return cached;
+  }
 
   std::pair<TypeIndex, TupleIndex> tupleOf(std::vector<TypeIndex> types) {
     if (tuples.contains(types)) {
@@ -1046,6 +1078,16 @@ public:
     return nullptr;
   }
 
+  BoundFunctionType* unboxBoundFunction(TypeIndex type) {
+    auto x = std::get_if<BoundFunctionType>(&getType(type));
+    if (x) {
+      fmt::println("Unboxing method");
+    } else {
+      fmt::println("Failed to unbox method");
+    }
+    return x;
+  }
+
   bool isAggregate(TypeIndex type) {
     return std::visit(
       overloaded{
@@ -1098,6 +1140,15 @@ struct TypeName {
         [&o](EnumIndex x) { o << Pool().enumPool[x.value].name; },
         [&o](FunctionType x) {
           print(o, Pool().tupleTypeIndices[x.parameters.value]);
+          o << " -> ";
+          print(o, x.returnType);
+        },
+        [&o](BoundFunctionType x) {
+          auto definitionParams = Pool().tupleElements(x.parameters);
+          auto [callParams, _] = Pool().tupleOf(definitionParams.subspan(1));
+          print(o, definitionParams[0]);
+          o << ".";
+          print(o, callParams);
           o << " -> ";
           print(o, x.returnType);
         },

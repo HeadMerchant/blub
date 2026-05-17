@@ -5,7 +5,6 @@
 #include <bit>
 #include <fmt/core.h>
 #include <iostream>
-#include <limits>
 #include <span>
 #include <stack>
 #include <vector>
@@ -44,7 +43,13 @@ enum class UnaryOps {
   Minus,
   BitNot,
   Return,
-  Using
+  Using,
+  /* TODO: make these builtins their own nodes
+    Link,
+    LinkDir,
+    Type,
+    Include,
+    */
 };
 
 struct NodeIndex {
@@ -79,7 +84,6 @@ using DataSpan = std::span<u32>;
 using ChildSpan = std::span<NodeIndex>;
 using TokenSpan = std::span<TokenIndex>;
 using OptionalNode = NodeIndex;
-static u32 MAX_NODE = std::numeric_limits<u32>::max();
 
 namespace Encodings {
 struct Declaration {
@@ -427,11 +431,6 @@ public:
     return {.token = toPointer(encoded.token)};
   }
 
-  OptionalNode readOptional(u32 expectedIndex) const {
-    if (expectedIndex == MAX_NODE) return NodeIndex::null();
-    return NodeIndex{expectedIndex};
-  }
-
   NodeIndex addNode(Encodings::FunctionLiteral node, TokenIndex token) {
     // Block stored directed after args
     auto dataIndex = addData(node.returnType);
@@ -453,8 +452,8 @@ public:
     auto startIndex = encoded.left;
     return {
       .parameters = {encoded.right},
-      .returnType = readOptional(parameters[startIndex]),
-      .body = readOptional(parameters[startIndex + 1])
+      .returnType = {parameters[startIndex]},
+      .body = {parameters[startIndex + 1]}
     };
   }
 
@@ -509,10 +508,7 @@ public:
 
   Encodings::Definition getDefinition(NodeIndex node) {
     auto encoded = getNode(node, NodeType::Definition);
-    return {
-      .name = toPointer({encoded.left}),
-      .type = readOptional(encoded.right)
-    };
+    return {.name = toPointer({encoded.left}), .type = {encoded.right}};
   }
 
   NodeIndex addNode(Encodings::If node, TokenPointer token) {
@@ -534,7 +530,7 @@ public:
     return {
       .condition = {extraData[encoded.left]},
       .ifClause = {extraData[encoded.left + 1]},
-      .elseClause = readOptional(encoded.right)
+      .elseClause = {encoded.right}
     };
   }
 
@@ -557,7 +553,7 @@ public:
     auto children = getChildren();
     return {
       .children = children.subspan(encoded.left, encoded.right),
-      .implBlock = readOptional(children[encoded.left + encoded.right].value)
+      .implBlock = {children[encoded.left + encoded.right].value}
     };
   }
 
@@ -574,10 +570,7 @@ public:
 
   Encodings::DotAccessor getDotAccess(NodeIndex node) {
     auto encoded = getNode(node, NodeType::DotAccess);
-    return {
-      .object = readOptional(encoded.left),
-      .fieldName = toPointer({encoded.right})
-    };
+    return {.object = {encoded.left}, .fieldName = toPointer({encoded.right})};
   }
 
   NodeIndex addNode(Encodings::Enum node, TokenPointer token) {
@@ -600,7 +593,7 @@ public:
       std::span(extraData).subspan(encoded.left + 1, encoded.right)
     );
 
-    return {.rawType = readOptional(rawType), .entries = entries};
+    return {.rawType = {rawType}, .entries = entries};
   }
 
   NodeIndex addNode(Encodings::ForLoop node, TokenPointer token) {
@@ -719,7 +712,7 @@ public:
     NodeIndex expr;
     if (auto op = match(TokenType::ExclusiveRange)) {
       auto node = Encodings::BinaryOp{
-        .left = {MAX_NODE},
+        .left = NodeIndex::null(),
         .right = logicalAnd(),
         .operation = op
       };
@@ -739,7 +732,7 @@ public:
         if (peek().isClosingToken()) {
           auto node = Encodings::BinaryOp{
             .left = expr,
-            .right = {MAX_NODE},
+            .right = NodeIndex::null(),
             .operation = op
           };
           expr = addNode(node);
@@ -916,6 +909,8 @@ public:
       } else if (auto token = match(TokenType::LeftSquareBracket)) {
         if (match(TokenType::RightSquareBracket)) {
           log("We making a slice");
+          if (log.canLog())
+            tokenizer.locationOf(getToken(expr)->lexeme).underline(std::cout);
           return addNode(
             Encodings::UnaryOp{
               .operand = expr,
@@ -1282,7 +1277,7 @@ public:
       if (peek().isClosingToken()) {
         return addNode(
           Encodings::UnaryOp{
-            .operand = {MAX_NODE},
+            .operand = NodeIndex::null(),
             .operation = UnaryOps::Return
           },
           token
@@ -1579,7 +1574,7 @@ public:
       if (match(TokenType::Assign)) {
         enumEntries.push_back({toIndex(name), expression()});
       } else {
-        enumEntries.push_back({toIndex(name), {MAX_NODE}});
+        enumEntries.push_back({toIndex(name), NodeIndex::null()});
       }
       if (!match(TokenType::Comma)) {
         acceptN(TokenType::StatementBreak);

@@ -3,6 +3,7 @@
 #include "cimport.h"
 #include "common.h"
 #include "compilercontext.h"
+#include "fmt/format.h"
 #include "fmt/ostream.h"
 #include "parser.h"
 #include "tokenizer.h"
@@ -14,6 +15,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -89,7 +91,6 @@ struct Compiler {
   } returns;
 
   fs::path inputFilePath;
-  Environment fileEnvironment;
   std::span<NodeIndex> program;
   // TODO: should this move to std::stringstream w/ rdbuf?
   std::queue<std::string> globalsStack;
@@ -120,8 +121,11 @@ struct Compiler {
   ) {
     log("Compiling node: {}", index.value);
     auto oldStack = stackItems;
-    stackItems =
-      {.outputFile = &outFile, .expectedType = targetType, .nodeIndex = index};
+    stackItems.outputFile = &outFile;
+    stackItems.expectedType = targetType;
+    stackItems.nodeIndex = index;
+
+    typeChecker.check(nodeIndex, targetType);
     auto result = astVisit(index, parser, *this);
     stackItems = oldStack;
     return result;
@@ -162,27 +166,34 @@ struct Compiler {
   ReturnType arrayLiteral(Encodings::Block node) {
     std::vector<Reference> elements;
     elements.reserve(node.elements.size());
-    auto type = Pool().infer;
-
-    auto resultType = typeChecker.check(nodeIndex).type;
-
-    if (elements.empty()) {
+    if (node.elements.empty()) {
       crash(nodeIndex, "Empty array literal");
+    }
+    auto type = typeChecker.check(nodeIndex, expectedType).type;
+    TypeIndex elementType;
+    if (auto sizedArray = Pool().sizedArray(type)) {
+      elementType = sizedArray->dereferencedType;
+    } else {
+      crash(
+        nodeIndex,
+        "Expected type for array literal was not sized array, but was {}",
+        TypeName(type)
+      );
     }
 
     for (auto element : node.elements) {
-      elements.push_back(compile(element));
+      elements.push_back(compile(element, elementType));
     }
 
     auto resultArray = Reference(ZeroInit{});
     u32 i = 0;
     for (auto& element : elements) {
       auto loaded = toRegister(element);
-      auto newArray = environment.makeTemporary(resultType);
+      auto newArray = environment.makeTemporary(type);
       emitLine(
         "{} = insertvalue {} {}, {} {}, {}",
         newArray,
-        LlvmName(resultType),
+        LlvmName(elementType),
         resultArray,
         LlvmName(type),
         loaded,
@@ -335,7 +346,7 @@ struct Compiler {
 
     StackItems frame = stackItems;
     frame.name = definitionName;
-    auto guard = push(frame);
+    auto oldFrame = push(frame);
     log("Using name: {}", name);
 
     if (environment.isDefined(definitionName)) {
@@ -359,11 +370,21 @@ struct Compiler {
         );
       }
 
-      environment.define(definitionName, value);
+      environment
+        .define(definitionName, value, parser.locationOf(node.definition));
+      log(
+        "Defined {} with type {}",
+        definitionName,
+        TypeName(environment.find(definitionName)->getType())
+      );
       return Reference::Void();
     } else if (assignmentToken == TokenType::Assign) {
       // TODO: pointer stability might be sussy; consider index
-      auto assignee = makeDefinition(definitionNode.name, definitionNode.type);
+      auto assignee = makeDefinition(
+        definitionNode.name,
+        definitionNode.type,
+        node.definition
+      );
 
       TypeIndex assignedType = assignee->type;
       assignedType = Pool().isAssignable(
@@ -383,8 +404,13 @@ struct Compiler {
       assignee->type = assignedType;
       emitDefinition(*assignee);
       log("Making value: '{}: {}'", assignee->name, TypeName(assignee->type));
-      typeChecker.pushType(node.value, assignedType);
+      typeChecker.check(node.value, assignedType);
       auto value = toRegister(compile(node.value));
+      log(
+        "Defined {} with type {}",
+        definitionName,
+        TypeName(environment.find(definitionName)->getType())
+      );
 
       emitLine("store {} {}, ptr {}", LlvmName(assignedType), value, *assignee);
     } else {
@@ -394,6 +420,7 @@ struct Compiler {
       );
     }
 
+    // stackItems = oldFrame;
     // TODO: support assignment as expression???
     return Reference::Void();
   }
@@ -426,7 +453,11 @@ struct Compiler {
     }
   }
 
-  StackValue* makeDefinition(TokenPointer name, NodeIndex typeNode) {
+  StackValue* makeDefinition(
+    TokenPointer name,
+    NodeIndex typeNode,
+    NodeIndex defNode
+  ) {
     TypeIndex type = Pool().infer;
     if (typeNode) {
       if (auto typeIndex = compile(typeNode).unboxType()) {
@@ -442,7 +473,8 @@ struct Compiler {
         type,
         environment.envType() == EnvType::Global ? ValueScope::Global
                                                  : ValueScope::Local
-      ))
+      )),
+      parser.locationOf(defNode)
     );
     if (definition) {
       return definition->lValue();
@@ -453,13 +485,13 @@ struct Compiler {
 
   ReturnType definition(Encodings::Definition node) {
     assert(node.type);
-    StackItems frame = stackItems;
-    frame.name = node.name->lexeme;
-    auto guard = push(frame);
+    auto oldName = name;
+    name = node.name->lexeme;
     log("Using name: {}", name);
-    StackValue* def = makeDefinition(node.name, node.type);
+    StackValue* def = makeDefinition(node.name, node.type, nodeIndex);
     emitDefinition(*def);
-    doAssignment(Reference(ZeroInit{}), Reference(*def));
+    doAssignment(*def, Reference(ZeroInit{}));
+    name = oldName;
     return Reference::Void();
   }
 
@@ -611,6 +643,8 @@ struct Compiler {
     float floatValue = std::stof(token->lexeme.data());
     auto type = typeChecker.check(nodeIndex).type;
     if (auto floatType = Pool().unbox<Float>(type)) {
+      return Reference(FloatLiteral(floatValue, floatType->precision));
+    } else if (Pool().floatLiteral == type) {
       return Reference(FloatLiteral(floatValue));
     }
     crash(
@@ -661,7 +695,8 @@ struct Compiler {
   }
 
   ReturnType undefined(TokenPointer token) {
-    return Reference(Never{});
+    auto type = typeChecker.check(nodeIndex);
+    return Reference(Never{type.type});
   }
 
   ReturnType cudaBuiltin(TokenPointer token, string_view callName) {
@@ -677,14 +712,11 @@ struct Compiler {
     return Reference(result);
   }
 
-  void doAssignment(Reference assignee, Reference value) {
-    if (!assignee.lValue()) {
-      crash(nodeIndex, "Unable to assign to non l-value");
-    }
+  void doAssignment(StackValue assignee, Reference value) {
     auto loadedValue = toRegister(value);
     emitLine(
       "store {} {}, ptr {}",
-      LlvmName(assignee.getType()),
+      LlvmName(assignee.type),
       loadedValue,
       assignee
     );
@@ -699,7 +731,15 @@ struct Compiler {
 
     auto value = compile(right, targetType.type);
     auto assignee = compile(left, targetType.type);
-    doAssignment(assignee, value);
+
+    if (auto lValue = assignee.lValue()) {
+      doAssignment(*lValue, value);
+    } else {
+      crash(
+        nodeIndex,
+        "Internal error; left side of assignment didn't yield StackValue"
+      );
+    }
 
     // TODO: consider value
     return Reference::Void();
@@ -709,7 +749,14 @@ struct Compiler {
     typeChecker.check(nodeIndex);
     auto value = binopVisit(left, right, nodeIndex, binop, parser, *this);
     auto assignee = compile(left);
-    doAssignment(assignee, value);
+    if (auto lValue = assignee.lValue()) {
+      doAssignment(*lValue, value);
+    } else {
+      crash(
+        nodeIndex,
+        "Internal error; left side of assignment didn't yield StackValue"
+      );
+    }
     return Reference::Void();
   }
 
@@ -963,7 +1010,7 @@ struct Compiler {
       break;
     }
     case TokenType::Remainder: {
-      comparison = a % b;
+      comparison = std::remainder(a, b);
       break;
     }
     default: {
@@ -988,18 +1035,22 @@ struct Compiler {
     NodeIndex b,
     ArithmeticOperator op
   ) {
-    typeChecker.check(nodeIndex);
-    auto aVal = compile(a);
-    auto bVal = compile(b);
-    if (auto type = Pool().coerce(aVal.getType(), bVal.getType())) {
+    typeChecker.check(nodeIndex, expectedType);
+    auto aType = typeChecker.check(a).type;
+    auto bType = typeChecker.check(b).type;
+    if (
+      auto type = Pool().coerce(aType, bType); type && Pool().isNumber(type)
+    ) {
+      auto aVal = compile(a);
+      auto bVal = compile(b);
       if (type == Pool().intLiteral) {
         auto a = aVal.unbox<IntLiteral>()->value;
         auto b = bVal.unbox<IntLiteral>()->value;
-        return Reference(literalComparison(a, b, op.type));
+        return Reference(IntLiteral(literalArithmetic(a, b, op.type)));
       } else if (type == Pool().floatLiteral) {
-        auto a = aVal.unbox<FloatLiteral>()->value;
-        auto b = bVal.unbox<FloatLiteral>()->value;
-        return Reference(literalComparison(a, b, op.type));
+        auto a = aVal.unboxFloat();
+        auto b = bVal.unboxFloat();
+        return Reference(FloatLiteral(literalArithmetic(a, b, op.type)));
       }
 
       aVal = toRegister(aVal);
@@ -1056,7 +1107,7 @@ struct Compiler {
           );
         }
         auto bType = params[1];
-        typeChecker.pushType(b, bType);
+        typeChecker.check(b, bType);
         span<NodeIndex> args(&b, 1);
         Reference aVal = compile(a, aType);
         return callFunction(function, args, {}, defaultFields, &aVal);
@@ -1514,7 +1565,7 @@ struct Compiler {
         return Reference(result);
       } else if (auto range = indexVal.unbox<Range>()) {
         Reference dataPointer;
-        if (auto stackVal = indexVal.unbox<StackValue>()) {
+        if (auto stackVal = list.unbox<StackValue>()) {
           dataPointer.value = StackValue(stackVal->name, elementType);
         } else {
           crash(nodeIndex, "Compiler state failure when slicing array");
@@ -1954,10 +2005,17 @@ struct Compiler {
       );
     }
 
-    log("impl for {}", TypeName(targetType));
     auto block = parser.getBlock(blockIndex);
+    log("impl for {}", TypeName(targetType));
     auto scope = environment.pushScope();
-    environment.scopes.back().selfType = targetType;
+    environment.scopes.back().self = targetType;
+    assert(targetType == environment.selfType());
+    fmt::println("impl Self = {}", TypeName(environment.selfType()));
+    // fmt::println(
+    //   "impl for {} ({})",
+    //   TypeName(targetType),
+    //   TypeName(environment.selfType())
+    // );
     std::unordered_map<Identifier, Reference> statics;
     for (auto index : block.elements) {
       auto declaration = parser.getDeclaration(index);
@@ -2030,17 +2088,28 @@ struct Compiler {
       llvmName = token->lexeme;
     } else {
       if (forwardDeclare) {
-        crash(
-          nodeIndex,
-          "Can't forward declare anoymnous function; Anonymous functions "
-          "require a body"
-        );
+        llvmName = name;
+        // crash(
+        //   nodeIndex,
+        //   "Can't forward declare anoymnous function; Anonymous functions "
+        //   "require a body"
+        // );
+      } else if (name == "main") {
+        llvmName = "main";
+      } else {
+        llvmName = environment.nextGlobalIndex();
       }
-      llvmName = environment.nextGlobalIndex();
     }
-    log("Compiling function: {}", name);
 
     if (!forwardDeclare) {
+      log("Defining function: {}", name);
+      log("with self type");
+
+      if (auto type = environment.selfType()) {
+        log("{}", TypeName(type));
+      } else {
+        log("missing self type");
+      }
       functionStubs.push_back(
         {.name = llvmName,
          .definitionNode = nodeIndex,
@@ -2056,276 +2125,92 @@ struct Compiler {
     return Reference(Function(functionType, llvmName));
   }
 
-  ReturnType builtinCall(Encodings::ArgumentList argList) {
-    auto builtinToken = parser.getToken(parser.getNode(nodeIndex).token);
-    auto argumentNodes = argList.positional;
-    auto namedArgs = argList.named;
-    switch (builtinToken->type) {
-    case TokenType::BUILTIN_NumCast: {
-      auto arguments =
-        argumentNodes |
-        std::views::transform([this](NodeIndex x) { return compile(x); });
-      if (!(arguments.size() == 1 || arguments.size() == 2)) {
-        crash(
-          nodeIndex,
-          "Expected 1 or 2 arguments for builtin @numCast, but received "
-          "{}",
-          arguments.size()
-        );
-      }
-      auto object = arguments[0];
-      TypeIndex targetType;
-      if (arguments.size() == 2) {
-        if (auto type = arguments[1].unboxType()) {
-          targetType = type;
-        } else {
-          crash(
-            argumentNodes[1],
-            "Second arguments for builtin extend needs to be a "
-            "compile-time known type"
-          );
-        }
-      } else if (expectedType) {
-        targetType = expectedType;
-      } else {
-        crash(
-          nodeIndex,
-          "Builtin @numCast must either take a second argument for the "
-          "target type, or have an inferrable target"
-        );
-      }
-
-      object = toRegister(object);
-
-      auto objectType = arguments[0].getType();
-      Reference resultName(environment.makeTemporary(targetType));
-      bool isTrunc = objectType.value > targetType.value;
-      std::string_view instructionName = isTrunc ? "trunc" : "ext";
-      if (objectType == targetType) {
-        crash(
-          nodeIndex,
-          "Unnecessary cast from {} to {}",
-          TypeName(objectType),
-          TypeName(targetType)
-        );
-      }
-      std::string_view typePrefix;
-
-      if (Pool().isFloat(objectType) && Pool().isFloat(targetType)) {
-        typePrefix = "fp";
-      } else if (
-        Pool().isSignedInt(objectType) && Pool().isSignedInt(objectType)
-      ) {
-        typePrefix = isTrunc ? "" : "s";
-      } else if (
-        Pool().isUnsignedInt(objectType) && Pool().isUnsignedInt(targetType)
-      ) {
-        typePrefix = isTrunc ? "" : "z";
-      } else {
-        crash(
-          nodeIndex,
-          "Unable to cast from {} to {}",
-          TypeName(objectType),
-          TypeName(targetType)
-        );
-      }
-      emitLine(
-        "{} = {}{} {} {} to {}",
-        resultName,
-        typePrefix,
-        instructionName,
-        LlvmName(objectType),
-        object,
-        LlvmName(targetType)
-      );
-
-      return resultName;
-      break;
-    }
-    case TokenType::BUILTIN_BitCast: {
-      auto arguments =
-        argumentNodes |
-        std::views::transform([this](const NodeIndex x) { return compile(x); });
-      if (!(arguments.size() == 1 || arguments.size() == 2)) {
-        crash(
-          nodeIndex,
-          "Expected 1 or 2 arguments for builtin @bitCast, but received "
-          "{}",
-          arguments.size()
-        );
-      }
-      auto object = arguments[0];
-      TypeIndex targetType;
-      if (arguments.size() == 2) {
-        if (auto type = arguments[1].unboxType()) {
-          targetType = type;
-        } else {
-          crash(
-            argumentNodes[1],
-            "Second arguments for builtin extend needs to be a "
-            "compile-time known type"
-          );
-        }
-      } else if (expectedType) {
-        targetType = expectedType;
-      } else {
-        crash(
-          nodeIndex,
-          "Builtin @numCast must either take a second argument for the "
-          "target type, or have an inferrable target"
-        );
-      }
-
-      auto objectLiteral = toRegister(object);
-
-      auto objectType = arguments[0].getType();
-
-      Reference resultName(environment.makeTemporary(targetType));
-      emitLine(
-        "{} = bitcast {} {} to {}",
-        resultName,
-        LlvmName(objectType),
-        object,
-        LlvmName(targetType)
-      );
-
-      return resultName;
-      break;
-    }
-    case TokenType::BUILTIN_CImport: {
-      if (argumentNodes.size() != 2) {
-        crash(
-          nodeIndex,
-          "Builtin '@cImport' must take 2 literal arguments, but was "
-          "given {}",
-          argumentNodes.size()
-        );
-      }
-
-      auto includeFile =
-        fs::weakly_canonical(inputFilePath.parent_path().append(
-          parser.getToken(argumentNodes[0])->lexeme
-        ));
-      auto fileName = includeFile.string();
-      std::unordered_map<std::string_view, TypeIndex> definedTypes;
-      for (auto [name, value] : namedArgs) {
-        auto valueType = compile(value, Pool().type);
-        if (auto type = valueType.unboxType()) {
-          definedTypes[parser.getToken(name)->lexeme] = type;
-        } else {
-          TODO("Error for passing non-type into types");
-        }
-      }
-      CompilerContext::inst().c.clangArgs.push_back("-include");
-      CompilerContext::inst().c.clangArgs.push_back(std::move(fileName));
-
-      auto prefix = std::string(parser.getToken(argumentNodes[1])->lexeme);
-      return Reference(
-        cBindings(std::move(includeFile), prefix, globalsStack, definedTypes)
-      );
-      break;
-    }
-    case TokenType::BUILTIN_CDefine: {
-      if (argumentNodes.empty() || argumentNodes.size() > 2) {
-        crash(
-          nodeIndex,
-          "Builtin '@cDefine' must have 1 or 2 arguments, but {}",
-          argumentNodes.size()
-        );
-      }
-      std::string arg =
-        fmt::format("-D{}", parser.getToken(argumentNodes[0])->lexeme);
-      if (argumentNodes.size() == 2) {
-        arg =
-          fmt::format("{}={}", arg, parser.getToken(argumentNodes[1])->lexeme);
-      }
-      CompilerContext::inst().c.clangArgs.push_back(std::move(arg));
-      return Reference::Void();
-    }
-    case TokenType::BUILTIN_CInclude: {
-      if (
-        argumentNodes.size() == 1 &&
-        parser.nodeType(argumentNodes[0]) == NodeType::Literal
-      ) {
-        auto fileName =
-          parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
-        CompilerContext::inst().c.clangArgs.push_back("-include");
-        CompilerContext::inst().c.clangArgs.push_back(
-          concatPath(fileName).string()
-        );
-      } else {
-        crash(nodeIndex, "Builtin '@cInclude' must take one literal argument");
-      }
-      return Reference::Void();
-    }
-    case TokenType::BUILTIN_CIncludeDir: {
-      if (
-        argumentNodes.size() == 1 &&
-        parser.nodeType(argumentNodes[0]) == NodeType::Literal
-      ) {
-        auto fileName =
-          parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
-        CompilerContext::inst().c.clangArgs.push_back(
-          "-I" + concatPath(fileName).string()
-        );
-      } else {
-        crash(
-          nodeIndex,
-          "Builtin '@cIncludeDir' must take one literal argument"
-        );
-      }
-      return Reference::Void();
-    }
-    case TokenType::BUILTIN_Link: {
-      if (
-        argumentNodes.size() == 1 &&
-        parser.nodeType(argumentNodes[0]) == NodeType::Literal
-      ) {
-        auto libName =
-          parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
-        CompilerContext::inst().c.linkedLibraries.push_back(
-          fmt::format("-l{}", libName)
-        );
-      } else {
-        crash(nodeIndex, "Builtin '@link' must take one literal argument");
-      }
-      return Reference::Void();
-    }
-    case TokenType::BUILTIN_LinkDir: {
-      if (
-        argumentNodes.size() == 1 &&
-        parser.nodeType(argumentNodes[0]) == NodeType::Literal
-      ) {
-        auto libName =
-          parser.getToken(parser.getNode(argumentNodes[0]).token)->lexeme;
-        CompilerContext::inst().c.linkedLibraries.push_back(
-          fmt::format("-L{}", libName)
-        );
-      } else {
-        crash(nodeIndex, "Builtin '@linkDir' must take one literal argument");
-      }
-      return Reference::Void();
-    }
-    case TokenType::BUILTIN_Type: {
-      if (argumentNodes.size() != 1) {
-        crash(
-          nodeIndex,
-          "Builtin '@type' must take one expression argument, but {} "
-          "were provided",
-          argumentNodes.size()
-        );
-      }
-      auto arg = compile(argumentNodes[0]);
-      return Reference(arg.getType());
-    }
-    default: {
-      crash(nodeIndex, "Malformed builtin '@{}'", builtinToken->lexeme);
-    }
-    }
-  }
-
   ReturnType numCast(Encodings::ArgumentList args) {
-    return builtinCall(args);
+    TypeIndex outType = typeChecker.check(nodeIndex, expectedType).type;
+    auto object = compile(args.positional[0]);
+
+    object = toRegister(object);
+
+    auto inType = typeChecker.check(args.positional[0]).type;
+    Reference result(environment.makeTemporary(outType));
+    bool isTrunc = inType.value > outType.value;
+    std::string_view instructionName = isTrunc ? "trunc" : "ext";
+    if (inType == outType) {
+      crash(
+        nodeIndex,
+        "Unnecessary cast from {} to {}",
+        TypeName(inType),
+        TypeName(outType)
+      );
+    }
+    std::string_view typePrefix;
+
+    if (Pool().isFloat(inType) && Pool().isFloat(outType)) {
+      typePrefix = "fp";
+    } else if (Pool().isSignedInt(inType)) {
+      typePrefix = isTrunc ? "" : "s";
+    } else if (Pool().isUnsignedInt(inType)) {
+      typePrefix = isTrunc ? "" : "z";
+    } else if (Pool().isFloat(inType)) {
+      char sign;
+      if (Pool().isUnsignedInt(outType)) sign = 'u';
+      else if (Pool().isSignedInt(outType)) sign = 's';
+      else
+        crash(
+          nodeIndex,
+          "Internal error: unable to cast from {} to {}",
+          TypeName(inType),
+          TypeName(outType)
+        );
+
+      emitLine(
+        "{} = fpto{}i {} {} to {}",
+        result,
+        sign,
+        LlvmName(inType),
+        object,
+        LlvmName(outType)
+      );
+      return result;
+    } else if (Pool().isFloat(outType)) {
+      char sign;
+      if (Pool().isUnsignedInt(inType)) sign = 'u';
+      else if (Pool().isSignedInt(inType)) sign = 's';
+      else
+        crash(
+          nodeIndex,
+          "Internal error: unable to cast from {} to {}",
+          TypeName(inType),
+          TypeName(outType)
+        );
+      emitLine(
+        "{} = {}itofp {} {} to {}",
+        result,
+        sign,
+        LlvmName(inType),
+        object,
+        LlvmName(outType)
+      );
+      return result;
+    } else {
+      crash(
+        nodeIndex,
+        "Unable to cast from {} to {}",
+        TypeName(inType),
+        TypeName(outType)
+      );
+    }
+    emitLine(
+      "{} = {}{} {} {} to {}",
+      result,
+      typePrefix,
+      instructionName,
+      LlvmName(inType),
+      object,
+      LlvmName(outType)
+    );
+
+    return result;
   }
 
   fs::path concatPath(std::string_view path) {
@@ -2333,35 +2218,179 @@ struct Compiler {
   }
 
   ReturnType bitCast(Encodings::ArgumentList args) {
-    return builtinCall(args);
+    auto targetType = typeChecker.check(nodeIndex, expectedType).type;
+    auto inType = typeChecker.check(args.positional[0]).type;
+    auto in = toRegister(compile(args.positional[0], inType));
+    auto storage = environment.addTemporary();
+    auto alignment = std::max(
+      Pool().getSizing(inType).alignment.byteAlignment(),
+      Pool().getSizing(targetType).alignment.byteAlignment()
+    );
+    emitLine("%{} = alloca {}, align {}", storage, LlvmName(inType), alignment);
+
+    Reference resultName(environment.makeTemporary(targetType));
+    emitLine(
+      "{} = load {}, ptr %{}",
+      resultName,
+      LlvmName(targetType),
+      storage
+    );
+
+    return resultName;
   }
 
   ReturnType cImport(Encodings::ArgumentList args) {
-    return builtinCall(args);
+    auto argumentNodes = args.positional;
+    if (argumentNodes.size() != 2) {
+      crash(
+        nodeIndex,
+        "Builtin '@cImport' must take 2 literal arguments, but was "
+        "given {}",
+        argumentNodes.size()
+      );
+    }
+
+    auto includeFile = fs::weakly_canonical(inputFilePath.parent_path().append(
+      parser.getToken(argumentNodes[0])->lexeme
+    ));
+    auto fileName = includeFile.string();
+    std::unordered_map<std::string_view, TypeIndex> definedTypes;
+    for (auto [name, value] : args.named) {
+      auto valueType = compile(value, Pool().type);
+      if (auto type = valueType.unboxType()) {
+        definedTypes[parser.getToken(name)->lexeme] = type;
+      } else {
+        TODO("Error for passing non-type into types");
+      }
+    }
+    CompilerContext::inst().c.clangArgs.push_back("-include");
+    CompilerContext::inst().c.clangArgs.push_back(std::move(fileName));
+
+    auto prefix = std::string(parser.getToken(argumentNodes[1])->lexeme);
+    return Reference(
+      cBindings(std::move(includeFile), prefix, globalsStack, definedTypes)
+    );
   }
 
   ReturnType cDefine(Encodings::ArgumentList args) {
-    return builtinCall(args);
+    auto& clangArgs = CompilerContext::inst().c.clangArgs;
+    for (auto arg : args.positional) {
+      clangArgs.push_back(fmt::format("-D{}", parser.getToken(arg)->lexeme));
+    }
+
+    for (auto [name, value] : args.named) {
+      clangArgs.push_back(
+        fmt::format(
+          "-D{}={}",
+          parser.getToken(name)->lexeme,
+          parser.getToken(value)->lexeme
+        )
+      );
+    }
+    return Reference::Void();
   }
 
   ReturnType cInclude(Encodings::ArgumentList args) {
-    return builtinCall(args);
+    if (args.positional.size() != 1) {
+      parser.crash(
+        nodeIndex,
+        "Builtin @cInclude must take in 1 string as a positional argument, but "
+        "{} were "
+        "given",
+        args.positional.size()
+      );
+    }
+    if (!args.named.empty()) {
+      parser.crash(
+        nodeIndex,
+        "Builtin @cInclude takes no named arguments; {} were given",
+        args.named.size()
+      );
+    }
+    auto fileName = parser.getToken(args.positional[0]);
+    if (fileName->type != TokenType::String) {
+      parser.crash(
+        args.positional[0],
+        "Builtin @cInclude must take in 1 string literal"
+      );
+    }
+
+    CompilerContext::inst().c.clangArgs.push_back("-include");
+    CompilerContext::inst().c.clangArgs.push_back(
+      concatPath(fileName->lexeme).string()
+    );
+    return Reference::Void();
   }
 
   ReturnType cIncludeDir(Encodings::ArgumentList args) {
-    return builtinCall(args);
+    if (
+      args.positional.size() == 1 &&
+      parser.nodeType(args.positional[0]) == NodeType::Literal &&
+      args.named.empty()
+    ) {
+      auto fileName =
+        parser.getToken(parser.getNode(args.positional[0]).token)->lexeme;
+      CompilerContext::inst().c.clangArgs.push_back(
+        "-I" + concatPath(fileName).string()
+      );
+    } else {
+      crash(
+        nodeIndex,
+        "Builtin '@cIncludeDir' must take only one literal argument"
+      );
+    }
+    return Reference::Void();
   }
 
   ReturnType link(Encodings::ArgumentList args) {
-    return builtinCall(args);
+    if (
+      args.positional.size() == 1 &&
+      parser.getToken(args.positional[0])->type == TokenType::String &&
+      args.named.empty()
+    ) {
+      auto libName =
+        parser.getToken(parser.getNode(args.positional[0]).token)->lexeme;
+      CompilerContext::inst().c.linkedLibraries.push_back(
+        fmt::format("-l{}", libName)
+      );
+    } else {
+      crash(
+        nodeIndex,
+        "Builtin '@link' must take one positional string literal argument"
+      );
+    }
+    return Reference::Void();
   }
 
   ReturnType linkDir(Encodings::ArgumentList args) {
-    return builtinCall(args);
+    if (
+      args.positional.size() == 1 &&
+      parser.getToken(args.positional[0])->type == TokenType::String &&
+      args.named.empty()
+    ) {
+      auto libName = parser.getToken(args.positional[0])->lexeme;
+      CompilerContext::inst().c.linkedLibraries.push_back(
+        fmt::format("-L{}", libName)
+      );
+    } else {
+      crash(
+        nodeIndex,
+        "Builtin '@linkDir' must take one positional string literal argument"
+      );
+    }
+    return Reference::Void();
   }
 
   ReturnType type(Encodings::ArgumentList args) {
-    return builtinCall(args);
+    if (args.positional.size() != 1 || !args.named.empty()) {
+      crash(
+        nodeIndex,
+        "Builtin '@type' must take one expression argument, but {} "
+        "were provided",
+        args.positional.size()
+      );
+    }
+    return Reference(typeChecker.check(args.positional[0]).type);
   }
 
   ReturnType import(TokenPointer fileName) {
@@ -2598,9 +2627,8 @@ struct Compiler {
     }
   }
 
-  ReturnType returnExpr(NodeIndex operand) {
-    auto returnValue = parser.readOptional(operand.value);
-    if (returns.type) {
+  ReturnType returnExpr(NodeIndex returnValue) {
+    if (!returns.type) {
       crash(nodeIndex, "Return can only be used inside a function");
     }
     auto returnType = returns.type;
@@ -2712,8 +2740,9 @@ struct Compiler {
     if (shouldLoad && ifCase.result.lValue()) {
       auto frame = stackItems;
       frame.outputFile = &ifInstruction;
-      auto guard = push(frame);
+      auto oldFrame = push(frame);
       ifCase.result = toRegister(ifCase.result);
+      // stackItems = oldFrame;
     }
     environment.hasReturned = false;
 
@@ -2866,11 +2895,21 @@ struct Compiler {
   }
 
   string_view nameOr(string_view altName) {
-    if (name.empty()) return altName;
+    if (name.empty()) {
+      log("Using name {}; Stored name is {}", altName, name);
+      return altName;
+    }
+    log("Using name {}", name);
     return name;
   }
 
+  std::unordered_map<u32, TypeIndex> typeCache;
+
   ReturnType structExpr(Encodings::Struct node) {
+    auto it = typeCache.find(nodeIndex.value);
+    if (it != typeCache.end()) {
+      return Reference(it->second);
+    }
     // TODO: methods
     u32 llvmName = environment.structIndex();
     std::stringstream typeInstruction;
@@ -2880,6 +2919,8 @@ struct Compiler {
     auto prettyName = nameOr("Anonymous Struct");
     log("Making struct with name: {}", prettyName);
     auto [typeIndex, structIndex] = Pool().makeStruct(prettyName, llvmName);
+    auto envGuard = environment.pushScope();
+    environment.scopes.back().self = typeIndex;
     emit("{} = type {{", LlvmName(typeIndex));
 
     bool hasFields = false;
@@ -2920,6 +2961,7 @@ struct Compiler {
     }
     typeInstruction << "}";
     globalsStack.push(typeInstruction.str());
+    typeCache[nodeIndex.value] = typeIndex;
     return Reference(typeIndex);
   }
 
@@ -3123,13 +3165,13 @@ struct Compiler {
     }
 
     auto [typeIndex, enumIndex] =
-      Pool().addEnum(rawType, name.empty() ? "Anonymous Enum" : name);
+      Pool().addEnum(rawType, nameOr("Anonymous Enum"));
     u32 valueCount = 0;
     Enum& enumDefinition = Pool().getEnum(enumIndex);
     for (auto [nameToken, valueNode] : node.entries) {
       auto name = parser.getToken(nameToken)->lexeme;
 
-      if (parser.readOptional(valueNode.value)) {
+      if (valueNode) {
         auto entryValue = compile(valueNode);
         if (auto intVal = entryValue.unbox<IntLiteral>()) {
           valueCount = intVal->value;
@@ -3575,7 +3617,7 @@ struct Compiler {
 
     while (!functionStubs.empty()) {
       auto stub = functionStubs.back();
-      defineFunction(stub);
+      codegenFunction(stub);
       functionStubs.pop_back();
       while (!globalsStack.empty()) {
         *outputFile << globalsStack.front() << "\n";
@@ -3585,10 +3627,18 @@ struct Compiler {
 
     dumpStatements();
 
-    return fileEnvironment;
+    return std::move(environment);
   }
 
-  void defineFunction(FunctionStub stub) {
+  void codegenFunction(FunctionStub stub) {
+    auto envGuard = environment.pushScope();
+    log("Codegening function {} with self type:", stub.name);
+    if (stub.selfType) {
+      log("{}", TypeName(stub.selfType));
+    } else {
+      log("Missing self type");
+    }
+    environment.scopes.back().self = stub.selfType;
     auto& instruction = *outputFile;
     instruction << "define ";
     if (parser.getToken(stub.definitionNode)->type == TokenType::Kernel) {
@@ -3598,7 +3648,6 @@ struct Compiler {
     Function function(stub.functionType, stub.name);
 
     auto declarationResult = declareParamRegisters(instruction, function);
-    fmt::println("Defining function: {}", stub.name);
     environment.nextTemporary = declarationResult.entryLabel + 1;
     auto node = parser.getFunctionLiteral(stub.definitionNode);
     auto parameters = parser.getParameterList(node.parameters);
@@ -3619,10 +3668,22 @@ struct Compiler {
       auto parameterDefinition = parser.getDefinition(paramNode);
       string_view paramName = parameterDefinition.name->lexeme;
 
-      paramNames.push_back(paramName);
-      if (!environment
-             .define(paramName, Reference(StackValue(paramName, paramType)))) {
+      if (
+        std::find(paramNames.begin(), paramNames.end(), paramName) !=
+        paramNames.end()
+      ) {
         crash(paramNode, "Duplicate function parameter {}", paramName);
+      }
+      paramNames.push_back(paramName);
+      if (!environment.define(
+            paramName,
+            Reference(StackValue(paramName, paramType)),
+            parser.locationOf(paramNode)
+          )) {
+        auto original = environment.definitionLocation(paramName);
+        fmt::println(std::cerr, "{} originally defined at:", paramName);
+        original->underline(std::cerr);
+        crash(paramNode, "Parameter name {} shadows a higher scope", paramName);
       }
       parameterIndex++;
     }
@@ -3645,6 +3706,7 @@ struct Compiler {
       .aggregateTypename = declarationResult.aggregateReturnTypeName,
       .registers = Pool().registerStorage(returnType),
     };
+    environment.scopes.back().returnType = returnType;
 
     auto body = parser.getBlock(node.body);
     for (auto statement : body.elements) {
@@ -3671,14 +3733,16 @@ struct Compiler {
     StackItems prevFrame;
     Compiler& compiler;
     ~StackItemsGuard() {
-      log("Removing frame where name was '{}'", compiler.name);
+      // log("Removing frame where name was '{}'", compiler.name);
       compiler.stackItems = prevFrame;
     }
   };
 
   StackItemsGuard push(StackItems newFrame) {
     StackItemsGuard guard{stackItems, *this};
+    // auto oldFrame = stackItems;
     stackItems = newFrame;
+    // return oldFrame;
     return guard;
   }
 };

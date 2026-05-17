@@ -439,7 +439,7 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
       return t.usingExpr(node.operand);
     }
     case UnaryOps::CudaImport: {
-      return t.cudaImport(parser.getToken(nodeIndex));
+      return t.cudaImport(parser.getToken(TokenIndex{node.operand.value}));
     }
     }
   }

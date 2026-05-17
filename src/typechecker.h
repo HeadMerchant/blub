@@ -40,7 +40,7 @@ struct TypeChecker {
   }
 
   Reference compile(NodeIndex index, TypeIndex expected = Pool().infer);
-  TypeIndex materialize(NodeIndex nodeIndex);
+  TypeIndex materialize(NodeIndex nodeIndex, string_view name = "");
 
   ReturnType block(Encodings::Block node) {
     return {Pool()._void};
@@ -77,7 +77,7 @@ struct TypeChecker {
     }
 
     for (auto node : node.elements) {
-      pushType(node, expectedElement);
+      check(node, expectedElement);
     }
     return {Pool().sizedArrayOf(expectedElement, node.elements.size())};
   }
@@ -90,23 +90,32 @@ struct TypeChecker {
     readType(node).type = type;
   }
 
-  ReturnType visit(
-    NodeIndex node,
-    TypeIndex expectedType,
-    TypeIndex skipValue
-  ) {
-    if (readType(node).type && readType(node).type == expectedType) {
-      return {expectedType};
+  ReturnType visit(NodeIndex node, TypeIndex expectedType) {
+    auto currentType = readType(node);
+    if (currentType.type == expectedType) {
+      return currentType;
+    }
+    if (currentType.type) {
+      if (!Pool().coerce(currentType.type, expectedType)) {
+        crash(
+          node,
+          "Can't coerce expression of type '{}' to type '{}'",
+          TypeName(currentType.type),
+          TypeName(expectedType)
+        );
+      }
     }
     StackItems tempStack = {.expected = expectedType, .nodeIndex = node};
     std::swap(tempStack, stackItems);
+    log("Checking against type '{}'", TypeName(expected));
     auto result = astVisit(node, parser, *this);
     if (auto coerced = Pool().coerce(result.type, expectedType)) {
       setType(node, coerced);
     } else {
       crash(
         node,
-        "Can't coerce expression to type '{}'",
+        "Can't coerce expression of type '{}' to type '{}'",
+        TypeName(result.type),
         TypeName(expectedType)
       );
     }
@@ -114,12 +123,8 @@ struct TypeChecker {
     return result;
   }
 
-  ReturnType pushType(NodeIndex node, TypeIndex expectedType) {
-    return visit(node, expectedType, expectedType);
-  }
-
   ReturnType check(NodeIndex node, TypeIndex expectedType = Pool().infer) {
-    return visit(node, expectedType, TypeIndex::null());
+    return visit(node, expectedType);
   }
 
   ReturnType when(NodeIndex condition, span<pair<NodeIndex, NodeIndex>> cases) {
@@ -150,11 +155,16 @@ struct TypeChecker {
   }
 
   ReturnType declaration(Encodings::Declaration node) {
-    crash(nodeIndex, "Internal error; Can't typecheck declaration");
+    auto def = parser.getDefinition(node.definition);
+    auto type =
+      def.type ? materialize(def.type, def.name->lexeme) : Pool().infer;
+    fmt::println("Declaring '{}: {}'", def.name->lexeme, TypeName(type));
+    check(node.value, type);
+    return {Pool()._void};
   }
 
   ReturnType definition(Encodings::Definition node) {
-    crash(nodeIndex, "Internal error; Can't typecheck definition");
+    return {Pool()._void};
   }
 
   ReturnType character(TokenPointer token) {
@@ -218,7 +228,7 @@ struct TypeChecker {
     if (
       auto assignedType = Pool().isAssignable(leftType.type, rightType.type)
     ) {
-      pushType(right, assignedType);
+      check(right, assignedType);
     }
     return {Pool()._void};
   }
@@ -238,8 +248,8 @@ struct TypeChecker {
     auto bType = check(b).type;
 
     if (auto coerced = Pool().coerce(aType, bType)) {
-      pushType(a, coerced);
-      pushType(b, coerced);
+      check(a, coerced);
+      check(b, coerced);
       return {Pool()._bool};
     }
 
@@ -285,7 +295,7 @@ struct TypeChecker {
     if (
       auto [aType, method] = env.getMethod(objectType.type, methodName); method
     ) {
-      pushType(objectNode, aType);
+      check(objectNode, aType);
       auto function = method->unboxFunction();
       auto params = Pool().tupleElements(function->type.parameters);
       if (params.size() - 1 != arguments.size()) {
@@ -304,7 +314,7 @@ struct TypeChecker {
       }
       for (auto i = 0; i < arguments.size(); i++) {
         auto paramType = params[i + 1];
-        pushType(arguments[i], paramType);
+        check(arguments[i], paramType);
       }
       return {function->type.returnType};
     }
@@ -338,7 +348,7 @@ struct TypeChecker {
 
     // TODO: multiple resolutions
     if (auto [aType, method] = env.getMethod(left, methodName); method) {
-      pushType(a, aType);
+      check(a, aType);
       auto function = method->unboxFunction();
       auto params = Pool().tupleElements(function->type.parameters);
       if (params.size() != 2) {
@@ -355,7 +365,7 @@ struct TypeChecker {
         );
       }
       auto bType = params[1];
-      pushType(b, bType);
+      check(b, bType);
       return {function->type.returnType};
     }
 
@@ -466,12 +476,17 @@ struct TypeChecker {
     return {Pool().type};
   }
 
-  void checkArrayIndex(NodeIndex index) {
+  ReturnType checkArrayIndex(
+    NodeIndex index,
+    TypeIndex elementType,
+    bool lValue
+  ) {
     auto indexType = check(index).type;
-    if (indexType == Pool().unsignedRangeLiteral) {
-      // Good
-    } else if (indexType == Pool().rangeLiteral) {
-      // crash(index, "Slicing operation must use an unsigned range as index");
+    if (
+      indexType == Pool().unsignedRangeLiteral ||
+      indexType == Pool().rangeLiteral
+    ) {
+      return {Pool().sliceOf(elementType), false};
     } else if (!Pool().isInt(indexType)) {
       crash(
         index,
@@ -479,6 +494,8 @@ struct TypeChecker {
         TypeName(indexType)
       );
     }
+
+    return {elementType, lValue};
   }
 
   static Logger log;
@@ -486,11 +503,13 @@ struct TypeChecker {
   ReturnType index(NodeIndex object, NodeIndex index) {
     auto objectType = check(object);
     if (auto sizedArray = Pool().sizedArray(objectType.type)) {
-      checkArrayIndex(index);
-      return {sizedArray->dereferencedType, objectType.lValue};
+      return checkArrayIndex(
+        index,
+        sizedArray->dereferencedType,
+        objectType.lValue
+      );
     } else if (auto sliceElement = Pool().sliceElementType(objectType.type)) {
-      checkArrayIndex(index);
-      return {sliceElement, true};
+      return checkArrayIndex(index, sliceElement, true);
     } else {
       crash(
         nodeIndex,
@@ -507,6 +526,8 @@ struct TypeChecker {
       // TODO: number conversions
       return {constructedType};
     } else if (auto functionType = Pool().functionType(callerType)) {
+      return {functionType->returnType};
+    } else if (auto functionType = Pool().unboxBoundFunction(callerType)) {
       return {functionType->returnType};
     } else {
       if (args.positional.size() == 1 && args.named.empty()) {
@@ -568,11 +589,63 @@ struct TypeChecker {
   }
 
   ReturnType numCast(Encodings::ArgumentList args) {
-    TODO("typecheck numcast");
+    auto inType = check(args.positional[0]).type;
+    TypeIndex outType = expected;
+    if (args.positional.size() == 2) {
+      outType = materialize(args.positional[1]);
+    }
+    log("Numcasting to type {}", TypeName(outType));
+    if (!Pool().isNumber(inType)) {
+      crash(
+        nodeIndex,
+        "Unable to do @numCast on non-numeric type {}",
+        TypeName(inType)
+      );
+    }
+    if (!Pool().isNumber(inType)) {
+      crash(
+        nodeIndex,
+        "Unable to @numCast to non-numeric type {}",
+        TypeName(outType)
+      );
+    }
+    bool can = Pool().isNumber(inType) && Pool().isNumber(outType);
+    // bool can = Pool().isUnsignedInt(inType) && Pool().isUnsignedInt(outType);
+    // can = can || Pool().isSignedInt(inType) && Pool().isSignedInt(outType);
+    // can = can || Pool().isFloat(inType) && Pool().isFloat(outType);
+    // can = can || Pool().isInt(inType) && Pool().isFloat(outType);
+    // can = can || Pool().isFloat(inType) && Pool().isInt(outType);
+    if (can) return {outType};
+    crash(
+      nodeIndex,
+      "Unable to @numCast from type {} to {}",
+      TypeName(inType),
+      TypeName(outType)
+    );
   }
 
   ReturnType bitCast(Encodings::ArgumentList args) {
-    TODO("typecheck bitcast");
+    auto inType = check(args.positional[0]).type;
+    TypeIndex outType = expected;
+    if (args.positional.size() == 2) {
+      outType = materialize(args.positional[1]);
+    }
+    if (Pool().isInfer(outType)) {
+      crash(nodeIndex, "Unable to perform @bitCast to unknown type");
+    }
+    auto inSize = Pool().getSizing(inType);
+    auto outSize = Pool().getSizing(outType);
+    if (inSize.byteSize != outSize.byteSize) {
+      crash(
+        nodeIndex,
+        "Unable to do @numCast on non-numeric type {}",
+        TypeName(inType),
+        inSize.byteSize,
+        TypeName(outType),
+        outSize.byteSize
+      );
+    }
+    return {outType};
   }
 
   ReturnType cImport(Encodings::ArgumentList args) {
@@ -642,14 +715,12 @@ struct TypeChecker {
   // [^]a
   ReturnType multiPointerTo(NodeIndex operand) {
     auto value = check(operand);
-    if (auto dereffed = Pool().dereference(value.type)) {
-      return {dereffed, true};
+    if (value.type == Pool().type) {
+      return {Pool().type};
+    } else if (value.lValue) {
+      return {Pool().pointerTo(value.type)};
     }
-    crash(
-      operand,
-      "Can't dereference non-pointer type {}",
-      TypeName(value.type)
-    );
+    crash(operand, "Can't get pointer to non-lvalue");
   }
 
   // a[^]
@@ -690,7 +761,8 @@ struct TypeChecker {
   }
 
   ReturnType makeSlice(NodeIndex operand) {
-    auto value = check(operand, expected);
+    auto value = check(operand);
+    log("Making slice from type {}", TypeName(value.type));
     if (auto sizedArray = Pool().sizedArray(value.type)) {
       if (!value.lValue)
         crash(operand, "Unable to slice non-lValue sized array");
@@ -736,8 +808,8 @@ struct TypeChecker {
       auto resultType = Pool().coerce(ifType.type, elseType.type);
       resultType = Pool().coerce(expected, resultType);
       if (resultType) {
-        pushType(node.ifClause, resultType);
-        pushType(node.elseClause, resultType);
+        check(node.ifClause, resultType);
+        check(node.elseClause, resultType);
         return {resultType, ifType.lValue && elseType.lValue};
       }
     }
@@ -852,6 +924,10 @@ struct TypeChecker {
     if (field) {
       return {field.type, lValue};
     }
+    if (auto [aType, method] = env.getMethod(targetType, fieldName); method) {
+      auto methodType = method->unboxFunction();
+      return {Pool().boundFunction(methodType->type)};
+    }
     crash(
       node.fieldName,
       "Unable to find field '{}' for type '{}'",
@@ -892,8 +968,9 @@ struct TypeChecker {
     auto callerType = check(functionNode).type;
 
     // TODO: bound function
-    if (auto function = Pool().unbox<FunctionType>(callerType)) {
-      auto params = Pool().tupleElements(function->parameters);
+    fmt::println("Applying function type {}", TypeName(callerType));
+    if (auto unboundFunction = Pool().unbox<FunctionType>(callerType)) {
+      auto params = Pool().tupleElements(unboundFunction->parameters);
       // TODO: default args
       if (params.size() != 1) {
         crash(
@@ -904,7 +981,21 @@ struct TypeChecker {
         );
       }
       check(argNode, params[0]);
-      return {function->returnType};
+      return {unboundFunction->returnType};
+    } else if (auto boundFunction = Pool().unboxBoundFunction(callerType)) {
+      auto params = Pool().tupleElements(boundFunction->parameters);
+      // TODO: default args
+      if (params.size() != 2) {
+        crash(
+          functionNode,
+          "Can only apply methods that take 1 non-bound parameter, but "
+          "provided "
+          "function takes {}",
+          params.size() - 1
+        );
+      }
+      check(argNode, params[1]);
+      return {boundFunction->returnType};
     } else {
       return multiply(functionNode, argNode);
     }

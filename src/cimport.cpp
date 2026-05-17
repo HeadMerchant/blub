@@ -468,7 +468,7 @@ Environment* cBindings(
       );
     }
 
-    environment.define(unprefixedValueName, blubInterface);
+    environment.define(unprefixedValueName, blubInterface, {});
   }
 
   importedFiles[cFile] = environment;

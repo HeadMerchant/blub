@@ -173,3 +173,24 @@ using ordered_map = tsl::ordered_map<
   IndexType>;
 
 using std::abort;
+#include <algorithm>
+#include <map>
+#include <span>
+#include <vector>
+
+template <typename T> struct VecSpanCompare {
+  using is_transparent = void;
+
+  bool operator()(const std::vector<T>& a, const std::vector<T>& b) const {
+    return a < b;
+  }
+  bool operator()(const std::vector<T>& a, std::span<const T> b) const {
+    return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end());
+  }
+  bool operator()(std::span<const T> a, const std::vector<T>& b) const {
+    return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end());
+  }
+};
+
+template <typename K, typename V>
+using VecMap = std::map<std::vector<K>, V, VecSpanCompare<K>>;
