@@ -3,7 +3,6 @@
 #include "cimport.h"
 #include "common.h"
 #include "compilercontext.h"
-#include "fmt/format.h"
 #include "fmt/ostream.h"
 #include "parser.h"
 #include "tokenizer.h"
@@ -15,7 +14,6 @@
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -42,6 +40,8 @@ struct SwitchCase {
   };
 };
 
+enum class TargetType { Cpu, Gpu };
+
 struct CompilerContext {
   struct {
     std::ofstream* outputFileStream;
@@ -61,9 +61,21 @@ struct CompilerContext {
     static CompilerContext instance;
     return instance;
   }
-};
 
-enum class TargetType { Cpu, Gpu };
+  static std::stringstream* globalStream(TargetType targetType) {
+    auto& outputFile = targetType == TargetType::Cpu
+                        ? CompilerContext::inst().blub.globalInitialization
+                        : CompilerContext::inst().cuda.globalInitialization;
+    return &outputFile;
+  }
+
+  static std::ofstream* fileStream(TargetType targetType) {
+    auto outputFile = targetType == TargetType::Cpu
+                        ? CompilerContext::inst().blub.outputFileStream
+                        : CompilerContext::inst().cuda.outputFileStream;
+    return outputFile;
+  }
+};
 
 #define COMPILER_STACK       \
   std::ostream* outputFile;  \
@@ -193,9 +205,9 @@ struct Compiler {
       emitLine(
         "{} = insertvalue {} {}, {} {}, {}",
         newArray,
-        LlvmName(elementType),
-        resultArray,
         LlvmName(type),
+        resultArray,
+        LlvmName(elementType),
         loaded,
         i
       );
@@ -208,15 +220,11 @@ struct Compiler {
 
   ReturnType when(
     NodeIndex conditionIndex,
-    span<pair<NodeIndex, NodeIndex>> caseNodes
+    span<pair<NodeIndex, NodeIndex>> caseNodes,
+    NodeIndex elseBody
   ) {
-    TypeIndex resultType;
-    bool lValue;
-    {
-      auto checkResult = typeChecker.check(nodeIndex, expectedType);
-      resultType = checkResult.type;
-      lValue = checkResult.lValue;
-    }
+    auto [resultType, lValue] = typeChecker.check(nodeIndex, expectedType);
+    // fmt::println("Is we an l value????: {}", lValue);
 
     auto loadedCondition = toRegister(compile(conditionIndex));
     auto caseType = loadedCondition.getType();
@@ -226,7 +234,7 @@ struct Compiler {
     }
 
     vector<SwitchCase> cases;
-    cases.reserve(caseNodes.size());
+    cases.reserve(caseNodes.size() + (!!elseBody));
     bool hasDefault;
     for (auto [condition, body] : caseNodes) {
       stringstream instruction;
@@ -234,20 +242,6 @@ struct Compiler {
       environment.addTemporary();
       u32 block = environment.addTemporary();
       environment.currentLabel = block;
-      // Else/default block
-      if (condition.value == body.value) {
-        hasDefault = true;
-        cases.push_back({
-          .result = compile(body),
-          .entryBlock = block,
-          .exitLabel = environment.currentLabel,
-          .returns = environment.hasReturned,
-          .isDefault = true,
-        });
-        cases.back().instructions = std::move(instruction);
-        environment.hasReturned = false;
-        break;
-      }
       cases.push_back({
         .condition = compile(condition),
         .result = compile(body),
@@ -259,14 +253,14 @@ struct Compiler {
       SwitchCase& switchCase = cases.back();
       switchCase.instructions = std::move(instruction);
 
-      // if (switchCase.condition.getType() != caseType) {
-      //   crash(
-      //     condition,
-      //     "Expected type for case condition was {}, but was given {}",
-      //     TypeName(caseType),
-      //     TypeName(switchCase.condition.getType())
-      //   );
-      // }
+      if (switchCase.condition.getType() != caseType) {
+        crash(
+          condition,
+          "Expected type for case condition was {}, but was given {}",
+          TypeName(caseType),
+          TypeName(switchCase.condition.getType())
+        );
+      }
 
       // TODO: non-comptime cases
       if (!switchCase.condition.isComptime()) {
@@ -279,6 +273,23 @@ struct Compiler {
       // TODO: default
     }
 
+    if (elseBody) {
+      stringstream instruction;
+      // Reserve one for loading stack values
+      environment.addTemporary();
+      u32 block = environment.addTemporary();
+      environment.currentLabel = block;
+      hasDefault = true;
+      cases.push_back({
+        .result = compile(elseBody),
+        .entryBlock = block,
+        .exitLabel = environment.currentLabel,
+        .returns = environment.hasReturned,
+        .isDefault = true,
+      });
+      cases.back().instructions = std::move(instruction);
+      environment.hasReturned = false;
+    }
     // Reserve one for loading stack values
     // environment.addTemporary();
 
@@ -402,8 +413,8 @@ struct Compiler {
         );
       }
       assignee->type = assignedType;
-      emitDefinition(*assignee);
       log("Making value: '{}: {}'", assignee->name, TypeName(assignee->type));
+      emitDefinition(*assignee);
       typeChecker.check(node.value, assignedType);
       auto value = toRegister(compile(node.value));
       log(
@@ -469,7 +480,7 @@ struct Compiler {
     Reference* definition = environment.define(
       name->lexeme,
       Reference(StackValue(
-        environment.nextTemporary,
+        environment.addTemporary(),
         type,
         environment.envType() == EnvType::Global ? ValueScope::Global
                                                  : ValueScope::Local
@@ -724,9 +735,9 @@ struct Compiler {
 
   ReturnType assign(NodeIndex left, NodeIndex right) {
     auto targetType = typeChecker.check(left);
-    if (!targetType.lValue) {
-      crash(left, "Unable to assign to non l-value");
-    }
+    // if (!targetType.lValue) {
+    //   crash(left, "Unable to assign to non l-value");
+    // }
     typeChecker.check(right, targetType.type);
 
     auto value = compile(right, targetType.type);
@@ -794,11 +805,18 @@ struct Compiler {
     return comparison;
   }
 
+  struct ComparisonOperator {
+    string_view instructionName;
+    TokenType type;
+    struct {
+      bool signedUnsignedDistinction = false;
+    };
+  };
+
   ReturnType comparison(
     NodeIndex a,
     NodeIndex b,
-    TokenType opType,
-    string_view instructionName
+    ComparisonOperator op
   ) {
     typeChecker.check(nodeIndex);
     auto aVal = compile(a);
@@ -807,27 +825,28 @@ struct Compiler {
       if (type == Pool().intLiteral) {
         auto a = aVal.unbox<IntLiteral>()->value;
         auto b = bVal.unbox<IntLiteral>()->value;
-        return Reference(literalComparison(a, b, opType));
+        return Reference(literalComparison(a, b, op.type));
       } else if (type == Pool().floatLiteral) {
         auto a = aVal.unbox<FloatLiteral>()->value;
         auto b = bVal.unbox<FloatLiteral>()->value;
-        return Reference(literalComparison(a, b, opType));
+        return Reference(literalComparison(a, b, op.type));
       }
 
       aVal = toRegister(aVal);
       bVal = toRegister(bVal);
 
       char typePrefix;
-      char opPrefix;
+      string_view opPrefix;
+      type = Pool().rawType(type);
       if (Pool().isFloat(type)) {
         typePrefix = 'f';
-        opPrefix = 'u';
+        opPrefix = "o";
       } else if (Pool().isSignedInt(type)) {
         typePrefix = 'i';
-        opPrefix = 's';
+        opPrefix = op.signedUnsignedDistinction ? "s" : "";
       } else if (Pool().isUnsignedInt(type)) {
         typePrefix = 'i';
-        opPrefix = 'u';
+        opPrefix = op.signedUnsignedDistinction ? "u" : "";
       } else {
         TODO("Non-primitive comparison operations");
       }
@@ -837,7 +856,7 @@ struct Compiler {
         result,
         typePrefix,
         opPrefix,
-        instructionName,
+        op.instructionName,
         LlvmName(type),
         aVal,
         bVal
@@ -849,27 +868,27 @@ struct Compiler {
   }
 
   ReturnType equal(NodeIndex a, NodeIndex b) {
-    return comparison(a, b, TokenType::DoubleEqual, "eq");
+    return comparison(a, b, {"eq", TokenType::DoubleEqual, false});
   }
 
   ReturnType notEqual(NodeIndex a, NodeIndex b) {
-    return comparison(a, b, TokenType::NotEqual, "ne");
+    return comparison(a, b, {"ne", TokenType::NotEqual, false});
   }
 
   ReturnType lt(NodeIndex a, NodeIndex b) {
-    return comparison(a, b, TokenType::Lt, "lt");
+    return comparison(a, b, {"lt", TokenType::Lt, true});
   }
 
   ReturnType gt(NodeIndex a, NodeIndex b) {
-    return comparison(a, b, TokenType::Gt, "gt");
+    return comparison(a, b, {"gt", TokenType::Gt, true});
   }
 
   ReturnType leq(NodeIndex a, NodeIndex b) {
-    return comparison(a, b, TokenType::Leq, "le");
+    return comparison(a, b, {"le", TokenType::Leq, true});
   }
 
   ReturnType geq(NodeIndex a, NodeIndex b) {
-    return comparison(a, b, TokenType::Geq, "ge");
+    return comparison(a, b, {"ge", TokenType::Geq, true});
   }
 
   static FieldMap defaultFields;
@@ -987,43 +1006,43 @@ struct Compiler {
   }
 
   template <typename T> T literalArithmetic(T a, T b, TokenType opType) {
-    T comparison;
+    T result;
     switch (opType) {
     case TokenType::Plus: {
-      comparison = a + b;
+      result = a + b;
       break;
     }
     case TokenType::Minus: {
-      comparison = a - b;
+      result = a - b;
       break;
     }
     case TokenType::Mult: {
-      comparison = a * b;
+      result = a * b;
       break;
     }
     case TokenType::Div: {
-      comparison = a / b;
+      result = a / b;
       break;
     }
     case TokenType::LeftDiv: {
-      comparison = b / a;
+      result = b / a;
       break;
     }
     case TokenType::Remainder: {
-      comparison = std::remainder(a, b);
+      result = std::remainder(a, b);
       break;
     }
     default: {
       crash(nodeIndex, "Unknown arithmetic operation");
     }
     }
-    return comparison;
+    return result;
   }
 
   struct ArithmeticOperator {
-    TokenType type;
     string_view instructionName;
     string_view methodName;
+    TokenType type;
     struct {
       bool signedUnsignedDistinction = false;
       bool swapArgs = false;
@@ -1130,7 +1149,7 @@ struct Compiler {
   }
 
   ReturnType subtract(NodeIndex a, NodeIndex b) {
-    static ArithmeticOperator op{TokenType::Minus, "sub", "subtract"};
+    static ArithmeticOperator op{"sub", "subtract", TokenType::Minus};
     return arithmeticOperation(a, b, op);
   }
 
@@ -1140,19 +1159,19 @@ struct Compiler {
   }
 
   ReturnType divide(NodeIndex a, NodeIndex b) {
-    static ArithmeticOperator op{TokenType::Div, "div", "divide", true};
+    static ArithmeticOperator op{"div", "divide", TokenType::Div, true};
     return arithmeticOperation(a, b, op);
   }
 
   ReturnType leftDivide(NodeIndex a, NodeIndex b) {
     static ArithmeticOperator
-      op{TokenType::LeftDiv, "div", "divide", true, true};
+      op{"div", "divide", TokenType::LeftDiv, true, true};
     return arithmeticOperation(a, b, op);
   }
 
   ReturnType remainder(NodeIndex a, NodeIndex b) {
     static ArithmeticOperator
-      op{TokenType::Remainder, "rem", "remainder", true};
+      op{"rem", "remainder", TokenType::Remainder, true};
     return arithmeticOperation(a, b, op);
   }
 
@@ -2010,12 +2029,8 @@ struct Compiler {
     auto scope = environment.pushScope();
     environment.scopes.back().self = targetType;
     assert(targetType == environment.selfType());
-    fmt::println("impl Self = {}", TypeName(environment.selfType()));
-    // fmt::println(
-    //   "impl for {} ({})",
-    //   TypeName(targetType),
-    //   TypeName(environment.selfType())
-    // );
+    log("impl Self = {}", TypeName(environment.selfType()));
+
     std::unordered_map<Identifier, Reference> statics;
     for (auto index : block.elements) {
       auto declaration = parser.getDeclaration(index);
@@ -2719,8 +2734,8 @@ struct Compiler {
   }
 
   ReturnType ifExpr(Encodings::If node) {
-    auto resultType = typeChecker.check(nodeIndex);
-    auto shouldLoad = !resultType.lValue;
+    auto [type, lValue] = typeChecker.check(nodeIndex);
+    auto shouldLoad = !lValue;
     auto condition = compile(node.condition, Pool()._bool);
     condition = toRegister(condition);
 
@@ -2740,9 +2755,8 @@ struct Compiler {
     if (shouldLoad && ifCase.result.lValue()) {
       auto frame = stackItems;
       frame.outputFile = &ifInstruction;
-      auto oldFrame = push(frame);
+      auto guard = push(frame);
       ifCase.result = toRegister(ifCase.result);
-      // stackItems = oldFrame;
     }
     environment.hasReturned = false;
 
@@ -2759,12 +2773,18 @@ struct Compiler {
         .exitLabel = environment.currentLabel,
         .returns = environment.hasReturned,
       } : SwitchCase();
+    if (hasElse && shouldLoad && elseCase.result.lValue()) {
+      auto frame = stackItems;
+      frame.outputFile = &elseInstruction;
+      auto guard = push(frame);
+      elseCase.result = toRegister(elseCase.result);
+    }
     environment.hasReturned = ifCase.returns && elseCase.returns;
 
-    auto hasResultValue = hasElse && resultType.type != Pool()._void;
+    auto hasResultValue = hasElse && type != Pool()._void;
 
     if (hasResultValue) {
-      resultType.type = Pool().isAssignable(resultType.type, expectedType);
+      type = Pool().isAssignable(type, expectedType);
     }
 
     if (comptime) {
@@ -2814,8 +2834,6 @@ struct Compiler {
     emitLine("{}:", endLabel);
 
     if (hasResultValue) {
-      auto type = resultType.type;
-      auto lValue = resultType.lValue;
       auto phiResult =
         lValue ? Reference(StackValue(environment.addTemporary(), type))
                : Reference(environment.makeTemporary(type));
@@ -2899,6 +2917,7 @@ struct Compiler {
       log("Using name {}; Stored name is {}", altName, name);
       return altName;
     }
+    name = StringPool::inst().copy(name);
     log("Using name {}", name);
     return name;
   }
@@ -3581,11 +3600,7 @@ struct Compiler {
     Parser parser(tokenizer);
     std::vector<NodeIndex> program = parser.parse();
 
-    std::ofstream& outFile =
-      *(targetType == TargetType::Cpu
-          ? CompilerContext::inst().blub.outputFileStream
-          : CompilerContext::inst().cuda.outputFileStream);
-    Compiler translationUnit(parser, program, outFile);
+    Compiler translationUnit(parser, program, targetType);
     auto [env, success] =
       compiledFiles.emplace(std::move(fileName), translationUnit.run());
     // TODO: remove
@@ -3601,7 +3616,7 @@ struct Compiler {
   }
 
   Environment run() {
-    auto outputFile = targetType == TargetType::Cpu
+    auto finalFile = targetType == TargetType::Cpu
                         ? CompilerContext::inst().blub.outputFileStream
                         : CompilerContext::inst().cuda.outputFileStream;
 
@@ -3620,7 +3635,7 @@ struct Compiler {
       codegenFunction(stub);
       functionStubs.pop_back();
       while (!globalsStack.empty()) {
-        *outputFile << globalsStack.front() << "\n";
+        *finalFile << globalsStack.front() << "\n";
         globalsStack.pop();
       }
     }
@@ -3631,15 +3646,19 @@ struct Compiler {
   }
 
   void codegenFunction(FunctionStub stub) {
+    environment.hasReturned = false;
     auto envGuard = environment.pushScope();
+    environment.scopes.back().envType = EnvType::Function;
+    environment.scopes.back().self = stub.selfType;
     log("Codegening function {} with self type:", stub.name);
     if (stub.selfType) {
       log("{}", TypeName(stub.selfType));
     } else {
       log("Missing self type");
     }
-    environment.scopes.back().self = stub.selfType;
-    auto& instruction = *outputFile;
+    std::stringstream instruction;
+    auto stackGuard = push({.outputFile = &instruction, .expectedType = Pool().infer, .nodeIndex = stub.definitionNode, .name = {}});
+    // auto& instruction = *outputFile;
     instruction << "define ";
     if (parser.getToken(stub.definitionNode)->type == TokenType::Kernel) {
       instruction << "ptx_kernel ";
@@ -3722,12 +3741,13 @@ struct Compiler {
     }
 
     instruction << "}\n\n";
-    return;
+    environment.scopes.back().envType = EnvType::Global;
+    globalsStack.push(instruction.str());
   }
 
-  Compiler(Parser& parser, ChildSpan program, std::ostream& outputFile)
-      : outputFile(&outputFile), parser(parser),
-        typeChecker(*this, environment, parser), program(program) {}
+  Compiler(Parser& parser, ChildSpan program, TargetType targetType)
+      : outputFile(CompilerContext::fileStream(targetType)), parser(parser),
+        typeChecker(*this, environment, parser), program(program), targetType(targetType) {}
 
   struct StackItemsGuard {
     StackItems prevFrame;

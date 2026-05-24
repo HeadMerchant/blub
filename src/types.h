@@ -400,8 +400,7 @@ enum class LlvmReturn {
 };
 
 class TypePool {
-private:
-  bool testFlag;
+  static Logger logger;
 
 public:
   static TypePool pool;
@@ -853,7 +852,7 @@ public:
   );
 
   Sizing getSizing(TypeIndex type) {
-    return std::visit(
+    auto sizing = std::visit(
       overloaded{
         [](VoidType x) { return Sizing{0, 0}; },
         [](SignedInt x) { return Sizing::fromBitSize(x.bitSize); },
@@ -956,6 +955,14 @@ public:
       },
       getType(type)
     );
+
+    if (logger.canLog()) {
+      if (auto structIndex = std::get_if<StructIndex>(&getType(type))) {
+        auto bigStruct = getStruct(*structIndex);
+        fmt::println("Size of struct '{}'/'{}': {} bytes", bigStruct.name, bigStruct.llvmName, sizing.byteSize);
+      }      
+    }
+    return sizing;
   }
 
 private:
@@ -1080,11 +1087,6 @@ public:
 
   BoundFunctionType* unboxBoundFunction(TypeIndex type) {
     auto x = std::get_if<BoundFunctionType>(&getType(type));
-    if (x) {
-      fmt::println("Unboxing method");
-    } else {
-      fmt::println("Failed to unbox method");
-    }
     return x;
   }
 
@@ -1096,6 +1098,10 @@ public:
       },
       getType(type)
     );
+  }
+
+  TypeIndex rawType(TypeIndex baseType) {
+    return std::visit(overloaded{[]<RecursiveType T>(T x) {return x.rawType();}, [baseType](auto) {return baseType;}}, getType(baseType));
   }
 };
 
@@ -1310,8 +1316,6 @@ TEST_CASE("Built-in type registers") {
         CHECK(registers.isMemory());
         continue;
       }
-      // fmt::println("What {} looks like: {:#b}", TypeName(type),
-      // registers.types);
       CHECK_EQ(registers.length, size);
       for (auto i = 0; i < size; i++) {
         CHECK_EQ(registers.pop(), RegisterType::Int);

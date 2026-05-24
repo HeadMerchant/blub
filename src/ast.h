@@ -11,7 +11,7 @@ concept AstVisitor = requires(T t, NodeIndex nodeIndex, TokenPointer token) {
     t.arrayLiteral(Encodings::Block{})
   } -> std::same_as<typename T::ReturnType>;
   {
-    t.when(nodeIndex, span<pair<NodeIndex, NodeIndex>>{})
+    t.when(nodeIndex, span<pair<NodeIndex, NodeIndex>>{}, nodeIndex)
   } -> std::same_as<typename T::ReturnType>;
   {
     t.declaration(Encodings::Declaration{})
@@ -265,7 +265,12 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
       auto caseNodes = std::bit_cast<span<pair<NodeIndex, NodeIndex>>>(
         node.elements.subspan(1, node.elements.size() / 2)
       );
-      return t.when(condition, caseNodes);
+      NodeIndex elseNode = NodeIndex::null();
+      if (!caseNodes.empty() && !caseNodes.back().first) {
+        elseNode = caseNodes.back().second;
+        caseNodes = caseNodes.subspan(0, caseNodes.size() - 1);
+      }
+      return t.when(condition, caseNodes, elseNode);
     }
     default:
       TODO("Default for block nodes");

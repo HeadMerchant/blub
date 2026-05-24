@@ -4,7 +4,7 @@
 #include "types.h"
 #include <ranges>
 
-Logger logger(LogLevel::Compile);
+Logger TypePool::logger(LogLevel::TypeCheck);
 
 TypePool& Pool() {
   static TypePool pool = TypePool();

@@ -19,9 +19,33 @@
 using namespace simdjson;
 namespace fs = std::filesystem;
 
+static TypeCache cTypes = {
+  {"uint8_t",     Pool()._u8   },
+  {"uint16_t",    Pool()._u16  },
+  {"uint32_t",    Pool()._u32  },
+  {"uint64_t",    Pool()._u64  },
+  {"int8_t",      Pool()._s8   },
+  {"int16_t",     Pool()._s16  },
+  {"int32_t",     Pool()._s32  },
+  {"int64_t",     Pool()._s64  },
+  {"__uint64_t",  Pool()._u64  },
+  {"__uint128_t", Pool()._u128 },
+  {"int",         Pool()._s32  },
+  {"char",        Pool()._u8   },
+  {"size_t",      Pool()._usize},
+  {"void",        Pool()._void },
+  {"intptr_t",    Pool()._usize},
+  {"uintptr_t",   Pool()._usize},
+  {"bool",        Pool()._bool },
+  {"char",        Pool()._u8   },
+  {"float",       Pool()._f32  },
+  {"double",      Pool()._f64  },
+  // TODO: vector types
+  {"__m128",      Pool()._void },
+};
+
 TypeIndex parseType(
   std::string_view qualType,
-  TypeCache& cTypes,
   std::queue<std::string>& globals
 ) {
   Logger log(LogLevel::CImport);
@@ -98,7 +122,7 @@ TypeIndex parseType(
         auto commaIndex = modifiers.find(", ");
         if (commaIndex != std::string::npos) {
           auto subType = modifiers.substr(0, commaIndex);
-          paramTypes.push_back(parseType(subType, cTypes, globals));
+          paramTypes.push_back(parseType(subType, globals));
           modifiers = modifiers.substr(commaIndex + 2);
           continue;
         }
@@ -111,7 +135,7 @@ TypeIndex parseType(
         }
 
         auto paramType = modifiers.substr(0, parenIndex);
-        paramTypes.push_back(parseType(paramType, cTypes, globals));
+        paramTypes.push_back(parseType(paramType, globals));
         break;
       }
 
@@ -155,7 +179,6 @@ TypeIndex parseRecord(
   ondemand::value& node,
   Identifier cName,
   Identifier unprefixedName,
-  TypeCache& cTypes,
   std::queue<std::string>& globals
 ) {
   Logger log(LogLevel::CImport);
@@ -164,7 +187,7 @@ TypeIndex parseRecord(
   TypeIndex resultTypeIndex;
   if (tagUsed == "struct") {
     auto [typeIndex, structIndex] = Pool().makeStruct(
-      std::string(unprefixedName),
+      unprefixedName,
       cName.empty() ? RegisterName(Environment::structIndex())
                     : RegisterName(cName)
     );
@@ -176,7 +199,7 @@ TypeIndex parseRecord(
       );
     }
 
-    OptionalType anonType;
+    OptionalType anonType = TypeIndex::null();
     for (auto structField : structFields) {
       std::string_view fieldKind;
       structField["kind"].get(fieldKind);
@@ -191,12 +214,14 @@ TypeIndex parseRecord(
         } else {
           std::string_view fieldTypeName;
           structField["type"]["qualType"].get(fieldTypeName);
-          fieldType = parseType(fieldTypeName, cTypes, globals);
+          fieldType = parseType(fieldTypeName, globals);
         }
         Pool().getStruct(structIndex).defineField(fieldName, fieldType);
-      } else if (fieldKind == "RecordDecl") {
-        anonType = parseRecord(structField.value(), "", "", cTypes, globals);
-      } else {
+      }
+      // else if (fieldKind == "RecordDecl") {
+      //   anonType = parseRecord(structField.value(), "", "", globals);
+      // }
+      else {
         log("Skipping inner node for struct of kind {}", fieldKind);
       }
     }
@@ -224,7 +249,7 @@ TypeIndex parseRecord(
       std::string_view variantKind;
       variant["kind"].get(variantKind);
       if (variantKind == "RecordDecl") {
-        anonType = parseRecord(variant, "", "", cTypes, globals);
+        anonType = parseRecord(variant, "", "", globals);
       } else if (variantKind != "FieldDecl") {
         log("Skipping inner node for union {} of kind {}", cName, variantKind);
       } else {
@@ -244,7 +269,7 @@ TypeIndex parseRecord(
             throw std::invalid_argument("Unknown type for union variant");
           }
         } else {
-          variantType = parseType(fieldTypeName, cTypes, globals);
+          variantType = parseType(fieldTypeName, globals);
         }
 
         if (variant["name"].get(variantName)) {
@@ -273,6 +298,8 @@ TypeIndex parseRecord(
   return resultTypeIndex;
 }
 
+
+
 Environment* cBindings(
   fs::path cFile,
   std::string prefix,
@@ -281,30 +308,6 @@ Environment* cBindings(
 ) {
   auto fileName = cFile.string();
   static std::unordered_map<fs::path, Environment> importedFiles;
-  static TypeCache cTypes = {
-    {"uint8_t",     Pool()._u8   },
-    {"uint16_t",    Pool()._u16  },
-    {"uint32_t",    Pool()._u32  },
-    {"uint64_t",    Pool()._u64  },
-    {"int8_t",      Pool()._s8   },
-    {"int16_t",     Pool()._s16  },
-    {"int32_t",     Pool()._s32  },
-    {"int64_t",     Pool()._s64  },
-    {"__uint64_t",  Pool()._u64  },
-    {"__uint128_t", Pool()._u128 },
-    {"int",         Pool()._s32  },
-    {"char",        Pool()._u8   },
-    {"size_t",      Pool()._usize},
-    {"void",        Pool()._void },
-    {"intptr_t",    Pool()._usize},
-    {"uintptr_t",   Pool()._usize},
-    {"bool",        Pool()._bool },
-    {"char",        Pool()._u8   },
-    {"float",       Pool()._f32  },
-    {"double",      Pool()._f64  },
-    // TODO: vector types
-    {"__m128",      Pool()._void },
-  };
 
   for (auto [typeName, type] : definedTypes) {
     cTypes[typeName] = type;
@@ -433,7 +436,7 @@ Environment* cBindings(
 
       // TODO: factor out to Types module?
       auto declareName = StringPool::inst().copy(valueName);
-      TypeIndex type = parseType(qualType, cTypes, globals);
+      TypeIndex type = parseType(qualType, globals);
       if (!Pool().functionType(type).has_value()) {
         fmt::println(
           std::cerr,
@@ -457,7 +460,6 @@ Environment* cBindings(
         node.value(),
         valueName,
         unprefixedValueName,
-        cTypes,
         globals
       );
     } else {

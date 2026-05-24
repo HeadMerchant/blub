@@ -76,6 +76,12 @@ struct TypeChecker {
       expectedElement = coerced;
     }
 
+    // TODO: comptime arrays
+    auto actualElement = Pool().isAssignable(expectedElement, Pool().infer);
+    if (!actualElement) {
+      crash(nodeIndex, "Unable to create array literal with type {}", TypeName(expectedElement));
+    }
+    expectedElement = actualElement;
     for (auto node : node.elements) {
       check(node, expectedElement);
     }
@@ -86,8 +92,8 @@ struct TypeChecker {
     return astTypes[node.value - 1];
   }
 
-  void setType(NodeIndex node, TypeIndex type) {
-    readType(node).type = type;
+  void setType(NodeIndex node, ReturnType type) {
+    readType(node) = type;
   }
 
   ReturnType visit(NodeIndex node, TypeIndex expectedType) {
@@ -104,13 +110,17 @@ struct TypeChecker {
           TypeName(expectedType)
         );
       }
+      if (expectedType == Pool().infer) {
+        return currentType;
+      }
     }
     StackItems tempStack = {.expected = expectedType, .nodeIndex = node};
     std::swap(tempStack, stackItems);
     log("Checking against type '{}'", TypeName(expected));
     auto result = astVisit(node, parser, *this);
     if (auto coerced = Pool().coerce(result.type, expectedType)) {
-      setType(node, coerced);
+      result.type = coerced;
+      setType(node, result);
     } else {
       crash(
         node,
@@ -127,18 +137,23 @@ struct TypeChecker {
     return visit(node, expectedType);
   }
 
-  ReturnType when(NodeIndex condition, span<pair<NodeIndex, NodeIndex>> cases) {
+  ReturnType when(NodeIndex condition, span<pair<NodeIndex, NodeIndex>> cases, NodeIndex elseBody) {
     auto conditionType = check(condition).type;
     ReturnType resultType{.type = Pool().infer, .lValue = true};
+    if (elseBody) {
+      cases = {cases.data(), cases.size() + 1};
+    }
     for (auto [caseCondition, caseBody] : cases) {
-      auto caseConditionType = check(caseCondition, conditionType).type;
-      if (!Pool().coerce(conditionType, caseConditionType)) {
-        crash(
-          caseCondition,
-          "'when' case condition expected to be of type '{}', but was '{}'",
-          TypeName(conditionType),
-          TypeName(caseConditionType)
-        );
+      if (caseCondition) {
+        auto caseConditionType = check(caseCondition, conditionType).type;
+        if (!Pool().coerce(conditionType, caseConditionType)) {
+          crash(
+            caseCondition,
+            "'when' case condition expected to be of type '{}', but was '{}'",
+            TypeName(conditionType),
+            TypeName(caseConditionType)
+          );
+        }
       }
 
       ReturnType result = check(caseBody);
@@ -148,9 +163,11 @@ struct TypeChecker {
         resultType.type = Pool()._void;
       }
       if (result.type != Pool().never) {
-        resultType.lValue &= result.lValue;
+        resultType.lValue = resultType.lValue && result.lValue;
+        log("'when' can be lValue?: {}", resultType.lValue);
       }
     }
+    fmt::println("Typechecker says 'when' is an lValue?: {}", resultType.lValue);
     return resultType;
   }
 
@@ -158,8 +175,13 @@ struct TypeChecker {
     auto def = parser.getDefinition(node.definition);
     auto type =
       def.type ? materialize(def.type, def.name->lexeme) : Pool().infer;
-    fmt::println("Declaring '{}: {}'", def.name->lexeme, TypeName(type));
-    check(node.value, type);
+    auto assigneeType = check(node.value, type).type;
+    if (auto fullType = Pool().isAssignable(assigneeType, type)) {
+      check(node.value, fullType);
+    } else {
+      crash(nodeIndex, "Unable to assign value of type {} to type {}", TypeName(assigneeType), TypeName(type));
+    }
+    log("Declaring '{}: {}'", def.name->lexeme, TypeName(check(node.value).type));
     return {Pool()._void};
   }
 
@@ -197,7 +219,9 @@ struct TypeChecker {
 
   ReturnType identifier(TokenPointer token) {
     if (auto value = env.find(token->lexeme)) {
-      return {value->getType(), value->lValue() != nullptr};
+      auto lValue = value->lValue() != nullptr;
+      log("'{}' is l value?: {}", token->lexeme, lValue);
+      return {value->getType(), lValue};
     }
     crash(token, "Undefined symbol '{}'", token->lexeme);
   }
@@ -245,7 +269,7 @@ struct TypeChecker {
 
   TypeIndex comparison(NodeIndex a, NodeIndex b) {
     auto aType = check(a).type;
-    auto bType = check(b).type;
+    auto bType = check(b, aType).type;
 
     if (auto coerced = Pool().coerce(aType, bType)) {
       check(a, coerced);
@@ -510,6 +534,8 @@ struct TypeChecker {
       );
     } else if (auto sliceElement = Pool().sliceElementType(objectType.type)) {
       return checkArrayIndex(index, sliceElement, true);
+    } else if (auto dereffed = Pool().multiPointerElement(objectType.type)) {
+      return {dereffed, true};
     } else {
       crash(
         nodeIndex,
@@ -649,7 +675,7 @@ struct TypeChecker {
   }
 
   ReturnType cImport(Encodings::ArgumentList args) {
-    return {Pool()._void};
+    return {Pool().environment};
   }
 
   ReturnType cDefine(Encodings::ArgumentList args) {
@@ -968,7 +994,7 @@ struct TypeChecker {
     auto callerType = check(functionNode).type;
 
     // TODO: bound function
-    fmt::println("Applying function type {}", TypeName(callerType));
+    log("Applying function type {}", TypeName(callerType));
     if (auto unboundFunction = Pool().unbox<FunctionType>(callerType)) {
       auto params = Pool().tupleElements(unboundFunction->parameters);
       // TODO: default args

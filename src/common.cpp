@@ -18,6 +18,8 @@ std::tuple<u8, u8, u8, u8> unpackInt(u32 value) {
   };
 }
 
+// static char* StringPool::bytes = malloc(64 * 4096);
+
 StringPool& StringPool::inst() {
   static StringPool pool(64 * 4096);
   return pool;

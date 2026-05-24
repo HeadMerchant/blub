@@ -520,7 +520,7 @@ public:
 
   void debug(u32 depth = 0) {
     if (!log.canLog()) return;
-    if (depth == 0) fmt::println("Symbols:");
+    if (depth == 0) log("Symbols:");
     for (auto [name, _] : defs) {
       fmt::println("{: >{}}{}", "", depth * 2, name);
     }
@@ -635,7 +635,6 @@ public:
   };
 
   ScopeGuard pushScope() {
-    fmt::println("Creating pushed scope");
     u32 length = defs.size();
     if (scopes.empty()) {
       scopes.push_back({length});

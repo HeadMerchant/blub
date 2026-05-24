@@ -1161,13 +1161,13 @@ public:
           auto elseToken =
             acceptUntil(TokenType::StatementBreak, TokenType::Else)
         ) {
-          // Use fat arrow to diambiguate against if/else from previous case
+          // Use thin arrow to diambiguate against if/else from previous case
           consume(
             TokenType::ThinArrow,
-            "Expected '=>' between else case and body"
+            "Expected '->' between else case and body"
           );
           auto caseBlock = assignment();
-          cases.push_back(caseBlock);
+          cases.push_back(NodeIndex::null());
           cases.push_back(caseBlock);
           acceptN(TokenType::StatementBreak);
           consume(
@@ -1662,7 +1662,7 @@ public:
   void dumpNodes() const {
     if (!(Logger::globalLevels & LogLevel::Parsing)) return;
     for (u32 i = 1; i <= nodes.size(); i++) {
-      fmt::println("Node type: {}", (u32)nodeType({i}));
+      log("Node type: {}", (u32)nodeType({i}));
       locationOf({i}).underline(std::cout);
     }
   }

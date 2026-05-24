@@ -43,7 +43,6 @@ struct RegisterAssignment {
     Raw bits = (Raw)type;
     for (u32 i = bitWidth; i < 32; i *= 2) {
       bits |= bits << i;
-      // fmt::println("{:#x}", bits);
     }
     Raw bitMask = bitWidth * (Raw)repeat;
     bitMask = bitMask >= 32 ? 0 : (1 << bitMask);

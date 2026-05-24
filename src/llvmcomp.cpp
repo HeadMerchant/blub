@@ -2,7 +2,7 @@
 #include "llvmcomp.h"
 
 Compiler::ArithmeticOperator
-  Compiler::multOp{TokenType::Mult, "mul", "multiply", false, false};
+  Compiler::multOp{"mul", "multiply", TokenType::Mult, false, false};
 
 Logger Compiler::log(LogLevel::Compile);
 

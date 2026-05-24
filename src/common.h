@@ -1,6 +1,6 @@
 #pragma once
 #include "../deps/doctest.h"
-#include "fmt/base.h"
+#include "fmt/format.h"
 #include "tsl/ordered_map.h"
 #include <bit>
 #include <cstdint>
@@ -89,12 +89,14 @@ struct StringPool {
 
   std::string_view copy(std::string_view view) {
     u32 newOffset = offset + view.length();
+    fmt::println("Using {}/{} bytes for strings", newOffset, capacity);
     if (newOffset < offset || offset >= capacity) {
       debug();
       throw std::invalid_argument("OOM in string view pool");
     }
     memcpy(bytes + offset, view.data(), view.length());
     std::string_view newView{bytes + offset, view.length()};
+    fmt::println("Copied '{}'", newView);
 
     offset = newOffset;
 

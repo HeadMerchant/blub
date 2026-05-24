@@ -559,6 +559,10 @@ struct Tokenizer {
   void string(TokenType tokenType = TokenType::String, char endChar = '"') {
     bool isEscaping = false;
     while ((isEscaping || peek() != endChar) && !isAtEnd()) {
+      if (peek() == '\n') {
+        line++;
+        firstCharacterOnLine.push_back(current);
+      }
       if (!isEscaping) {
         isEscaping = advance() == '\\';
       } else {
@@ -721,12 +725,12 @@ public:
   }
 };
 
-TEST_CASE("Bro") {
-  fmt::println("Binop start: {}", (int)TokenType::BINOP_START);
-  fmt::println("Double equal: {}", (int)TokenType::DoubleEqual);
-  fmt::println("Binop end: {}", (int)TokenType::BINOP_END);
-  fmt::println("Shift right: {}", (int)TokenType::ShiftRight);
-  fmt::println("Binop=start: {}", (int)TokenType::BINOP_ASSIGN_START);
-  fmt::println("Binop=end: {}", (int)TokenType::BINOP_ASSIGN_END);
-  FAIL("failing");
-}
+// TEST_CASE("Bro") {
+//   fmt::println("Binop start: {}", (int)TokenType::BINOP_START);
+//   fmt::println("Double equal: {}", (int)TokenType::DoubleEqual);
+//   fmt::println("Binop end: {}", (int)TokenType::BINOP_END);
+//   fmt::println("Shift right: {}", (int)TokenType::ShiftRight);
+//   fmt::println("Binop=start: {}", (int)TokenType::BINOP_ASSIGN_START);
+//   fmt::println("Binop=end: {}", (int)TokenType::BINOP_ASSIGN_END);
+//   FAIL("failing");
+// }
