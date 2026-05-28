@@ -64,8 +64,8 @@ struct CompilerContext {
 
   static std::stringstream* globalStream(TargetType targetType) {
     auto& outputFile = targetType == TargetType::Cpu
-                        ? CompilerContext::inst().blub.globalInitialization
-                        : CompilerContext::inst().cuda.globalInitialization;
+                         ? CompilerContext::inst().blub.globalInitialization
+                         : CompilerContext::inst().cuda.globalInitialization;
     return &outputFile;
   }
 
@@ -244,7 +244,7 @@ struct Compiler {
       environment.currentLabel = block;
       cases.push_back({
         .condition = compile(condition),
-        .result = compile(body),
+        .result = compile(body, instruction),
         .entryBlock = block,
         .exitLabel = environment.currentLabel,
         .returns = environment.hasReturned,
@@ -281,7 +281,7 @@ struct Compiler {
       environment.currentLabel = block;
       hasDefault = true;
       cases.push_back({
-        .result = compile(elseBody),
+        .result = compile(elseBody, instruction),
         .entryBlock = block,
         .exitLabel = environment.currentLabel,
         .returns = environment.hasReturned,
@@ -477,13 +477,13 @@ struct Compiler {
         crash(typeNode, "Type for identifier '{}' is not a type", name->lexeme);
       }
     }
+    bool isGlobal = environment.envType() == EnvType::Global;
     Reference* definition = environment.define(
       name->lexeme,
       Reference(StackValue(
-        environment.addTemporary(),
+        isGlobal ? environment.nextGlobalIndex() : environment.addTemporary(),
         type,
-        environment.envType() == EnvType::Global ? ValueScope::Global
-                                                 : ValueScope::Local
+        isGlobal ? ValueScope::Global : ValueScope::Local
       )),
       parser.locationOf(defNode)
     );
@@ -813,11 +813,7 @@ struct Compiler {
     };
   };
 
-  ReturnType comparison(
-    NodeIndex a,
-    NodeIndex b,
-    ComparisonOperator op
-  ) {
+  ReturnType comparison(NodeIndex a, NodeIndex b, ComparisonOperator op) {
     typeChecker.check(nodeIndex);
     auto aVal = compile(a);
     auto bVal = compile(b);
@@ -957,10 +953,8 @@ struct Compiler {
     span<NodeIndex> arguments = {}
   ) {
     // TODO: multiple resolutions
-    if (
-      auto [aType, method] = environment.getMethod(objectType, methodName);
-      method
-    ) {
+    if (auto [aType, method] = environment.getMethod(objectType, methodName);
+        method) {
       auto function = method->unboxFunction();
       auto params = Pool().tupleElements(function->type.parameters);
       if (params.size() - 1 != arguments.size()) {
@@ -1057,9 +1051,8 @@ struct Compiler {
     typeChecker.check(nodeIndex, expectedType);
     auto aType = typeChecker.check(a).type;
     auto bType = typeChecker.check(b).type;
-    if (
-      auto type = Pool().coerce(aType, bType); type && Pool().isNumber(type)
-    ) {
+    if (auto type = Pool().coerce(aType, bType);
+        type && Pool().isNumber(type)) {
       auto aVal = compile(a);
       auto bVal = compile(b);
       if (type == Pool().intLiteral) {
@@ -1103,11 +1096,9 @@ struct Compiler {
       return Reference(result);
     } else {
       // TODO: multiple resolutions
-      if (
-        auto [aType, method] =
-          environment.getMethod(typeChecker.check(a).type, op.methodName);
-        method
-      ) {
+      if (auto [aType, method] =
+            environment.getMethod(typeChecker.check(a).type, op.methodName);
+          method) {
         auto function = method->unboxFunction();
         auto params = Pool().tupleElements(function->type.parameters);
         // TODO: can probably avoid these checks because they should be caught
@@ -1140,11 +1131,7 @@ struct Compiler {
   }
 
   ReturnType add(NodeIndex a, NodeIndex b) {
-    static ArithmeticOperator op{
-      .type = TokenType::Plus,
-      .instructionName = "add",
-      .methodName = "add"
-    };
+    static ArithmeticOperator op{"add", "add", TokenType::Plus};
     return arithmeticOperation(a, b, op);
   }
 
@@ -1694,9 +1681,8 @@ struct Compiler {
 
   void extendToUsize(Reference& index) {
     auto usize = Pool()._usize;
-    if (
-      auto type = index.getType(); Pool().isUnsignedInt(type) && type != usize
-    ) {
+    if (auto type = index.getType();
+        Pool().isUnsignedInt(type) && type != usize) {
       auto extended = environment.makeTemporary(Pool()._usize);
       emitLine(
         "{} = zext {} {} to {}",
@@ -2042,9 +2028,8 @@ struct Compiler {
       if (!succeeded) {
         crash(nameToken, "Duplicate member in impl block '{}'", name);
       }
-      if (
-        parser.getToken(index)->type != TokenType::Colon || !value.isComptime()
-      )
+      if (parser.getToken(index)->type != TokenType::Colon ||
+          !value.isComptime())
         crash(index, "TODO: non-comptime values");
     }
 
@@ -2338,11 +2323,9 @@ struct Compiler {
   }
 
   ReturnType cIncludeDir(Encodings::ArgumentList args) {
-    if (
-      args.positional.size() == 1 &&
-      parser.nodeType(args.positional[0]) == NodeType::Literal &&
-      args.named.empty()
-    ) {
+    if (args.positional.size() == 1 &&
+        parser.nodeType(args.positional[0]) == NodeType::Literal &&
+        args.named.empty()) {
       auto fileName =
         parser.getToken(parser.getNode(args.positional[0]).token)->lexeme;
       CompilerContext::inst().c.clangArgs.push_back(
@@ -2358,11 +2341,9 @@ struct Compiler {
   }
 
   ReturnType link(Encodings::ArgumentList args) {
-    if (
-      args.positional.size() == 1 &&
-      parser.getToken(args.positional[0])->type == TokenType::String &&
-      args.named.empty()
-    ) {
+    if (args.positional.size() == 1 &&
+        parser.getToken(args.positional[0])->type == TokenType::String &&
+        args.named.empty()) {
       auto libName =
         parser.getToken(parser.getNode(args.positional[0]).token)->lexeme;
       CompilerContext::inst().c.linkedLibraries.push_back(
@@ -2378,11 +2359,9 @@ struct Compiler {
   }
 
   ReturnType linkDir(Encodings::ArgumentList args) {
-    if (
-      args.positional.size() == 1 &&
-      parser.getToken(args.positional[0])->type == TokenType::String &&
-      args.named.empty()
-    ) {
+    if (args.positional.size() == 1 &&
+        parser.getToken(args.positional[0])->type == TokenType::String &&
+        args.named.empty()) {
       auto libName = parser.getToken(args.positional[0])->lexeme;
       CompilerContext::inst().c.linkedLibraries.push_back(
         fmt::format("-L{}", libName)
@@ -2876,10 +2855,8 @@ struct Compiler {
         if (selfType == type) {
           return function;
         }
-        if (
-          auto ptrType = Pool().dereference(selfType);
-          ptrType && type == ptrType
-        ) {
+        if (auto ptrType = Pool().dereference(selfType);
+            ptrType && type == ptrType) {
           TODO("Calling methods on pointers");
         }
 
@@ -3617,15 +3594,15 @@ struct Compiler {
 
   Environment run() {
     auto finalFile = targetType == TargetType::Cpu
-                        ? CompilerContext::inst().blub.outputFileStream
-                        : CompilerContext::inst().cuda.outputFileStream;
+                       ? CompilerContext::inst().blub.outputFileStream
+                       : CompilerContext::inst().cuda.outputFileStream;
 
     log("Program length: {}", program.size());
     for (auto node : program) {
       log("Trying to compile node: {}", node.value);
       compile(node);
       while (!globalsStack.empty()) {
-        emitLine("{}", globalsStack.front());
+        *finalFile << globalsStack.front() << "\n";
         globalsStack.pop();
       }
     }
@@ -3657,7 +3634,12 @@ struct Compiler {
       log("Missing self type");
     }
     std::stringstream instruction;
-    auto stackGuard = push({.outputFile = &instruction, .expectedType = Pool().infer, .nodeIndex = stub.definitionNode, .name = {}});
+    auto stackGuard = push(
+      {.outputFile = &instruction,
+       .expectedType = Pool().infer,
+       .nodeIndex = stub.definitionNode,
+       .name = {}}
+    );
     // auto& instruction = *outputFile;
     instruction << "define ";
     if (parser.getToken(stub.definitionNode)->type == TokenType::Kernel) {
@@ -3687,10 +3669,8 @@ struct Compiler {
       auto parameterDefinition = parser.getDefinition(paramNode);
       string_view paramName = parameterDefinition.name->lexeme;
 
-      if (
-        std::find(paramNames.begin(), paramNames.end(), paramName) !=
-        paramNames.end()
-      ) {
+      if (std::find(paramNames.begin(), paramNames.end(), paramName) !=
+          paramNames.end()) {
         crash(paramNode, "Duplicate function parameter {}", paramName);
       }
       paramNames.push_back(paramName);
@@ -3726,6 +3706,11 @@ struct Compiler {
       .registers = Pool().registerStorage(returnType),
     };
     environment.scopes.back().returnType = returnType;
+    fmt::println(
+      "Declaring function with aggregate return type {}: {}",
+      TypeName(returnType),
+      declarationResult.aggregateReturnTypeName
+    );
 
     auto body = parser.getBlock(node.body);
     for (auto statement : body.elements) {
@@ -3746,8 +3731,9 @@ struct Compiler {
   }
 
   Compiler(Parser& parser, ChildSpan program, TargetType targetType)
-      : outputFile(CompilerContext::fileStream(targetType)), parser(parser),
-        typeChecker(*this, environment, parser), program(program), targetType(targetType) {}
+      : outputFile(CompilerContext::globalStream(targetType)), parser(parser),
+        typeChecker(*this, environment, parser), program(program),
+        targetType(targetType) {}
 
   struct StackItemsGuard {
     StackItems prevFrame;

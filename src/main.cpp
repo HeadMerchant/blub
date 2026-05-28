@@ -12,7 +12,7 @@
 #include <string_view>
 
 #define DOCTEST_CONFIG_IMPLEMENT
-#include "../deps/doctest.h"
+#include "doctest.h"
 
 string_view kernelIr = "main.cu.ll";
 

@@ -610,10 +610,8 @@ public:
     auto type = coerce(valueIndex, targetIndex);
     if (!type) return TypeIndex::null();
 
-    if (
-      std::holds_alternative<Infer>(valueType) ||
-      std::holds_alternative<VoidType>(valueType)
-    ) {
+    if (std::holds_alternative<Infer>(valueType) ||
+        std::holds_alternative<VoidType>(valueType)) {
       return TypeIndex::null();
     }
 
@@ -635,9 +633,10 @@ public:
     }
 
     for (int i = 0; i < valueElements.size(); i++) {
-      if (
-        isAssignable(value = valueElements[i], targetType = targetElements[i])
-      )
+      if (isAssignable(
+            value = valueElements[i],
+            targetType = targetElements[i]
+          ))
         return TypeIndex::null();
     }
 
@@ -959,8 +958,13 @@ public:
     if (logger.canLog()) {
       if (auto structIndex = std::get_if<StructIndex>(&getType(type))) {
         auto bigStruct = getStruct(*structIndex);
-        fmt::println("Size of struct '{}'/'{}': {} bytes", bigStruct.name, bigStruct.llvmName, sizing.byteSize);
-      }      
+        fmt::println(
+          "Size of struct '{}'/'{}': {} bytes",
+          bigStruct.name,
+          bigStruct.llvmName,
+          sizing.byteSize
+        );
+      }
     }
     return sizing;
   }
@@ -1094,6 +1098,7 @@ public:
     return std::visit(
       overloaded{
         []<AggregateType T>(T x) { return true; },
+        [&]<RecursiveType T>(T x) { return isAggregate(x.rawType()); },
         [](auto x) { return false; },
       },
       getType(type)
@@ -1101,7 +1106,13 @@ public:
   }
 
   TypeIndex rawType(TypeIndex baseType) {
-    return std::visit(overloaded{[]<RecursiveType T>(T x) {return x.rawType();}, [baseType](auto) {return baseType;}}, getType(baseType));
+    return std::visit(
+      overloaded{
+        []<RecursiveType T>(T x) { return x.rawType(); },
+        [baseType](auto) { return baseType; }
+      },
+      getType(baseType)
+    );
   }
 };
 

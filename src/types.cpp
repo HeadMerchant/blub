@@ -122,6 +122,12 @@ void TypePool::registerStorage(
     },
     type
   );
+  if (auto structIndex = std::get_if<StructIndex>(&type)) {
+    auto structDef = getStruct(*structIndex);
+    if (structDef.name == "quat" || structDef.name == "vec4") {
+      fmt::println("Using {} registers: {:#b}; All int: {}", structDef.name, assignment.types, assignment.allInt());
+    }
+  }
 }
 
 void TypeIndex::debug() {

@@ -623,7 +623,9 @@ public:
       log("Pushing scope");
     }
 
-    ~ScopeGuard() {
+    // We don't catch exceptions except for in tests for marking failures. This suppresses the warning
+    // TODO: consider removing warning
+    ~ScopeGuard() noexcept(false) {
       assert(env.scopes.size() == scopeIndex);
       log(
         "Popping scope: Current: {}, Prev: {}",

@@ -163,10 +163,8 @@ u32 longestPrefixEndingIn(std::span<std::string_view> strings, char lastChar) {
 
     for (auto string : strings) {
       if (i >= string.length()) return prevLength;
-      if (
-        string.substr(start, i - prevLength) !=
-        strings[0].substr(start, i - prevLength)
-      )
+      if (string.substr(start, i - prevLength) !=
+          strings[0].substr(start, i - prevLength))
         return prevLength;
     }
     prevLength = i;
@@ -228,8 +226,8 @@ TypeIndex parseRecord(
 
     log("Struct fields for {}", cName);
     for (auto [fieldName, type] : Pool().getStruct(structIndex).fields) {
-      fmt::println("Fieldname: {}", fieldName);
-      fmt::println("{}: {}", fieldName, TypeName(type));
+      log("Fieldname: {}", fieldName);
+      log("{}: {}", fieldName, TypeName(type));
     }
 
     Pool().defineLLVMStruct(structIndex, globals);
@@ -258,10 +256,8 @@ TypeIndex parseRecord(
         std::string_view fieldTypeName;
         TypeIndex variantType;
         variant["type"]["qualType"].get(fieldTypeName);
-        if (
-          fieldTypeName.starts_with("union ") ||
-          fieldTypeName.starts_with("struct ")
-        ) {
+        if (fieldTypeName.starts_with("union ") ||
+            fieldTypeName.starts_with("struct ")) {
           if (anonType) {
             variantType = anonType;
             anonType = TypeIndex::null();
@@ -297,8 +293,6 @@ TypeIndex parseRecord(
 
   return resultTypeIndex;
 }
-
-
 
 Environment* cBindings(
   fs::path cFile,
@@ -456,12 +450,8 @@ Environment* cBindings(
       functionType.forwardDeclare(declareName, globals, "");
       blubInterface.value = Function(functionType, declareName);
     } else if (kind == "RecordDecl") {
-      blubInterface.value = parseRecord(
-        node.value(),
-        valueName,
-        unprefixedValueName,
-        globals
-      );
+      blubInterface.value =
+        parseRecord(node.value(), valueName, unprefixedValueName, globals);
     } else {
       log(
         "Skipping clang ast node of kind '{}'; name: '{}'",

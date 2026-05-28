@@ -1,5 +1,5 @@
 #pragma once
-#include "../deps/doctest.h"
+#include "doctest.h"
 #include "fmt/format.h"
 #include "tsl/ordered_map.h"
 #include <bit>
@@ -27,6 +27,7 @@ using RegisterName = std::variant<std::string_view, u32>;
 // using s32 = int32_t;
 // using s64 = int64_t;
 
+#undef assert
 #define assert(cond)                                                          \
   do {                                                                        \
     if (!(cond)) {                                                            \
@@ -89,14 +90,14 @@ struct StringPool {
 
   std::string_view copy(std::string_view view) {
     u32 newOffset = offset + view.length();
-    fmt::println("Using {}/{} bytes for strings", newOffset, capacity);
+    // fmt::println("Using {}/{} bytes for strings", newOffset, capacity);
     if (newOffset < offset || offset >= capacity) {
       debug();
       throw std::invalid_argument("OOM in string view pool");
     }
     memcpy(bytes + offset, view.data(), view.length());
     std::string_view newView{bytes + offset, view.length()};
-    fmt::println("Copied '{}'", newView);
+    // fmt::println("Copied '{}'", newView);
 
     offset = newOffset;
 

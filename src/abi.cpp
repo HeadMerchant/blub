@@ -2,11 +2,14 @@
 #include "common.h"
 #include "compilercontext.h"
 #include "fmt/base.h"
+#include "fmt/ostream.h"
 #include "registers.h"
 #include "types.h"
 #include "value.h"
 #include <sstream>
 #include <unistd.h>
+
+Logger logger(LogLevel::Compile);
 
 template <typename T>
 concept AbiVisitor = requires(T t, RegisterAssignment& registers) {
@@ -26,7 +29,7 @@ void abiVisit(TypeIndex typeIndex, RegisterAssignment& registers, T& visitor) {
   if (sizing.byteSize == 0) {
     return;
   }
-  if (registers.typeAt(0) == RegisterType::Memory) {
+  if (registers.isMemory()) {
     visitor.memory(typeIndex, sizing);
     return;
   }
@@ -51,16 +54,12 @@ void abiVisit(TypeIndex typeIndex, RegisterAssignment& registers, T& visitor) {
         u32 byteSize = x.byteSize();
         bool isFloat = registers.typeAt() == RegisterType::Float;
         u8 readOffset = registers.readIndex % 8;
-        if (
-          isFloat && readOffset == 0 &&
-          registers.typeAt(byteSize) == RegisterType::Float
-        ) {
+        if (isFloat && readOffset == 0 &&
+            registers.typeAt(byteSize) == RegisterType::Float) {
           visitor.sseVectorLow(typeIndex, sizing);
           // fmt::println("Low; expecting to pop {} bytes", byteSize);
-        } else if (
-          isFloat && readOffset != 0 &&
-          registers.typeAt(-byteSize) == RegisterType::Float
-        ) {
+        } else if (isFloat && readOffset != 0 &&
+                   registers.typeAt(-byteSize) == RegisterType::Float) {
           visitor.sseVectorHigh(typeIndex, sizing);
           // fmt::println("High; expecting to pop {} bytes", byteSize);
         } else {
@@ -147,6 +146,13 @@ DeclarationResult declareParamRegisters(
   RegisterAssignment returnRegisters = Pool().registerStorage(returnType);
 
   std::string returnTypeName;
+  bool isQuat = false;
+  if (auto structDef = Pool().getStruct(returnType)) {
+    if (structDef->name == "quat") {
+      isQuat = true;
+    }
+  }
+
   if (returnRegisters.isMemory() || returnRegisters.isVoid()) {
     outputFile << "void";
   } else if (returnRegisters.allInt() || !Pool().isAggregate(returnType)) {
@@ -413,7 +419,7 @@ u32 callAbiFunctionWithArgs(
   auto returnType = function.type.returnType;
   RegisterAssignment returnRegisters = Pool().registerStorage(returnType);
 
-  u32 returnRegister = 0;
+  u32 returnRegister = -1;
   std::stringstream callSite;
   callSite << "call ";
   std::string transmuteReturnType;
@@ -423,7 +429,6 @@ u32 callAbiFunctionWithArgs(
     callSite << LlvmName(returnType);
   } else {
     transmuteReturnType = aggregateReturnTypeName(returnType);
-    fmt::println("Aggregate return {}", transmuteReturnType);
     callSite << transmuteReturnType;
   }
 
@@ -483,10 +488,8 @@ u32 callAbiFunctionWithArgs(
       LlvmName(returnType),
       sret
     );
-  } else if (
-    returnRegisters.allInt() || Pool().isFloat(returnType) ||
-    !transmuteReturnType.empty()
-  ) {
+  } else if (returnRegisters.allInt() || Pool().isFloat(returnType) ||
+             !transmuteReturnType.empty()) {
     returnRegister = ctx.environment.addTemporary();
     fmt::print(ctx.outputFile, "%{} = ", returnRegister);
     ctx.outputFile << callSite.str();
@@ -634,7 +637,7 @@ TEST_CASE("Struct args and returns") {
   }
 }
 
-TEST_CASE("Returning SSE") {
+TEST_CASE("Returning SSE/Recursive types") {
   using std::stringstream;
   TypeIndex f32 = Pool()._f32;
 
@@ -645,6 +648,7 @@ TEST_CASE("Returning SSE") {
     {"z", f32},
     {"w", f32}
   };
+  quat = Pool().alignType(quat, Log2Alignment::fromByteSize(16));
   TupleIndex paramTuple = Pool().tupleOf({quat, quat}).second;
   Function function{
     .type = FunctionType{.parameters = paramTuple, .returnType = quat},
@@ -668,20 +672,21 @@ TEST_CASE("Returning SSE") {
     OutContext ctx{.outputFile = functionBody, .environment = env};
     vector<Identifier> paramNames = {"q1", "q2"};
     loadParameterRegisters(ctx, function.type, paramNames);
-    string_view expected = "%q1 = alloca %.struct.quat, align 4\n"
-                           "%5 = getelementptr inbounds %.struct.quat, ptr %q1, i32 "
-                           "0, i32 0\n"
-                           "store <2 x float> %0, ptr %5\n"
-                           "%6 = getelementptr inbounds %.struct.quat, ptr %q1, i32 "
-                           "0, i32 2\n"
-                           "store <2 x float> %1, ptr %6\n"
-                           "%q2 = alloca %.struct.quat, align 4\n"
-                           "%7 = getelementptr inbounds %.struct.quat, ptr %q2, i32 "
-                           "0, i32 0\n"
-                           "store <2 x float> %2, ptr %7\n"
-                           "%8 = getelementptr inbounds %.struct.quat, ptr %q2, i32 "
-                           "0, i32 2\n"
-                           "store <2 x float> %3, ptr %8\n";
+    string_view expected =
+      "%q1 = alloca %.struct.quat, align 16\n"
+      "%5 = getelementptr inbounds %.struct.quat, ptr %q1, i32 "
+      "0, i32 0\n"
+      "store <2 x float> %0, ptr %5\n"
+      "%6 = getelementptr inbounds %.struct.quat, ptr %q1, i32 "
+      "0, i32 2\n"
+      "store <2 x float> %1, ptr %6\n"
+      "%q2 = alloca %.struct.quat, align 16\n"
+      "%7 = getelementptr inbounds %.struct.quat, ptr %q2, i32 "
+      "0, i32 0\n"
+      "store <2 x float> %2, ptr %7\n"
+      "%8 = getelementptr inbounds %.struct.quat, ptr %q2, i32 "
+      "0, i32 2\n"
+      "store <2 x float> %3, ptr %8\n";
     CHECK_EQ(functionBody.str(), expected);
   }
   SUBCASE("Calling") {
@@ -719,7 +724,7 @@ TEST_CASE("Returning SSE") {
       "%19 = call {<2 x float>, <2 x float>} @\"multiply\"(<2 x float> %6, <2 "
       "x "
       "float> %10, <2 x float> %14, <2 x float> %18)\n"
-      "%20 = alloca {<2 x float>, <2 x float>}, align 4\n"
+      "%20 = alloca {<2 x float>, <2 x float>}, align 16\n"
       "store {<2 x float>, <2 x float>} %19, ptr %20\n"
       "%21 = load %.struct.quat, ptr %20\n";
     CHECK_EQ(returnRegister, 21);
@@ -783,13 +788,14 @@ TEST_CASE("Passing in memory") {
     REQUIRE_EQ(std::get<u32>(arg2.name), 2);
     OutContext ctx{.outputFile = callSite, .environment = env};
     auto returnRegister = callAbiFunctionWithArgs(ctx, function, args);
-    string_view expectedCallSite = "%3 = alloca %.struct.mat, align 4\n"
-                                   "%4 = alloca %.struct.mat, align 4\n"
-                                   "store %.struct.mat %1, ptr %4\n"
-                                   "call void @\"multiply\"(ptr sret(%.struct.mat) "
-                                   "align 4 %3, ptr noundef byval(%.struct.mat) "
-                                   "align 4 %4, [8 x i16] %2)\n"
-                                   "%5 = load %.struct.mat, ptr %3\n";
+    string_view expectedCallSite =
+      "%3 = alloca %.struct.mat, align 4\n"
+      "%4 = alloca %.struct.mat, align 4\n"
+      "store %.struct.mat %1, ptr %4\n"
+      "call void @\"multiply\"(ptr sret(%.struct.mat) "
+      "align 4 %3, ptr noundef byval(%.struct.mat) "
+      "align 4 %4, [8 x i16] %2)\n"
+      "%5 = load %.struct.mat, ptr %3\n";
     CHECK_EQ(returnRegister, 5);
     CHECK_EQ(callSite.str(), expectedCallSite);
   }
