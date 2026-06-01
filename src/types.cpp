@@ -29,14 +29,15 @@ TypeIndex AlignedType::rawType() {
 
 OptionalType TypePool::dereference(TypeIndex type) {
   auto typeDefinition = underlyingTypes[type.value];
-  if (auto multiPtr = std::get_if<MultiPointer>(&typeDefinition)) {
-    logger("dereferencing mutlipointer type {}", TypeName(type));
-    return multiPtr->dereferencedType;
-  } else if (auto ptr = std::get_if<Pointer>(&typeDefinition)) {
-    logger("dereferencing pointer type {}", TypeName(type));
-    return ptr->dereferencedType;
-  }
-
+  return std::visit(
+    overloaded{
+      [&]<RecursiveType T>(T x) { return dereference(x.rawType()); },
+      [](MultiPointer x) { return x.dereferencedType; },
+      [](Pointer x) { return x.dereferencedType; },
+      [](auto) { return TypeIndex::null(); },
+    },
+    typeDefinition
+  );
   return TypeIndex::null();
 }
 
@@ -122,12 +123,6 @@ void TypePool::registerStorage(
     },
     type
   );
-  if (auto structIndex = std::get_if<StructIndex>(&type)) {
-    auto structDef = getStruct(*structIndex);
-    if (structDef.name == "quat" || structDef.name == "vec4") {
-      fmt::println("Using {} registers: {:#b}; All int: {}", structDef.name, assignment.types, assignment.allInt());
-    }
-  }
 }
 
 void TypeIndex::debug() {

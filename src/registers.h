@@ -7,7 +7,7 @@ enum class RegisterType : u8 {
   Int,
   Memory,
 };
-enum class CallingConvention { C };
+enum class CallingConvention { C, Cuda };
 
 struct RegisterAssignment {
   using Raw = u32;

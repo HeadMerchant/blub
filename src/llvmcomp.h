@@ -3622,7 +3622,99 @@ struct Compiler {
     return std::move(environment);
   }
 
+  void codegenKernel(FunctionStub stub) {
+    environment.hasReturned = false;
+    auto envGuard = environment.pushScope();
+    environment.scopes.back().envType = EnvType::Function;
+    environment.scopes.back().self = stub.selfType;
+    log("Codegening kernel {} with self type:", stub.name);
+    if (stub.selfType) {
+      log("{}", TypeName(stub.selfType));
+    } else {
+      log("Missing self type");
+    }
+    std::stringstream instruction;
+    auto stackGuard = push(
+      {.outputFile = &instruction,
+       .expectedType = Pool().infer,
+       .nodeIndex = stub.definitionNode,
+       .name = {}}
+    );
+    // auto& instruction = *outputFile;
+    emit("define ptx_kernel void @\"{}\"(", stub.name);
+
+    // auto declarationResult = declareParamRegisters(instruction, function);
+    // environment.nextTemporary = declarationResult.entryLabel + 1;
+    auto parameterTypes = Pool().tupleElements(stub.functionType.parameters);
+    bool hasMultiple = false;
+    for (auto type : parameterTypes) {
+      if (hasMultiple) instruction << ", ";
+      if (Pool().dereference(type)) {
+        instruction << "addrspace(1) ptr";
+      } else {
+        emit("{}", LlvmName(type));
+      }
+      hasMultiple = true;
+    }
+    instruction << ") {\n";
+    auto node = parser.getFunctionLiteral(stub.definitionNode);
+    auto parameters = parser.getParameterList(node.parameters);
+    u32 parameterIndex = 0;
+    for (NodeIndex paramNode : parameters.requiredParameters) {
+      TypeIndex paramType = parameterTypes[parameterIndex];
+      auto parameterDefinition = parser.getDefinition(paramNode);
+      string_view paramName = parameterDefinition.name->lexeme;
+      if (!environment.define(
+            paramName,
+            Reference(RegisterValue(parameterIndex, paramType)),
+            parser.locationOf(paramNode)
+          )) {
+        auto original = environment.definitionLocation(paramName);
+        fmt::println(std::cerr, "{} originally defined at:", paramName);
+        original->underline(std::cerr);
+        crash(paramNode, "Parameter name {} shadows a higher scope", paramName);
+      }
+      parameterIndex++;
+    }
+
+    for (NodeIndex parameterIndex : parameters.optionalParameters) {
+      Todo(parameterIndex, "Named parameters/default values for cuda kernels");
+    }
+
+    // Load parameter registers
+    FunctionType functionType = stub.functionType;
+    auto returnType = functionType.returnType;
+
+    returns = {
+      .type = returnType,
+      .aggregateTypename = "",
+      .registers = Pool().registerStorage(returnType),
+    };
+    environment.scopes.back().returnType = returnType;
+
+    auto body = parser.getBlock(node.body);
+    for (auto statement : body.elements) {
+      compile(statement);
+    }
+
+    if (!environment.hasReturned) {
+      if (returnType == Pool()._void) {
+        instruction << "ret void\n";
+      } else {
+        crash(stub.definitionNode, "Return required for all code paths");
+      }
+    }
+
+    instruction << "}\n\n";
+    environment.scopes.back().envType = EnvType::Global;
+    globalsStack.push(instruction.str());
+  }
+
   void codegenFunction(FunctionStub stub) {
+    if (parser.getToken(stub.definitionNode)->type == TokenType::Kernel) {
+      codegenKernel(stub);
+      return;
+    }
     environment.hasReturned = false;
     auto envGuard = environment.pushScope();
     environment.scopes.back().envType = EnvType::Function;
@@ -3642,9 +3734,6 @@ struct Compiler {
     );
     // auto& instruction = *outputFile;
     instruction << "define ";
-    if (parser.getToken(stub.definitionNode)->type == TokenType::Kernel) {
-      instruction << "ptx_kernel ";
-    }
 
     Function function(stub.functionType, stub.name);
 
@@ -3706,11 +3795,6 @@ struct Compiler {
       .registers = Pool().registerStorage(returnType),
     };
     environment.scopes.back().returnType = returnType;
-    fmt::println(
-      "Declaring function with aggregate return type {}: {}",
-      TypeName(returnType),
-      declarationResult.aggregateReturnTypeName
-    );
 
     auto body = parser.getBlock(node.body);
     for (auto statement : body.elements) {
@@ -3739,17 +3823,22 @@ struct Compiler {
     StackItems prevFrame;
     Compiler& compiler;
     ~StackItemsGuard() {
-      // log("Removing frame where name was '{}'", compiler.name);
       compiler.stackItems = prevFrame;
     }
   };
 
   StackItemsGuard push(StackItems newFrame) {
     StackItemsGuard guard{stackItems, *this};
-    // auto oldFrame = stackItems;
     stackItems = newFrame;
-    // return oldFrame;
     return guard;
+  }
+
+  Reference dispatchKernel(
+    InstancedKernel kernel,
+    ChildSpan positionalArgs,
+    Encodings::NamedValues namedArguments
+  ) {
+    TODO("Dispatch kernel");
   }
 };
 

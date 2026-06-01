@@ -79,7 +79,11 @@ struct TypeChecker {
     // TODO: comptime arrays
     auto actualElement = Pool().isAssignable(expectedElement, Pool().infer);
     if (!actualElement) {
-      crash(nodeIndex, "Unable to create array literal with type {}", TypeName(expectedElement));
+      crash(
+        nodeIndex,
+        "Unable to create array literal with type {}",
+        TypeName(expectedElement)
+      );
     }
     expectedElement = actualElement;
     for (auto node : node.elements) {
@@ -137,7 +141,11 @@ struct TypeChecker {
     return visit(node, expectedType);
   }
 
-  ReturnType when(NodeIndex condition, span<pair<NodeIndex, NodeIndex>> cases, NodeIndex elseBody) {
+  ReturnType when(
+    NodeIndex condition,
+    span<pair<NodeIndex, NodeIndex>> cases,
+    NodeIndex elseBody
+  ) {
     auto conditionType = check(condition).type;
     ReturnType resultType{.type = Pool().infer, .lValue = true};
     if (elseBody) {
@@ -167,7 +175,7 @@ struct TypeChecker {
         log("'when' can be lValue?: {}", resultType.lValue);
       }
     }
-    fmt::println("Typechecker says 'when' is an lValue?: {}", resultType.lValue);
+    log("Typechecker says 'when' is an lValue?: {}", resultType.lValue);
     return resultType;
   }
 
@@ -179,9 +187,18 @@ struct TypeChecker {
     if (auto fullType = Pool().isAssignable(assigneeType, type)) {
       check(node.value, fullType);
     } else {
-      crash(nodeIndex, "Unable to assign value of type {} to type {}", TypeName(assigneeType), TypeName(type));
+      crash(
+        nodeIndex,
+        "Unable to assign value of type {} to type {}",
+        TypeName(assigneeType),
+        TypeName(type)
+      );
     }
-    log("Declaring '{}: {}'", def.name->lexeme, TypeName(check(node.value).type));
+    log(
+      "Declaring '{}: {}'",
+      def.name->lexeme,
+      TypeName(check(node.value).type)
+    );
     return {Pool()._void};
   }
 
@@ -249,9 +266,8 @@ struct TypeChecker {
     }
     auto rightType = check(right, leftType.type);
     // TODO: does this matter?
-    if (
-      auto assignedType = Pool().isAssignable(leftType.type, rightType.type)
-    ) {
+    if (auto assignedType =
+          Pool().isAssignable(leftType.type, rightType.type)) {
       check(right, assignedType);
     }
     return {Pool()._void};
@@ -316,9 +332,8 @@ struct TypeChecker {
   ) {
     auto objectType = check(objectNode);
     // TODO: multiple resolutions
-    if (
-      auto [aType, method] = env.getMethod(objectType.type, methodName); method
-    ) {
+    if (auto [aType, method] = env.getMethod(objectType.type, methodName);
+        method) {
       check(objectNode, aType);
       auto function = method->unboxFunction();
       auto params = Pool().tupleElements(function->type.parameters);
@@ -506,10 +521,8 @@ struct TypeChecker {
     bool lValue
   ) {
     auto indexType = check(index).type;
-    if (
-      indexType == Pool().unsignedRangeLiteral ||
-      indexType == Pool().rangeLiteral
-    ) {
+    if (indexType == Pool().unsignedRangeLiteral ||
+        indexType == Pool().rangeLiteral) {
       return {Pool().sliceOf(elementType), false};
     } else if (!Pool().isInt(indexType)) {
       crash(
@@ -807,7 +820,7 @@ struct TypeChecker {
     if (auto returnType = env.returnType()) {
       bool hasValue = (bool)value;
       if (hasValue != (returnType != Pool()._void)) {
-        TODO("Error here");
+        crash(value, "Function with 'void' return type can't return a value");
       }
       if (value) {
         check(value, returnType);
@@ -910,10 +923,8 @@ struct TypeChecker {
 
     auto fieldName = node.fieldName->lexeme;
     if (targetType == Pool().type) {
-      if (
-        fieldName == "size" || fieldName == "alignment" ||
-        fieldName == "bitSize"
-      ) {
+      if (fieldName == "size" || fieldName == "alignment" ||
+          fieldName == "bitSize") {
         return {Pool().intLiteral};
       }
 
