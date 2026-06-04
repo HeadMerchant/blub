@@ -610,8 +610,10 @@ public:
     auto type = coerce(valueIndex, targetIndex);
     if (!type) return TypeIndex::null();
 
-    if (std::holds_alternative<Infer>(valueType) ||
-        std::holds_alternative<VoidType>(valueType)) {
+    if (
+      std::holds_alternative<Infer>(valueType) ||
+      std::holds_alternative<VoidType>(valueType)
+    ) {
       return TypeIndex::null();
     }
 
@@ -621,35 +623,6 @@ public:
     return type;
   }
 
-  OptionalType isTupleAssignable(TypeIndex value, TypeIndex targetType) {
-    if (value == targetType) {
-      return value;
-    }
-
-    std::span<TypeIndex> valueElements = tupleElements(value);
-    std::span<TypeIndex> targetElements = tupleElements(targetType);
-    if (valueElements.size() != targetElements.size()) {
-      return TypeIndex::null();
-    }
-
-    for (int i = 0; i < valueElements.size(); i++) {
-      if (isAssignable(
-            value = valueElements[i],
-            targetType = targetElements[i]
-          ))
-        return TypeIndex::null();
-    }
-
-    return targetType;
-  }
-
-  // void printTypes() {
-  //   std::cout << "Number of types: " << names.size() << "\n";
-  //   for (auto name : names) {
-  //       std::cout << name << "\n";
-  //   }
-  //   std::cout << std::endl;
-  // }
   std::pair<TypeIndex, TupleIndex> tupleOf(std::span<const TypeIndex> types) {
     auto it = tuples.find(types);
     if (it != tuples.end()) {

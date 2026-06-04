@@ -953,8 +953,10 @@ struct Compiler {
     span<NodeIndex> arguments = {}
   ) {
     // TODO: multiple resolutions
-    if (auto [aType, method] = environment.getMethod(objectType, methodName);
-        method) {
+    if (
+      auto [aType, method] = environment.getMethod(objectType, methodName);
+      method
+    ) {
       auto function = method->unboxFunction();
       auto params = Pool().tupleElements(function->type.parameters);
       if (params.size() - 1 != arguments.size()) {
@@ -1051,8 +1053,9 @@ struct Compiler {
     typeChecker.check(nodeIndex, expectedType);
     auto aType = typeChecker.check(a).type;
     auto bType = typeChecker.check(b).type;
-    if (auto type = Pool().coerce(aType, bType);
-        type && Pool().isNumber(type)) {
+    if (
+      auto type = Pool().coerce(aType, bType); type && Pool().isNumber(type)
+    ) {
       auto aVal = compile(a);
       auto bVal = compile(b);
       if (type == Pool().intLiteral) {
@@ -1096,9 +1099,11 @@ struct Compiler {
       return Reference(result);
     } else {
       // TODO: multiple resolutions
-      if (auto [aType, method] =
-            environment.getMethod(typeChecker.check(a).type, op.methodName);
-          method) {
+      if (
+        auto [aType, method] =
+          environment.getMethod(typeChecker.check(a).type, op.methodName);
+        method
+      ) {
         auto function = method->unboxFunction();
         auto params = Pool().tupleElements(function->type.parameters);
         // TODO: can probably avoid these checks because they should be caught
@@ -1681,8 +1686,9 @@ struct Compiler {
 
   void extendToUsize(Reference& index) {
     auto usize = Pool()._usize;
-    if (auto type = index.getType();
-        Pool().isUnsignedInt(type) && type != usize) {
+    if (
+      auto type = index.getType(); Pool().isUnsignedInt(type) && type != usize
+    ) {
       auto extended = environment.makeTemporary(Pool()._usize);
       emitLine(
         "{} = zext {} {} to {}",
@@ -1713,20 +1719,7 @@ struct Compiler {
     auto& positionalArgs = result.positional;
     positionalArgs.reserve(positionalArguments.size() + (selfArg != nullptr));
     if (selfArg) {
-      if (Pool().dereference(parameterTypes[0])) {
-        if (auto lValue = selfArg->lValue()) {
-          positionalArgs.push_back(Reference(RegisterValue(lValue->name)));
-        } else {
-          crash(
-            nodeIndex,
-            "Unable to treat temporary value as reference for first argument "
-            "in method call. Expected type '{}'",
-            TypeName(parameterTypes[0])
-          );
-        }
-      } else {
-        positionalArgs.push_back(*selfArg);
-      }
+      positionalArgs.push_back(*selfArg);
     }
     u32 i = positionalArgs.size();
     for (auto argNode : positionalArguments) {
@@ -2028,8 +2021,9 @@ struct Compiler {
       if (!succeeded) {
         crash(nameToken, "Duplicate member in impl block '{}'", name);
       }
-      if (parser.getToken(index)->type != TokenType::Colon ||
-          !value.isComptime())
+      if (
+        parser.getToken(index)->type != TokenType::Colon || !value.isComptime()
+      )
         crash(index, "TODO: non-comptime values");
     }
 
@@ -2323,9 +2317,11 @@ struct Compiler {
   }
 
   ReturnType cIncludeDir(Encodings::ArgumentList args) {
-    if (args.positional.size() == 1 &&
-        parser.nodeType(args.positional[0]) == NodeType::Literal &&
-        args.named.empty()) {
+    if (
+      args.positional.size() == 1 &&
+      parser.nodeType(args.positional[0]) == NodeType::Literal &&
+      args.named.empty()
+    ) {
       auto fileName =
         parser.getToken(parser.getNode(args.positional[0]).token)->lexeme;
       CompilerContext::inst().c.clangArgs.push_back(
@@ -2341,9 +2337,11 @@ struct Compiler {
   }
 
   ReturnType link(Encodings::ArgumentList args) {
-    if (args.positional.size() == 1 &&
-        parser.getToken(args.positional[0])->type == TokenType::String &&
-        args.named.empty()) {
+    if (
+      args.positional.size() == 1 &&
+      parser.getToken(args.positional[0])->type == TokenType::String &&
+      args.named.empty()
+    ) {
       auto libName =
         parser.getToken(parser.getNode(args.positional[0]).token)->lexeme;
       CompilerContext::inst().c.linkedLibraries.push_back(
@@ -2359,9 +2357,11 @@ struct Compiler {
   }
 
   ReturnType linkDir(Encodings::ArgumentList args) {
-    if (args.positional.size() == 1 &&
-        parser.getToken(args.positional[0])->type == TokenType::String &&
-        args.named.empty()) {
+    if (
+      args.positional.size() == 1 &&
+      parser.getToken(args.positional[0])->type == TokenType::String &&
+      args.named.empty()
+    ) {
       auto libName = parser.getToken(args.positional[0])->lexeme;
       CompilerContext::inst().c.linkedLibraries.push_back(
         fmt::format("-L{}", libName)
@@ -2855,9 +2855,8 @@ struct Compiler {
         if (selfType == type) {
           return function;
         }
-        if (auto ptrType = Pool().dereference(selfType);
-            ptrType && type == ptrType) {
-          TODO("Calling methods on pointers");
+        if (type == Pool().dereference(selfType)) {
+          return function;
         }
 
         crash(
@@ -3073,10 +3072,27 @@ struct Compiler {
 
     if (!boxedField.type) {
       auto method = findMethod(fieldName, type);
+
+      auto selfType = method->type.parameters.fields().front();
+      bool takesPointer = type == Pool().dereference(selfType);
       if (auto lValue = object.lValue()) {
+        if (takesPointer) {
+          return Reference(BoundFunction(
+            RegisterValue(lValue->name, selfType, lValue->scope),
+            method
+          ));
+        }
         return Reference(BoundFunction(*lValue, method));
-      } else if (auto lValue = object.unbox<RegisterValue>()) {
-        return Reference(BoundFunction(*lValue, method));
+      } else if (auto registerVal = object.unbox<RegisterValue>()) {
+        if (takesPointer) {
+          crash(
+            nodeIndex,
+            "Unable to treat temporary value as reference for first argument "
+            "in method call. Expected type '{}'",
+            TypeName(selfType)
+          );
+        }
+        return Reference(BoundFunction(*registerVal, method));
       } else {
         TODO("Method calling on literals");
       }
@@ -3758,8 +3774,10 @@ struct Compiler {
       auto parameterDefinition = parser.getDefinition(paramNode);
       string_view paramName = parameterDefinition.name->lexeme;
 
-      if (std::find(paramNames.begin(), paramNames.end(), paramName) !=
-          paramNames.end()) {
+      if (
+        std::find(paramNames.begin(), paramNames.end(), paramName) !=
+        paramNames.end()
+      ) {
         crash(paramNode, "Duplicate function parameter {}", paramName);
       }
       paramNames.push_back(paramName);

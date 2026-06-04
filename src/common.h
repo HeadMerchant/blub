@@ -197,3 +197,21 @@ template <typename T> struct VecSpanCompare {
 
 template <typename K, typename V>
 using VecMap = std::map<std::vector<K>, V, VecSpanCompare<K>>;
+
+#include <ranges>
+
+template <std::ranges::input_range... Rs> auto zip(Rs&&... rs) {
+  auto size = std::min({std::ranges::size(rs)...});
+  return std::views::iota(0u, size) | std::views::transform([&rs...](auto i) {
+           return std::make_tuple(rs[i]...);
+         });
+}
+
+template <std::ranges::random_access_range R>
+auto enumerate(R&& r, std::size_t start = 0) {
+  auto size = std::ranges::size(r);
+  return std::views::iota(start, start + size) |
+         std::views::transform([&r](auto i) {
+           return std::make_tuple(i, r[i]);
+         });
+}

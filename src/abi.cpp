@@ -54,12 +54,16 @@ void abiVisit(TypeIndex typeIndex, RegisterAssignment& registers, T& visitor) {
         u32 byteSize = x.byteSize();
         bool isFloat = registers.typeAt() == RegisterType::Float;
         u8 readOffset = registers.readIndex % 8;
-        if (isFloat && readOffset == 0 &&
-            registers.typeAt(byteSize) == RegisterType::Float) {
+        if (
+          isFloat && readOffset == 0 &&
+          registers.typeAt(byteSize) == RegisterType::Float
+        ) {
           visitor.sseVectorLow(typeIndex, sizing);
           // fmt::println("Low; expecting to pop {} bytes", byteSize);
-        } else if (isFloat && readOffset != 0 &&
-                   registers.typeAt(-byteSize) == RegisterType::Float) {
+        } else if (
+          isFloat && readOffset != 0 &&
+          registers.typeAt(-byteSize) == RegisterType::Float
+        ) {
           visitor.sseVectorHigh(typeIndex, sizing);
           // fmt::println("High; expecting to pop {} bytes", byteSize);
         } else {
@@ -384,12 +388,11 @@ struct ArgumentVisitor {
     LlvmName typeName(typeIndex);
     Reference aggregate = arg;
     bool anyFields = false;
-    for (u32 i = 0; i < fields.size(); i++) {
+    for (auto [i, fieldType] : enumerate(fields)) {
       // TODO: ZST
       if (needsComma) {
         callSite << ", ";
       }
-      auto fieldType = fields[i];
       arg.value = ctx.environment.makeTemporary(fieldType);
       fmt::println(
         ctx.outputFile,
@@ -488,8 +491,10 @@ u32 callAbiFunctionWithArgs(
       LlvmName(returnType),
       sret
     );
-  } else if (returnRegisters.allInt() || Pool().isFloat(returnType) ||
-             !transmuteReturnType.empty()) {
+  } else if (
+    returnRegisters.allInt() || Pool().isFloat(returnType) ||
+    !transmuteReturnType.empty()
+  ) {
     returnRegister = ctx.environment.addTemporary();
     fmt::print(ctx.outputFile, "%{} = ", returnRegister);
     ctx.outputFile << callSite.str();

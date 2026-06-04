@@ -266,8 +266,9 @@ struct TypeChecker {
     }
     auto rightType = check(right, leftType.type);
     // TODO: does this matter?
-    if (auto assignedType =
-          Pool().isAssignable(leftType.type, rightType.type)) {
+    if (
+      auto assignedType = Pool().isAssignable(leftType.type, rightType.type)
+    ) {
       check(right, assignedType);
     }
     return {Pool()._void};
@@ -332,8 +333,9 @@ struct TypeChecker {
   ) {
     auto objectType = check(objectNode);
     // TODO: multiple resolutions
-    if (auto [aType, method] = env.getMethod(objectType.type, methodName);
-        method) {
+    if (
+      auto [aType, method] = env.getMethod(objectType.type, methodName); method
+    ) {
       check(objectNode, aType);
       auto function = method->unboxFunction();
       auto params = Pool().tupleElements(function->type.parameters);
@@ -521,8 +523,10 @@ struct TypeChecker {
     bool lValue
   ) {
     auto indexType = check(index).type;
-    if (indexType == Pool().unsignedRangeLiteral ||
-        indexType == Pool().rangeLiteral) {
+    if (
+      indexType == Pool().unsignedRangeLiteral ||
+      indexType == Pool().rangeLiteral
+    ) {
       return {Pool().sliceOf(elementType), false};
     } else if (!Pool().isInt(indexType)) {
       crash(
@@ -923,8 +927,10 @@ struct TypeChecker {
 
     auto fieldName = node.fieldName->lexeme;
     if (targetType == Pool().type) {
-      if (fieldName == "size" || fieldName == "alignment" ||
-          fieldName == "bitSize") {
+      if (
+        fieldName == "size" || fieldName == "alignment" ||
+        fieldName == "bitSize"
+      ) {
         return {Pool().intLiteral};
       }
 
@@ -961,8 +967,20 @@ struct TypeChecker {
     if (field) {
       return {field.type, lValue};
     }
-    if (auto [aType, method] = env.getMethod(targetType, fieldName); method) {
+    if (
+      auto [selfType, method] = env.getMethod(targetType, fieldName); method
+    ) {
       auto methodType = method->unboxFunction();
+      if (
+        auto dereffedPtr = Pool().dereference(selfType);
+        dereffedPtr == targetType && !lValue
+      ) {
+        crash(
+          node.object,
+          "Unable to bind non-lValue to first argument of type {}",
+          TypeName(selfType)
+        );
+      }
       return {Pool().boundFunction(methodType->type)};
     }
     crash(

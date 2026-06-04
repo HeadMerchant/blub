@@ -570,7 +570,7 @@ public:
           return {type, staticValue};
         }
         if (auto ptrType = Pool().dereference(selfType); type == ptrType) {
-          TODO("Calling methods on pointers");
+          return {selfType, staticValue};
         }
         return {{0}, nullptr};
       } else {
@@ -623,7 +623,8 @@ public:
       log("Pushing scope");
     }
 
-    // We don't catch exceptions except for in tests for marking failures. This suppresses the warning
+    // We don't catch exceptions except for in tests for marking failures. This
+    // suppresses the warning
     // TODO: consider removing warning
     ~ScopeGuard() noexcept(false) {
       assert(env.scopes.size() == scopeIndex);
