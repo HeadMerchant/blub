@@ -46,23 +46,34 @@ struct TypeChecker {
     return {Pool()._void};
   }
 
-  ReturnType arrayLiteral(Encodings::Block node) {
-    TypeIndex expectedElement = Pool().infer;
+  ReturnType arrayLiteral(ChildSpan elements, NodeIndex elementType) {
+    TypeIndex expectedElement =
+      elementType ? materialize(elementType) : Pool().infer;
     if (auto sized = Pool().sizedArray(expected)) {
-      expectedElement = sized->dereferencedType;
-      if (sized->length != 0 && sized->length != node.elements.size()) {
+      auto coerced = Pool().coerce(expectedElement, sized->dereferencedType);
+      if (!expectedElement) {
+        crash(
+          elementType,
+          "Array literal element type expected to be {}, but was explicitly "
+          "declared to be {}",
+          TypeName(sized->dereferencedType),
+          TypeName(expectedElement)
+        );
+      }
+      expectedElement = coerced;
+      if (sized->length != 0 && sized->length != elements.size()) {
         crash(
           nodeIndex,
           "Expected length {} for sized array type {}, but array literal has "
           "{} elements",
           sized->length,
           TypeName(expected),
-          node.elements.size()
+          elements.size()
         );
       }
     }
 
-    for (auto node : node.elements) {
+    for (auto node : elements) {
       auto elementType = check(node, expectedElement).type;
       auto coerced = Pool().coerce(expectedElement, elementType);
       if (!coerced) {
@@ -86,10 +97,10 @@ struct TypeChecker {
       );
     }
     expectedElement = actualElement;
-    for (auto node : node.elements) {
+    for (auto node : elements) {
       check(node, expectedElement);
     }
-    return {Pool().sizedArrayOf(expectedElement, node.elements.size())};
+    return {Pool().sizedArrayOf(expectedElement, elements.size())};
   }
 
   ReturnType& readType(NodeIndex node) {
@@ -1015,8 +1026,21 @@ struct TypeChecker {
     return {Pool().sliceOf(Pool()._u8)};
   }
 
-  ReturnType forLoop(NodeIndex nodeIndex) {
-    return {Pool()._void};
+  ReturnType forLoop(TokenPointer var, NodeIndex iterator, NodeIndex body) {
+    auto iteratorType = check(iterator).type;
+    if (
+      Pool().sliceElementType(iteratorType) ||
+      iteratorType == Pool().rangeLiteral ||
+      iteratorType == Pool().unsignedRangeLiteral
+    ) {
+      return {Pool()._void};
+    }
+    crash(
+      iterator,
+      "iterator for for loop must be either a range literal or a slice, but "
+      "was of type '{}'",
+      TypeName(iteratorType)
+    );
   }
 
   ReturnType apply(NodeIndex functionNode, NodeIndex argNode) {
@@ -1054,6 +1078,22 @@ struct TypeChecker {
     } else {
       return multiply(functionNode, argNode);
     }
+  }
+
+  ReturnType nullPointer() {
+    return {Pool().pointerTo(Pool()._void)};
+  }
+
+  ReturnType builtinName(NodeIndex expr) {
+    auto exprType = check(expr);
+    if (!Pool().getEnum(exprType.type)) {
+      crash(
+        expr,
+        "Type of argument to @name needs to be an enum, but '{}' is not",
+        TypeName(exprType.type)
+      );
+    }
+    return {Pool().sliceOf(Pool()._u8)};
   }
 
   TypeChecker(Compiler& compiler, Environment& env, Parser& parser)

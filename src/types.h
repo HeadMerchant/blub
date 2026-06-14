@@ -252,6 +252,7 @@ struct Enum {
   string_view name;
   TypeIndex rawType;
   TypeIndex enumType;
+  u32 namesArrayGlobal;
 
   Enum(string_view name, TypeIndex rawType)
       : values(), name(name), rawType(rawType) {}
@@ -309,8 +310,7 @@ struct FunctionIndex {
   u32 index;
 };
 struct Opaque {
-  std::string name;
-  std::string llvmName;
+  string_view name;
 };
 struct SizedArray {
   TypeIndex dereferencedType;
@@ -755,7 +755,7 @@ public:
     return index;
   }
 
-  TypeIndex addOpaque(std::string name) {
+  TypeIndex addOpaque(string_view name) {
     return addType(Opaque(name));
   }
 
@@ -1231,7 +1231,7 @@ struct LlvmName {
         },
         [&o](EnumIndex x) { format(o, Pool().enumPool[x.value].rawType); },
         [&o](FunctionType x) { o << "ptr"; },
-        [&o](Opaque x) { o << x.llvmName; },
+        [&o](Opaque x) { TODO("Error for llvm name of opaque type"); },
         [&o](Infer x) { TODO("Error for llvm name of an inferred type"); },
         [&o](SizedArray x) {
           o << "[" << x.length << " x ";

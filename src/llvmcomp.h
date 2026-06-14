@@ -175,10 +175,10 @@ struct Compiler {
     return Reference::Void();
   }
 
-  ReturnType arrayLiteral(Encodings::Block node) {
+  ReturnType arrayLiteral(ChildSpan elementNodes, NodeIndex _) {
     std::vector<Reference> elements;
-    elements.reserve(node.elements.size());
-    if (node.elements.empty()) {
+    elements.reserve(elementNodes.size());
+    if (elementNodes.empty()) {
       crash(nodeIndex, "Empty array literal");
     }
     auto type = typeChecker.check(nodeIndex, expectedType).type;
@@ -193,7 +193,7 @@ struct Compiler {
       );
     }
 
-    for (auto element : node.elements) {
+    for (auto element : elementNodes) {
       elements.push_back(compile(element, elementType));
     }
 
@@ -693,8 +693,7 @@ struct Compiler {
   }
 
   ReturnType opaque(TokenPointer token) {
-    // TODO: naming opaque types
-    TypeIndex type = Pool().addOpaque(std::string("Anonymous Opaque"));
+    TypeIndex type = Pool().addOpaque(nameOr("Anonymous Opaque"));
     return Reference(type);
   }
 
@@ -3208,6 +3207,7 @@ struct Compiler {
       }
       valueCount++;
     }
+    globalsStack.push(Environment::dumpEntryNames(enumDefinition).str());
     return Reference(typeIndex);
   }
 
@@ -3240,120 +3240,126 @@ struct Compiler {
     return makeSlice(ref, lengthValue);
   }
 
-  ReturnType forLoop(NodeIndex nodeIndex) {
-    TODO("For loop");
-    // auto node = parser.getForLoop(nodeIndex);
-    // auto loopId = environment.addTemporary();
-    // auto loopHeader = environment.addLabel("for", loopId);
+  ReturnType forLoop(TokenPointer var, NodeIndex iteratorNode, NodeIndex body) {
+    auto node = parser.getForLoop(nodeIndex);
     // auto loopCondition = loopHeader + ".if";
     // auto loopUpdate = loopHeader + ".else";
     // auto loopBody = loopHeader + ".continue";
     // auto endLabel = loopHeader + ".break";
 
-    // auto iterator = interpret(node.iterator, environment, outputFile,
-    // context);
+    auto iterator = compile(iteratorNode);
 
-    // if (auto range = iterator.unbox<Range>()) {
-    //   TODO("Range iterators");
-    // } else if (
-    //   auto type = iterator.getType();
-    //   auto elementType = Pool().sliceElementType(type)
-    // ) {
-    //   fmt::println(outputFile, "{}:", loopHeader);
+    if (auto range = iterator.unbox<Range>()) {
+      TODO("Range iterators");
+    } else if (
+      auto type = iterator.getType();
+      auto elementType = Pool().sliceElementType(type)
+    ) {
+      auto loopHeader = environment.addTemporary();
+      emitLine("br label %{}\n{}:", loopHeader, loopHeader);
+      auto sliceRegister = toRegister(iterator);
+      auto slicePointer =
+        environment.makeTemporary(Pool().multiPointerTo(elementType));
+      auto sliceLength = environment.makeTemporary(Pool()._usize);
+      auto endPointer =
+        environment.makeTemporary(Pool().multiPointerTo(elementType));
 
-    //   auto sliceRegister = toRegister(&iterator, outputFile, environment);
-    //   auto slicePointer =
-    //     environment.makeTemporary(Pool().multiPointerTo(*elementType));
-    //   auto sliceLength = environment.makeTemporary(Pool()._usize);
-    //   auto endPointer =
-    //     environment.makeTemporary(Pool().multiPointerTo(*elementType));
-    //   fmt::println(
-    //     outputFile,
-    //     "{} = extractElement {} {}, {} 0",
-    //     slicePointer,
-    //     LlvmName(type),
-    //     sliceRegister,
-    //     LlvmName(slicePointer.type)
-    //   );
-    //   fmt::println(
-    //     outputFile,
-    //     "{} = extractElement {} {}, {} 1",
-    //     sliceLength,
-    //     LlvmName(type),
-    //     sliceRegister,
-    //     LlvmName(sliceLength.type)
-    //   );
-    //   fmt::println(
-    //     outputFile,
-    //     "{} = getelementptr {}, ptr {}, {} {}",
-    //     endPointer,
-    //     LlvmName(*elementType),
-    //     slicePointer,
-    //     LlvmName(sliceLength.type),
-    //     sliceLength
-    //   );
+      emitLine(
+        "{} = extractElement {} {}, {} 0",
+        slicePointer,
+        LlvmName(type),
+        sliceRegister,
+        LlvmName(slicePointer.type)
+      );
+      emitLine(
+        "{} = extractElement {} {}, {} 1",
+        sliceLength,
+        LlvmName(type),
+        sliceRegister,
+        LlvmName(sliceLength.type)
+      );
+      emitLine(
+        "{} = getelementptr {}, ptr {}, {} {}",
+        endPointer,
+        LlvmName(elementType),
+        slicePointer,
+        LlvmName(sliceLength.type),
+        sliceLength
+      );
 
-    //   fmt::println(outputFile, "{}:", loopCondition);
-    //   Environment loopEnv(&environment, loopHeader);
-    //   // TODO: by ref vs by value
-    //   auto iterationVariable = StackValue(node.capture->lexeme,
-    //   *elementType); auto nextIterationVar =
-    //     environment.makeTemporary(Pool().multiPointerTo(*elementType));
-    //   loopEnv.define(node.capture->lexeme, Reference(iterationVariable));
+      auto loopCondition = environment.addTemporary();
+      emitLine("{}:", loopCondition);
+      // TODO: by ref vs by value
+      auto iterationName = node.capture->lexeme;
+      auto iterationVariable =
+        StackValue(environment.addTemporary(), elementType);
+      auto nextIterationVar =
+        environment.makeTemporary(Pool().multiPointerTo(elementType));
+      auto defGuard = environment.pushScope();
+      if (!environment.define(
+            iterationName,
+            Reference(iterationVariable),
+            parser.locationOf(node.iterator)
+          )) {
 
-    //   fmt::println(
-    //     outputFile,
-    //     "{} = phi ptr [{}, %{}], [{}, %{}]",
-    //     iterationVariable,
-    //     slicePointer,
-    //     loopHeader,
-    //     nextIterationVar,
-    //     loopUpdate
-    //   );
-    //   auto loopBound =
-    //     environment.makeTemporary(Pool().multiPointerTo(*elementType));
-    //   fmt::println(
-    //     outputFile,
-    //     "{} = icmp eq ptr {}, {}",
-    //     loopBound,
-    //     iterationVariable,
-    //     endPointer
-    //   );
-    //   fmt::println(
-    //     outputFile,
-    //     "br i1 {}, label %{}, label %{}",
-    //     loopBound,
-    //     endLabel,
-    //     loopBody
-    //   );
+        auto original = environment.definitionLocation(iterationName);
+        fmt::println(std::cerr, "{} originally defined at:", iterationName);
+        original->underline(std::cerr);
+        crash(
+          node.capture,
+          "Parameter name {} shadows a higher scope",
+          iterationName
+        );
+      }
 
-    //   fmt::println(outputFile, "{}:", loopBody);
-    //   // TODO: loop value??
-    //   interpret(node.body, loopEnv, outputFile, context);
+      auto loopBound =
+        environment.makeTemporary(Pool().multiPointerTo(elementType));
 
-    //   fmt::println(outputFile, "br %{}\n{}:", loopUpdate, loopUpdate);
-    //   fmt::println(
-    //     outputFile,
-    //     "{} = getelementptr {}, ptr {}, i64 1\nbr %{}\n{}:",
-    //     nextIterationVar,
-    //     LlvmName(*elementType),
-    //     iterationVariable,
-    //     loopCondition,
-    //     endLabel
-    //   );
+      auto loopBody = environment.addTemporary();
 
-    //   return Reference::Void();
-    // } else {
-    //   TODO("Non-range / slice for loops");
-    // }
+      // TODO: loop value??
+      stringstream body;
+      compile(node.body, body);
 
-    // Environment loopEnv(environment);
+      auto loopUpdate = environment.addTemporary();
+      auto endLabel = environment.addTemporary();
 
-    // // loopEnv.define();
+      emitLine(
+        "{} = phi ptr [{}, %{}], [{}, %{}]",
+        iterationVariable,
+        slicePointer,
+        loopHeader,
+        nextIterationVar,
+        loopUpdate
+      );
+      emitLine(
+        "{} = icmp eq ptr {}, {}",
+        loopBound,
+        iterationVariable,
+        endPointer
+      );
+      emitLine("br i1 {}, label %{}, label %{}", loopBound, endLabel, loopBody);
+      emitLine("{}:", loopBody);
+      emitLine(body);
 
-    // // TODO: consider value expression (see
-    // // https://ziglang.org/documentation/master/#while)
-    // return Reference::Void();
+      emitLine("br %{}\n{}:", loopUpdate, loopUpdate);
+      emitLine(
+        "{} = getelementptr {}, ptr {}, i64 1\nbr %{}\n{}:",
+        nextIterationVar,
+        LlvmName(elementType),
+        iterationVariable,
+        loopCondition,
+        endLabel
+      );
+
+      return Reference::Void();
+    } else {
+      TODO("Non-range / slice for loops");
+    }
+
+    // TODO: consider value expression (see
+    // https://ziglang.org/documentation/master/#while)
+    return Reference::Void();
   }
 
   ReturnType apply(NodeIndex functionNode, NodeIndex argNode) {
@@ -3857,6 +3863,34 @@ struct Compiler {
     Encodings::NamedValues namedArguments
   ) {
     TODO("Dispatch kernel");
+  }
+
+  Reference nullPointer() {
+    return Reference(NullPointer{});
+  }
+
+  Reference builtinName(NodeIndex expr) {
+    auto type = typeChecker.check(expr);
+    auto value = toRegister(compile(expr));
+    if (auto enumDef = Pool().getEnum(type.type)) {
+      auto ptr = environment.addTemporary();
+      emitLine(
+        "%{} = getelementptr {}, ptr @{}, {} {}",
+        ptr,
+        SliceName,
+        enumDef->namesArrayGlobal,
+        LlvmName(type.type),
+        value
+      );
+      auto result = environment.makeTemporary(Pool().sliceOf(Pool()._u8));
+      emitLine("{} = load {}, ptr %{}", result, SliceName, ptr);
+      return Reference(result);
+    } else {
+      crash(
+        expr,
+        "Expected value with an enum type as argument to builtin '@name'"
+      );
+    }
   }
 };
 

@@ -141,6 +141,7 @@ struct InstancedKernel {
   RegisterValue blockDim;
   RegisterValue gridDim;
 };
+struct NullPointer {};
 
 using UnderlyingValue = std::variant<
   TypeIndex,
@@ -159,7 +160,8 @@ using UnderlyingValue = std::variant<
   VoidRef,
   ZeroInit,
   Kernel,
-  InstancedKernel>;
+  InstancedKernel,
+  NullPointer>;
 
 struct Reference {
   using Opt = OptionalType;
@@ -238,6 +240,7 @@ struct Reference {
         [](ZeroInit) { return Pool().never; },
         [](Kernel x) { return Pool().addFunction(x.function); },
         [](InstancedKernel x) { return Pool().addFunction(x.kernel.function); },
+        [](NullPointer) { return Pool().pointerTo(Pool()._void); },
       },
       value
     );
@@ -337,6 +340,7 @@ struct Reference {
         [&o](ZeroInit) { o << "zeroinitializer"; },
         [&o](Kernel x) { o << x.index; },
         [&o](InstancedKernel x) { o << x.kernel.index; },
+        [&o](NullPointer) { o << "null"; },
       },
       x.value
     );
@@ -514,7 +518,7 @@ public:
     return fmt::format("%.anon.{}{}", prefix, globalIndex++);
   }
 
-  u32 nextGlobalIndex() {
+  static u32 nextGlobalIndex() {
     return globalIndex++;
   }
 
@@ -678,5 +682,62 @@ public:
 
   static u32 structIndex() {
     return nextStructIndex++;
+  }
+
+  static stringstream dumpEntryNames(Enum& enumDef) {
+    ordered_map<u32, string_view> valueToName;
+    u32 currentGlobal = nextGlobalIndex();
+    u32 startGlobal = currentGlobal;
+    stringstream ss;
+    u32 maxIndex = 0;
+    for (auto [name, index] : enumDef.values) {
+      maxIndex = maxIndex > index ? maxIndex : index;
+      fmt::println(
+        ss,
+        "@{} = global [{} x i8] c\"{}\"",
+        currentGlobal,
+        name.size(),
+        name
+      );
+
+      valueToName[index] = name;
+      currentGlobal = nextGlobalIndex();
+    }
+
+    fmt::println(
+      ss,
+      "@{} = global [{} x {}] [",
+      currentGlobal,
+      maxIndex + 1,
+      SliceName
+    );
+    bool hasMultiple = false;
+    log(
+      "Dumping enum '{}' with {} array entries ({} literal)",
+      enumDef.name,
+      maxIndex,
+      valueToName.size()
+    );
+    for (u32 i = 0; i <= maxIndex; i++) {
+      if (hasMultiple) fmt::println(ss, ",");
+      auto name = valueToName.find(i);
+      if (name != valueToName.end()) {
+        auto nameIndex = startGlobal + std::distance(valueToName.begin(), name);
+        // TODO: usize
+        fmt::print(
+          ss,
+          "{} {{ptr @{}, i64 {}}}",
+          SliceName,
+          nameIndex,
+          name.value().size()
+        );
+      } else {
+        fmt::print(ss, "{} zeroinitializer", SliceName);
+      }
+      hasMultiple = true;
+    }
+    fmt::println(ss, "]", currentGlobal, maxIndex + 1);
+    enumDef.namesArrayGlobal = currentGlobal;
+    return ss;
   }
 };

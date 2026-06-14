@@ -44,6 +44,7 @@ enum class UnaryOps {
   BitNot,
   Return,
   Using,
+  BuiltinName,
   /* TODO: make these builtins their own nodes
     Link,
     LinkDir,
@@ -170,7 +171,6 @@ struct ParameterList {
   std::span<NodeIndex> requiredParameters;
   std::span<NodeIndex> optionalParameters;
 };
-
 }; // namespace Encodings
 
 class Parser {
@@ -596,12 +596,12 @@ public:
     return {.rawType = {rawType}, .entries = entries};
   }
 
-  NodeIndex addNode(Encodings::ForLoop node, TokenPointer token) {
+  NodeIndex addNode(Encodings::ForLoop node) {
     return addNode(
       ASTNode{
-        .left = toIndex(node.capture).value,
-        .right = node.iterator.value,
-        .token = toIndex(token),
+        .left = node.iterator.value,
+        .right = node.body.value,
+        .token = toIndex(node.capture),
         .nodeType = NodeType::ForLoop
       }
     );
@@ -610,9 +610,9 @@ public:
   Encodings::ForLoop getForLoop(NodeIndex node) {
     auto encoded = getNode(node, NodeType::ForLoop);
     return {
-      .capture = toPointer({encoded.left}),
-      .iterator = {encoded.right},
-      .body = {node.value - 1}
+      .capture = toPointer(encoded.token),
+      .iterator = {encoded.left},
+      .body = {encoded.right}
     };
   }
 
@@ -1066,11 +1066,13 @@ public:
     // allow combined length to fit in signed 8
     static const u32 MAX_ARGUMENTS = 127;
     while (!check(closingBracket)) {
+      acceptN(TokenType::StatementBreak);
       if (hasMultiple) {
         consume(
           TokenType::Comma,
           "Expected separating comma between parameters"
         );
+        acceptN(TokenType::StatementBreak);
       }
 
       // Allow trailing comma
@@ -1102,6 +1104,7 @@ public:
         requiredInputs.push_back(parameter);
       }
       hasMultiple = true;
+      acceptN(TokenType::StatementBreak);
     }
 
     consume(closingBracket, "Expected ')' for declaration");
@@ -1261,8 +1264,28 @@ public:
       return function();
     }
 
-    if (check(TokenType::For)) {
-      return forLoop();
+    if (auto token = match(TokenType::For)) {
+      consume(
+        TokenType::LeftParen,
+        "'for' loop must provide capture/iterator information within "
+        "parentheses"
+      );
+      auto capture =
+        consume(TokenType::Identifier, "Expected iteration variable name");
+      consume(
+        TokenType::Colon,
+        "Iteration variable and iterator must be separated by a ':'"
+      );
+      auto iterator = expression();
+      consume(TokenType::RightParen, "Expected closing ')'");
+      auto body = expression();
+      return addNode(
+        Encodings::ForLoop{
+          .capture = capture,
+          .iterator = iterator,
+          .body = body
+        }
+      );
     }
 
     if (check(TokenType::Struct)) {
@@ -1385,7 +1408,7 @@ public:
         std::vector<NodeIndex> items;
 
         // Array literal
-        while (!check(TokenType::RightSquareBracket)) {
+        while (!match(TokenType::RightSquareBracket)) {
           if (items.size() > 0) {
             consume(
               TokenType::Comma,
@@ -1395,7 +1418,7 @@ public:
           acceptN(TokenType::StatementBreak);
 
           // Allow trailing comma
-          if (check(TokenType::RightSquareBracket)) {
+          if (match(TokenType::RightSquareBracket)) {
             break;
           }
 
@@ -1419,10 +1442,12 @@ public:
           acceptN(TokenType::StatementBreak);
         }
 
-        consume(
-          TokenType::RightSquareBracket,
-          "Unclosed array literal; Expected ']'"
-        );
+        if (peek().isClosingToken()) {
+          items.push_back(NodeIndex::null());
+        } else {
+          items.push_back(expression());
+        }
+
         auto node = Encodings::Block{.elements = ChildSpan(items)};
         return addNode(node, toIndex(startToken));
       }
@@ -1446,6 +1471,16 @@ public:
           .right = type,
           .operation = token
         }
+      );
+    }
+
+    if (auto token = match(TokenType::BUILTIN_Name)) {
+      return addNode(
+        Encodings::UnaryOp{
+          .operand = expression(),
+          .operation = UnaryOps::BuiltinName
+        },
+        token
       );
     }
 
@@ -1576,15 +1611,11 @@ public:
       } else {
         enumEntries.push_back({toIndex(name), NodeIndex::null()});
       }
-      if (!match(TokenType::Comma)) {
-        acceptN(TokenType::StatementBreak);
-        consume(
-          TokenType::RightCurlyBrace,
-          "Expected closing '}' after final enum value definition"
-        );
-        break;
-      }
-      acceptN(TokenType::StatementBreak);
+      if (match(TokenType::RightCurlyBrace)) break;
+      consumeN(
+        TokenType::StatementBreak,
+        "enum entries must be separated by at least 1 newline"
+      );
     }
     return addNode(
       Encodings::Enum{.rawType = rawType, .entries = std::span(enumEntries)},
@@ -1665,36 +1696,5 @@ public:
       log("Node type: {}", (u32)nodeType({i}));
       locationOf({i}).underline(std::cout);
     }
-  }
-
-  NodeIndex forLoop() {
-    auto keyword =
-      consume(TokenType::For, "For loop must begin with a 'for' keyword");
-    consume(
-      TokenType::LeftParen,
-      "For loop's header must be within parentheses; Expected '('"
-    );
-    auto capture = consume(
-      TokenType::Identifier,
-      "Expected identifier for iteration variable"
-    );
-    consume(
-      TokenType::Colon,
-      "Expected ':' between capture variable and iterator"
-    );
-    auto iterator = expression();
-    consume(
-      TokenType::RightParen,
-      "For loop's header must be within parentheses; Expected ')'"
-    );
-    auto body = assignment();
-    return addNode(
-      Encodings::ForLoop{
-        .capture = capture,
-        .iterator = iterator,
-        .body = body
-      },
-      keyword
-    );
   }
 };

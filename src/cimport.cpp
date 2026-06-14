@@ -163,8 +163,10 @@ u32 longestPrefixEndingIn(std::span<std::string_view> strings, char lastChar) {
 
     for (auto string : strings) {
       if (i >= string.length()) return prevLength;
-      if (string.substr(start, i - prevLength) !=
-          strings[0].substr(start, i - prevLength))
+      if (
+        string.substr(start, i - prevLength) !=
+        strings[0].substr(start, i - prevLength)
+      )
         return prevLength;
     }
     prevLength = i;
@@ -256,8 +258,10 @@ TypeIndex parseRecord(
         std::string_view fieldTypeName;
         TypeIndex variantType;
         variant["type"]["qualType"].get(fieldTypeName);
-        if (fieldTypeName.starts_with("union ") ||
-            fieldTypeName.starts_with("struct ")) {
+        if (
+          fieldTypeName.starts_with("union ") ||
+          fieldTypeName.starts_with("struct ")
+        ) {
           if (anonType) {
             variantType = anonType;
             anonType = TypeIndex::null();
@@ -367,9 +371,11 @@ Environment* cBindings(
         for (auto element : inner.get_array()) {
           std::string_view valueName;
           element["name"].get(valueName);
-          if (valueName[0] != '_') {
-            valueName = valueName.substr(1 + prefixLength);
+          if (valueName[0] == '_') {
+            currentValue++;
+            continue;
           }
+          valueName = valueName.substr(1 + prefixLength);
           valueName = StringPool::inst().copy(valueName);
           if (element["inner"].has_value()) {
             ondemand::array array;
@@ -415,6 +421,9 @@ Environment* cBindings(
       cTypes[valueName] = typeIndex;
 
       blubInterface.value = typeIndex;
+      globals.push(
+        Environment::dumpEntryNames(Pool().getEnum(enumIndex)).str()
+      );
     } else if (kind == "FunctionDecl") {
       log("Making function: {}", unprefixedValueName);
       std::string_view qualType;

@@ -1,6 +1,7 @@
 #pragma once
 #include "parser.h"
 #include "tokenizer.h"
+#include <concepts>
 template <typename T>
 
 concept AstVisitor = requires(T t, NodeIndex nodeIndex, TokenPointer token) {
@@ -8,7 +9,7 @@ concept AstVisitor = requires(T t, NodeIndex nodeIndex, TokenPointer token) {
   { t.setVisitedNode(nodeIndex) };
   { t.block(Encodings::Block{}) } -> std::same_as<typename T::ReturnType>;
   {
-    t.arrayLiteral(Encodings::Block{})
+    t.arrayLiteral(ChildSpan{}, nodeIndex)
   } -> std::same_as<typename T::ReturnType>;
   {
     t.when(nodeIndex, span<pair<NodeIndex, NodeIndex>>{}, nodeIndex)
@@ -97,7 +98,6 @@ concept AstVisitor = requires(T t, NodeIndex nodeIndex, TokenPointer token) {
   { t.argList(nodeIndex) } -> std::same_as<typename T::ReturnType>;
   { t.enumExpr(Encodings::Enum{}) } -> std::same_as<typename T::ReturnType>;
   { t.multiLineString(nodeIndex) } -> std::same_as<typename T::ReturnType>;
-  { t.forLoop(nodeIndex) } -> std::same_as<typename T::ReturnType>;
   { t.apply(nodeIndex, nodeIndex) } -> std::same_as<typename T::ReturnType>;
   { t.equal(nodeIndex, nodeIndex) } -> std::same_as<typename T::ReturnType>;
   { t.notEqual(nodeIndex, nodeIndex) } -> std::same_as<typename T::ReturnType>;
@@ -123,6 +123,11 @@ concept AstVisitor = requires(T t, NodeIndex nodeIndex, TokenPointer token) {
   { t.shiftLeft(nodeIndex, nodeIndex) } -> std::same_as<typename T::ReturnType>;
   {
     t.shiftRight(nodeIndex, nodeIndex)
+  } -> std::same_as<typename T::ReturnType>;
+  { t.nullPointer() } -> std::same_as<typename T::ReturnType>;
+  { t.builtinName(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  {
+    t.forLoop(token, nodeIndex, nodeIndex)
   } -> std::same_as<typename T::ReturnType>;
 };
 
@@ -253,7 +258,10 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
       return t.block(block);
     }
     case TokenType::LeftSquareBracket: {
-      return t.arrayLiteral(block);
+      return t.arrayLiteral(
+        block.elements.subspan(0, block.elements.size() - 1),
+        block.elements.back()
+      );
     }
     case TokenType::LeftParen: {
       TODO("remove");
@@ -324,7 +332,9 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
     if (token->type == TokenType::Undef) {
       return t.undefined(token);
     }
-
+    if (token->type == TokenType::Null) {
+      return t.nullPointer();
+    }
     auto cudaFunction = cudaBuiltins.find(token->type);
     if (cudaFunction != cudaBuiltins.end()) {
       return t.cudaBuiltin(token, cudaFunction->second);
@@ -446,6 +456,9 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
     case UnaryOps::CudaImport: {
       return t.cudaImport(parser.getToken(TokenIndex{node.operand.value}));
     }
+    case UnaryOps::BuiltinName: {
+      return t.builtinName(node.operand);
+    }
     }
   }
   case NodeType::If: {
@@ -475,7 +488,8 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
     return t.multiLineString(nodeIndex);
   }
   case NodeType::ForLoop: {
-    return t.forLoop(nodeIndex);
+    auto node = parser.getForLoop(nodeIndex);
+    return t.forLoop(node.capture, node.iterator, node.body);
   }
   case NodeType::Apply: {
     auto node = parser.getNode(nodeIndex);
