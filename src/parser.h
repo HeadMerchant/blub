@@ -1292,6 +1292,10 @@ public:
       return structDefinition();
     }
 
+    if (check(TokenType::Union)) {
+      return unionDefinition();
+    }
+
     if (check(TokenType::Enum)) {
       return enumLiteral();
     }
@@ -1571,6 +1575,45 @@ public:
 
     return addNode(
       Encodings::Struct{.children = ChildSpan(definitions), .implBlock = impl},
+      token
+    );
+  }
+
+  NodeIndex unionDefinition() {
+    consume(
+      TokenType::Union,
+      "Expected 'union' token at the beginning of union definition"
+    );
+    auto token = previous();
+
+    std::vector<NodeIndex> definitions;
+    consume(
+      TokenType::LeftCurlyBrace,
+      "Union field definitions must be declared between {}"
+    );
+    while (true) {
+      acceptN(TokenType::StatementBreak);
+      auto fieldMember = declaration();
+
+      if (nodeType(fieldMember) == NodeType::Declaration) {
+        TODO("Default union member values");
+      }
+      if (nodeType(fieldMember) != NodeType::Definition) {
+        crash(fieldMember, "Field member for union should be a definition");
+      }
+      definitions.push_back(fieldMember);
+
+      acceptN(TokenType::StatementBreak);
+      if (match(TokenType::RightCurlyBrace)) {
+        break;
+      }
+    }
+
+    return addNode(
+      Encodings::Struct{
+        .children = ChildSpan(definitions),
+        .implBlock = NodeIndex::null(),
+      },
       token
     );
   }

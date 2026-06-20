@@ -1,0 +1,18 @@
+fmt :: import "fmt.blub"
+
+Thing :: struct {
+    x: u32
+} impl {
+    inner :: fn(self: Self) {
+        fmt.print("ok")
+    }
+
+    outer :: fn(self: Self) {
+        self.inner()
+    }
+}
+
+main :: fn() {
+    thing := Thing(x = 1)
+    thing.outer()
+}

@@ -1,0 +1,10 @@
+ci :: @cImport("cimport_union_fixture.h", "ci_")
+
+main :: fn() -> s32 {
+    top := ci.top_union(as_int = 8)
+    holder := ci.with_anon_union(int_value = 40, tag = 2)
+    point := ci.with_anon_struct(x = 3, y = 4, z = 5)
+    nested := ci.with_nested_both(left = 6, right = 7)
+
+    return top.as_int + holder.int_value + holder.tag + point.x + point.y + point.z + nested.left + nested.right
+}

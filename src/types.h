@@ -92,6 +92,21 @@ struct FieldIndex {
   }
 };
 
+struct FieldPathSegment {
+  TypeIndex aggregateType;
+  TypeIndex fieldType;
+  u32 index;
+};
+
+struct FieldPath {
+  TypeIndex type;
+  std::vector<FieldPathSegment> segments;
+
+  explicit operator bool() const {
+    return type.value != 0;
+  }
+};
+
 struct Struct {
   FieldMap fields;
   string_view name;
@@ -403,6 +418,12 @@ class TypePool {
   static Logger logger;
 
 public:
+  static constexpr std::string_view anonymousFieldPrefix = "__anon";
+
+  static bool isAnonymousFieldName(std::string_view fieldName) {
+    return fieldName.starts_with(anonymousFieldPrefix);
+  }
+
   static TypePool pool;
   std::vector<UnderlyingType> underlyingTypes;
 
@@ -531,7 +552,15 @@ public:
   }
 
   UnderlyingType& getType(TypeIndex type) {
-    assert(type.value != 0);
+    if (type.value == 0 || type.value >= underlyingTypes.size()) {
+      fmt::println(
+        std::cerr,
+        "Invalid type index {} (pool size {})",
+        type.value,
+        underlyingTypes.size()
+      );
+      abort();
+    }
     return underlyingTypes[type.value];
   }
 
@@ -592,6 +621,11 @@ public:
     }
 
     if (auto unionType = std::get_if<Union>(&getType(typeIndex))) {
+      for (auto [variantType, variantName] : unionType->namedVariants) {
+        if (variantName == fieldName) {
+          return {.type = variantType, .index = 0};
+        }
+      }
       for (auto variantType : unionType->anonymousVariants) {
         if (auto fieldResult = getFieldIndex(variantType, fieldName))
           return fieldResult;
@@ -599,6 +633,94 @@ public:
     }
 
     return {0};
+  }
+
+  FieldPath getFieldPath(TypeIndex typeIndex, string_view fieldName) {
+    if (auto structDefinition = getStruct(typeIndex)) {
+      if (auto directField = structDefinition->getField(fieldName)) {
+        return {
+          .type = directField.type,
+          .segments = {{
+            .aggregateType = typeIndex,
+            .fieldType = directField.type,
+            .index = directField.index,
+          }},
+        };
+      }
+
+      u32 fieldIndex = 0;
+      for (auto [name, fieldType] : structDefinition->fields) {
+        if (isAnonymousFieldName(name)) {
+          auto nestedField = getFieldPath(fieldType, fieldName);
+          if (nestedField) {
+            nestedField.segments.insert(
+              nestedField.segments.begin(),
+              FieldPathSegment{
+                .aggregateType = typeIndex,
+                .fieldType = fieldType,
+                .index = fieldIndex,
+              }
+            );
+            return nestedField;
+          }
+        }
+        fieldIndex++;
+      }
+    }
+
+    if (auto slice = std::get_if<Slice>(&getType(typeIndex))) {
+      if (fieldName == "data") {
+        return {
+          .type = multiPointerTo(slice->dereferencedType),
+          .segments = {{
+            .aggregateType = typeIndex,
+            .fieldType = multiPointerTo(slice->dereferencedType),
+            .index = 0,
+          }},
+        };
+      }
+      if (fieldName == "length") {
+        return {
+          .type = _usize,
+          .segments = {{
+            .aggregateType = typeIndex,
+            .fieldType = _usize,
+            .index = 1,
+          }},
+        };
+      }
+    }
+
+    if (auto unionType = std::get_if<Union>(&getType(typeIndex))) {
+      for (auto [variantType, variantName] : unionType->namedVariants) {
+        if (variantName == fieldName) {
+          return {
+            .type = variantType,
+            .segments = {{
+              .aggregateType = typeIndex,
+              .fieldType = variantType,
+              .index = 0,
+            }},
+          };
+        }
+      }
+      for (auto variantType : unionType->anonymousVariants) {
+        auto nestedField = getFieldPath(variantType, fieldName);
+        if (nestedField) {
+          nestedField.segments.insert(
+            nestedField.segments.begin(),
+            FieldPathSegment{
+              .aggregateType = typeIndex,
+              .fieldType = variantType,
+              .index = 0,
+            }
+          );
+          return nestedField;
+        }
+      }
+    }
+
+    return {};
   }
 
   // TODO: function overloading???
@@ -894,7 +1016,11 @@ public:
           return sizing;
         },
         [this](Union& x) {
-          Sizing sizing;
+          Sizing sizing{
+            .byteSize = 0,
+            .bitSize = 0,
+            .alignment = Log2Alignment{0},
+          };
           for (auto [type, _] : x.namedVariants) {
             auto variantSizing = getSizing(type);
             sizing.alignment.value =
@@ -1009,6 +1135,36 @@ public:
     }
     if (auto parentVal = std::get_if<MultiPointer>(&parent)) {
       return parentVal->dereferencedType == _void && isAny<MultiPointer>(child);
+    }
+    if (auto parentUnion = std::get_if<Union>(&parent)) {
+      for (auto [variantType, _] : parentUnion->namedVariants) {
+        auto variant = getType(variantType);
+        if (subTypes(child, variant)) {
+          return true;
+        }
+      }
+      for (auto variantType : parentUnion->anonymousVariants) {
+        auto variant = getType(variantType);
+        if (subTypes(child, variant)) {
+          return true;
+        }
+      }
+    }
+    if (auto childUnion = std::get_if<Union>(&child)) {
+      auto childFitsParent = [&](TypeIndex variantType) {
+        auto variant = getType(variantType);
+        return subTypes(variant, parent);
+      };
+      return std::ranges::all_of(
+               childUnion->namedVariants,
+               [&](const auto& variant) {
+                 return childFitsParent(variant.first);
+               }
+             ) &&
+             std::ranges::all_of(
+               childUnion->anonymousVariants,
+               childFitsParent
+             );
     }
     return false;
   }
@@ -1253,9 +1409,8 @@ struct LlvmName {
         },
         [&o](AlignedType x) { format(o, x.baseType); },
         [&o, type](Union x) {
-          // TODO: move to using largest type?
-          // fmt::print(o, "[i8 x {}]", Types::Pool().getSizing(type).byteSize);
-          format(o, x.anonymousVariants[0]);
+          auto byteSize = Pool().getSizing(type).byteSize;
+          fmt::print(o, "[{} x i8]", byteSize);
         },
         [&o](VectorType x) {
           fmt::print(o, "<{} x ", x.length);

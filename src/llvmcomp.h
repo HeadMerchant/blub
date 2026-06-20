@@ -416,7 +416,7 @@ struct Compiler {
       log("Making value: '{}: {}'", assignee->name, TypeName(assignee->type));
       emitDefinition(*assignee);
       typeChecker.check(node.value, assignedType);
-      auto value = toRegister(compile(node.value));
+      auto value = toRegister(coerceValue(compile(node.value), assignedType));
       log(
         "Defined {} with type {}",
         definitionName,
@@ -723,13 +723,89 @@ struct Compiler {
   }
 
   void doAssignment(StackValue assignee, Reference value) {
-    auto loadedValue = toRegister(value);
+    auto loadedValue = toRegister(coerceValue(value, assignee.type));
     emitLine(
       "store {} {}, ptr {}",
       LlvmName(assignee.type),
       loadedValue,
       assignee
     );
+  }
+
+  Reference constructUnionValue(
+    TypeIndex type,
+    TypeIndex variantType,
+    Reference value
+  ) {
+    auto storage = environment.addTemporary();
+    auto alignment = std::max(1u, Pool().getSizing(type).alignment.byteAlignment());
+
+    emitLine("%{} = alloca {}, align {}", storage, LlvmName(type), alignment);
+    emitLine("store {} zeroinitializer, ptr %{}", LlvmName(type), storage);
+    if (!Pool().isVoid(variantType)) {
+      auto casted = environment.addTemporary();
+      auto valueRef = toRegister(value);
+      emitLine("%{} = bitcast ptr %{} to ptr", casted, storage);
+      emitLine(
+        "store {} {}, ptr %{}, align {}",
+        LlvmName(variantType),
+        valueRef,
+        casted,
+        Pool().getSizing(variantType).alignment.byteAlignment()
+      );
+    }
+    auto result = environment.makeTemporary(type);
+    emitLine("{} = load {}, ptr %{}", result, LlvmName(type), storage);
+    return Reference(result);
+  }
+
+  Reference coerceValue(Reference value, TypeIndex targetType) {
+    auto valueType = value.getType();
+    if (valueType == targetType) {
+      return value;
+    }
+
+    if (
+      auto unionType = Pool().unbox<Union>(targetType);
+      unionType && !Pool().unbox<Union>(valueType)
+    ) {
+      for (auto [variantType, _] : unionType->namedVariants) {
+        if (Pool().isAssignable(valueType, variantType)) {
+          return constructUnionValue(targetType, variantType, value);
+        }
+      }
+      for (auto variantType : unionType->anonymousVariants) {
+        if (Pool().isAssignable(valueType, variantType)) {
+          return constructUnionValue(targetType, variantType, value);
+        }
+      }
+    }
+    return value;
+  }
+
+  StackValue accessFieldPathPointer(StackValue object, const FieldPath& fieldPath) {
+    StackValue current = object;
+
+    for (auto segment : fieldPath.segments) {
+      auto fieldPointer = environment.addTemporary();
+      auto result = StackValue(fieldPointer, segment.fieldType);
+
+      if (Pool().unbox<Union>(segment.aggregateType)) {
+        emitLine("{} = bitcast ptr {} to ptr", result, current);
+      } else {
+        emitLine(
+          "{} = getelementptr inbounds {}, ptr {}, i32 0, i32 {}",
+          result,
+          LlvmName(segment.aggregateType),
+          current,
+          segment.index
+        );
+      }
+
+      current = result;
+    }
+
+    return current;
   }
 
   ReturnType assign(NodeIndex left, NodeIndex right) {
@@ -1718,13 +1794,13 @@ struct Compiler {
     auto& positionalArgs = result.positional;
     positionalArgs.reserve(positionalArguments.size() + (selfArg != nullptr));
     if (selfArg) {
-      positionalArgs.push_back(*selfArg);
+      positionalArgs.push_back(toRegister(*selfArg));
     }
     u32 i = positionalArgs.size();
     for (auto argNode : positionalArguments) {
       auto paramType = parameterTypes[i];
       auto targetType = typeChecker.check(argNode, paramType).type;
-      auto argument = toRegister(compile(argNode, paramType));
+      auto argument = coerceValue(compile(argNode, paramType), paramType);
       targetType = argument.isAssignableTo(paramType);
       // TODO: remove?
       if (!targetType) {
@@ -1740,7 +1816,7 @@ struct Compiler {
           paramType.value
         );
       }
-      positionalArgs.push_back(argument);
+      positionalArgs.push_back(toRegister(argument));
       i++;
     }
 
@@ -1766,7 +1842,7 @@ struct Compiler {
       }
 
       auto expectedType = typeChecker.check(value, field->second).type;
-      auto argument = compile(value);
+      auto argument = coerceValue(compile(value), expectedType);
       auto targetType = argument.isAssignableTo(expectedType);
       if (!targetType) {
         crash(
@@ -1780,9 +1856,6 @@ struct Compiler {
       Reference loadedArg = toRegister(argument);
       namedArgs.push_back({loadedArg, argIndex});
     }
-    for (auto& arg : positionalArgs) {
-      arg = toRegister(arg);
-    }
     return result;
   }
 
@@ -1791,68 +1864,124 @@ struct Compiler {
     ChildSpan positionalArguments,
     Encodings::NamedValues namedArguments = {}
   ) {
-    // TODO: unions: named and unnamed
     auto structDefinition = Pool().getStruct(type);
     if (!structDefinition) {
       crash(nodeIndex, "Can't construct non-struct type {}", TypeName(type));
     }
-    auto structLlvmName = LlvmName(type);
+    auto storage = environment.addTemporary();
+    auto alignment = std::max(1u, Pool().getSizing(type).alignment.byteAlignment());
+    auto rootPointer = StackValue(storage, type);
+    emitLine("%{} = alloca {}, align {}", storage, LlvmName(type), alignment);
+    emitLine("store {} zeroinitializer, ptr %{}", LlvmName(type), storage);
 
     auto fieldTypes = structDefinition->fieldTypes();
-    auto args = getArguments(
-      fieldTypes,
-      positionalArguments,
-      namedArguments,
-      structDefinition->fields
-    );
-    std::vector<bool> setArguments(structDefinition->fields.size(), false);
-
-    Reference structVal = Reference(ZeroInit{});
-    // TODO: default values that aren't zero initialized; using 0 for now to
-    // avoid initializing all fields in C structs
-    for (u32 i = 0; i < args.positional.size(); i++) {
-      auto fieldValue = args.positional[i];
-      auto fieldTypeLlvmName = LlvmName(fieldTypes[i]);
-      setArguments[i] = true;
-      Reference prevStruct = structVal;
-      structVal.value = environment.makeTemporary(type);
-      Reference ref(structVal);
-      emitLine(
-        "{} = insertvalue {} {}, {} {}, {}",
-        ref,
-        structLlvmName,
-        prevStruct,
-        fieldTypeLlvmName,
-        fieldValue,
-        i
-      );
+    for (u32 i = 0; i < positionalArguments.size(); i++) {
+      auto fieldType = fieldTypes[i];
+      auto fieldPath = FieldPath{
+        .type = fieldType,
+        .segments = {{
+          .aggregateType = type,
+          .fieldType = fieldType,
+          .index = i,
+        }},
+      };
+      auto fieldPointer = accessFieldPathPointer(rootPointer, fieldPath);
+      auto argument = coerceValue(compile(positionalArguments[i], fieldType), fieldType);
+      doAssignment(fieldPointer, argument);
     }
 
-    u32 i = 0;
-    for (auto [value, fieldIndex] : args.named) {
-      if (setArguments[fieldIndex]) {
-        // auto location = parser.locationOf(positionalArguments[i]);
-        // fmt::println(std::cerr, "Field '{}' originally assigned here", name);
-        // location.underline(std::cerr);
-        auto token = parser.toPointer(namedArguments[i].token);
-
-        crash(token, "Duplicate assignment for field '{}'", token->lexeme);
+    for (auto [name, value] : namedArguments) {
+      auto nameToken = parser.getToken(name);
+      auto fieldPath = Pool().getFieldPath(type, nameToken->lexeme);
+      if (!fieldPath) {
+        crash(nameToken, "Unknown named argument '{}'", nameToken->lexeme);
       }
-      setArguments[fieldIndex] = true;
-      Reference prevStruct = structVal;
-      structVal.value = environment.makeTemporary(type);
-      emitLine(
-        "{} = insertvalue {} {}, {} {}, {}",
-        structVal,
-        structLlvmName,
-        prevStruct,
-        LlvmName(fieldTypes[fieldIndex]),
-        value,
-        fieldIndex
-      );
-      i++;
+      auto expectedType = typeChecker.check(value, fieldPath.type).type;
+      auto argument = coerceValue(compile(value), expectedType);
+      auto fieldPointer = accessFieldPathPointer(rootPointer, fieldPath);
+      doAssignment(fieldPointer, argument);
     }
-    return Reference(structVal);
+
+    auto result = environment.makeTemporary(type);
+    emitLine("{} = load {}, ptr %{}", result, LlvmName(type), storage);
+    return Reference(result);
+  }
+
+  Reference constructUnion(
+    TypeIndex type,
+    ChildSpan positionalArguments,
+    Encodings::NamedValues namedArguments = {}
+  ) {
+    auto unionType = Pool().unbox<Union>(type);
+    if (!unionType) {
+      crash(nodeIndex, "Can't construct non-union type {}", TypeName(type));
+    }
+
+    if (!namedArguments.empty()) {
+      if (positionalArguments.size() != 0 || namedArguments.size() != 1) {
+        crash(
+          nodeIndex,
+          "Union construction with named fields requires exactly one field"
+        );
+      }
+
+      auto [name, value] = namedArguments.front();
+      auto nameToken = parser.getToken(name);
+      for (auto [variantType, variantName] : unionType->namedVariants) {
+        if (variantName == nameToken->lexeme) {
+          typeChecker.check(value, variantType);
+          return constructUnionValue(type, variantType, compile(value, variantType));
+        }
+      }
+      crash(nameToken, "Unknown union field '{}'", nameToken->lexeme);
+    }
+
+    if (positionalArguments.size() != 1 || !unionType->namedVariants.empty()) {
+      crash(
+        nodeIndex,
+        "Union construction requires a single positional argument for anonymous unions"
+      );
+    }
+
+    auto valueNode = positionalArguments.front();
+    auto valueType = typeChecker.check(valueNode).type;
+    OptionalType matchedType;
+    for (auto variantType : unionType->anonymousVariants) {
+      if (Pool().isAssignable(valueType, variantType)) {
+        if (matchedType) {
+          crash(
+            valueNode,
+            "Union constructor argument of type '{}' is ambiguous for '{}'",
+            TypeName(valueType),
+            TypeName(type)
+          );
+        }
+        matchedType = variantType;
+      }
+    }
+    if (!matchedType) {
+      crash(
+        valueNode,
+        "Unable to assign argument of type '{}' to union '{}'",
+        TypeName(valueType),
+        TypeName(type)
+      );
+    }
+    return constructUnionValue(type, matchedType, compile(valueNode, matchedType));
+  }
+
+  Reference constructAggregate(
+    TypeIndex type,
+    ChildSpan positionalArguments,
+    Encodings::NamedValues namedArguments = {}
+  ) {
+    if (Pool().getStruct(type)) {
+      return constructStruct(type, positionalArguments, namedArguments);
+    }
+    if (Pool().unbox<Union>(type)) {
+      return constructUnion(type, positionalArguments, namedArguments);
+    }
+    crash(nodeIndex, "Can't construct non-aggregate type {}", TypeName(type));
   }
 
   ReturnType call(NodeIndex functionNode, Encodings::ArgumentList args) {
@@ -1882,11 +2011,7 @@ struct Compiler {
       if (!type) {
         crash(nodeIndex, "Internal error; expected type");
       }
-      if (auto structDefinition = Pool().getStruct(type)) {
-        return constructStruct(type, args.positional, args.named);
-      } else {
-        crash(nodeIndex, "Can't construct non-struct type {}", TypeName(type));
-      }
+      return constructAggregate(type, args.positional, args.named);
     } else if (args.named.empty() && args.positional.size() == 1) {
       return multiply(functionNode, args.positional[0]);
     } else {
@@ -2210,6 +2335,20 @@ struct Compiler {
     return fs::weakly_canonical(inputFilePath.parent_path().append(path));
   }
 
+  fs::path resolveBlubImportPath(std::string_view path) {
+    fs::path localPath = inputFilePath.parent_path() / path;
+    if (fs::exists(localPath)) {
+      return fs::weakly_canonical(localPath);
+    }
+
+    fs::path libPath = fs::path(LIB_BLUB_DIR) / path;
+    if (fs::exists(libPath)) {
+      return fs::weakly_canonical(libPath);
+    }
+
+    return fs::weakly_canonical(localPath);
+  }
+
   ReturnType bitCast(Encodings::ArgumentList args) {
     auto targetType = typeChecker.check(nodeIndex, expectedType).type;
     auto inType = typeChecker.check(args.positional[0]).type;
@@ -2243,9 +2382,9 @@ struct Compiler {
       );
     }
 
-    auto includeFile = fs::weakly_canonical(inputFilePath.parent_path().append(
-      parser.getToken(argumentNodes[0])->lexeme
-    ));
+    auto includeFile = fs::absolute(
+      inputFilePath.parent_path() / parser.getToken(argumentNodes[0])->lexeme
+    ).lexically_normal();
     auto fileName = includeFile.string();
     std::unordered_map<std::string_view, TypeIndex> definedTypes;
     for (auto [name, value] : args.named) {
@@ -2387,7 +2526,7 @@ struct Compiler {
   }
 
   ReturnType import(TokenPointer fileName) {
-    auto filePath = inputFilePath.parent_path().append(fileName->lexeme);
+    auto filePath = resolveBlubImportPath(fileName->lexeme);
     log("Importing: {}", filePath.string());
     Environment* import = compile(filePath, targetType);
     if (!import->impls.witnesses.empty()) {
@@ -2633,7 +2772,7 @@ struct Compiler {
           "Cannot return value in a function with a 'void' return type"
         );
       }
-      auto value = compile(returnValue, returnType);
+      auto value = coerceValue(compile(returnValue, returnType), returnType);
       value = toRegister(value);
       if (!Pool().isAssignable(value.getType(), returnType)) {
         crash(
@@ -2705,7 +2844,7 @@ struct Compiler {
         "'import'?"
       );
     }
-    auto filePath = inputFilePath.parent_path().append(fileName->lexeme);
+    auto filePath = resolveBlubImportPath(fileName->lexeme);
     fmt::println("Importing: {}", filePath.string());
     Environment* import = compile(filePath, TargetType::Gpu);
     return Reference(CudaEnv{import});
@@ -2904,14 +3043,55 @@ struct Compiler {
     if (it != typeCache.end()) {
       return Reference(it->second);
     }
+    auto isUnion = parser.getToken(nodeIndex)->type == TokenType::Union;
+    auto prettyName = nameOr(isUnion ? "Anonymous Union" : "Anonymous Struct");
+    log(
+      "Making {} with name: {}",
+      isUnion ? "union" : "struct",
+      prettyName
+    );
+
+    if (isUnion) {
+      Union unionDef;
+      for (auto fieldIndex : node.children) {
+        auto fieldNode = parser.getNode(fieldIndex);
+        switch (fieldNode.nodeType) {
+        case NodeType::Definition: {
+          auto definitionNode = parser.getDefinition(fieldIndex);
+          auto fieldName = definitionNode.name->lexeme;
+          OptionalType type = compile(definitionNode.type).unboxType();
+          if (!type) {
+            crash(
+              fieldIndex,
+              "Type for field '{}' must be known at compile time",
+              fieldName
+            );
+          }
+          auto duplicate = std::ranges::find_if(
+            unionDef.namedVariants,
+            [&](const auto& variant) { return variant.second == fieldName; }
+          );
+          if (duplicate != unionDef.namedVariants.end()) {
+            crash(definitionNode.name, "Duplicate field '{}'", fieldName);
+          }
+          unionDef.namedVariants.push_back({type, fieldName});
+          break;
+        }
+        default:
+          TODO("TODO: implement default union fields");
+        }
+      }
+      auto typeIndex = Pool().addType(std::move(unionDef));
+      typeCache[nodeIndex.value] = typeIndex;
+      return Reference(typeIndex);
+    }
+
     // TODO: methods
     u32 llvmName = environment.structIndex();
     std::stringstream typeInstruction;
     auto frame = stackItems;
     frame.outputFile = &typeInstruction;
     auto guard = push(frame);
-    auto prettyName = nameOr("Anonymous Struct");
-    log("Making struct with name: {}", prettyName);
     auto [typeIndex, structIndex] = Pool().makeStruct(prettyName, llvmName);
     auto envGuard = environment.pushScope();
     environment.scopes.back().self = typeIndex;
@@ -3067,9 +3247,9 @@ struct Compiler {
       log("Accessing field for type {}", TypeName(type));
     }
 
-    auto boxedField = Pool().getFieldIndex(type, fieldName);
+    auto fieldPath = Pool().getFieldPath(type, fieldName);
 
-    if (!boxedField.type) {
+    if (!fieldPath) {
       auto method = findMethod(fieldName, type);
 
       auto selfType = method->type.parameters.fields().front();
@@ -3097,29 +3277,22 @@ struct Compiler {
       }
     }
 
-    auto [fieldType, fieldIndex] = boxedField;
-    auto fieldPointer = environment.addTemporary();
-
     if (object.lValue()) {
-      auto result = Reference(StackValue(fieldPointer, fieldType));
+      return Reference(accessFieldPathPointer(*object.lValue(), fieldPath));
+    } else if (object.unbox<RegisterValue>()) {
+      auto storage = environment.addTemporary();
+      auto alignment = std::max(1u, Pool().getSizing(type).alignment.byteAlignment());
+      emitLine("%{} = alloca {}, align {}", storage, LlvmName(type), alignment);
+      emitLine("store {} {}, ptr %{}", LlvmName(type), object, storage);
+      auto fieldPointer = accessFieldPathPointer(StackValue(storage, type), fieldPath);
+      auto loadedValue = environment.makeTemporary(fieldPath.type);
       emitLine(
-        "{} = getelementptr inbounds {}, ptr {}, i32 0, i32 {}",
-        result,
-        LlvmName(type),
-        object,
-        fieldIndex
+        "{} = load {}, ptr {}",
+        loadedValue,
+        LlvmName(fieldPath.type),
+        fieldPointer
       );
-      return result;
-    } else if (auto registerValue = object.unbox<RegisterValue>()) {
-      auto result = Reference(RegisterValue(fieldPointer, fieldType));
-      emitLine(
-        "{} = extractvalue {} {}, {}",
-        result,
-        LlvmName(type),
-        object,
-        fieldIndex
-      );
-      return result;
+      return Reference(loadedValue);
     } else {
       TODO("error for getting struct field");
     }
@@ -3128,7 +3301,7 @@ struct Compiler {
   ReturnType argList(NodeIndex nodeIndex) {
     auto type = typeChecker.check(nodeIndex, expectedType).type;
     auto argsNode = parser.getArgumentList(nodeIndex);
-    return constructStruct(type, argsNode.positional, argsNode.named);
+    return constructAggregate(type, argsNode.positional, argsNode.named);
   }
 
   ReturnType enumExpr(Encodings::Enum node) {
@@ -3600,6 +3773,7 @@ struct Compiler {
     std::vector<NodeIndex> program = parser.parse();
 
     Compiler translationUnit(parser, program, targetType);
+    translationUnit.inputFilePath = fileName;
     auto [env, success] =
       compiledFiles.emplace(std::move(fileName), translationUnit.run());
     // TODO: remove

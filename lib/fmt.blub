@@ -1,0 +1,85 @@
+write :: fn(fd: s32, buf: [^]u8, count: usize)
+
+print :: fn(buf: []u8) {
+	stdout :: 1
+	write(stdout, buf.data, buf.length)
+}
+
+println :: fn(buf: []u8) {
+	print(buf)
+	print("\n")
+}
+
+print_u32 :: fn(x: u32) {
+	buf : [10]u8
+	if (x == 0) {
+		buf[9] = 48
+		print(buf[9.<])
+	}
+	i :u32 = 10
+	y := x
+	while (y > 0) {
+		i = i - 1
+		digit := y % 10
+		y = y / 10
+		buf[i] = 48 + @numCast(digit, u8)
+	}
+	print(buf[i.<])
+}
+
+print_s32 :: fn(x: s32) {
+	buf : [11]u8
+	if (x == 0) {
+		buf[10] = 48
+		print(buf[10.<])
+	}
+	isNegative := x < 0
+	i : u32 = 11
+	y := if(isNegative) -x else x
+	while (y > 0) {
+		i = i - 1
+		digit := y % 10
+		y = y / 10
+		buf[i] = 48 + @numCast(digit, u8)
+	}
+	if (isNegative) {
+		i = i - 1
+		buf[i] = 45
+	}
+	print(buf[i.<])
+}
+
+printBin :: fn(x: u32) {
+	buf : [32]u8
+	i: u32 = 0
+	y := x
+	while (i < 32) {
+		digit := y % 2
+		buf[31-i] = @numCast(48 + digit)
+		y = y / 2
+		i = i + 1
+	}
+
+	print(buf[0.<])
+}
+
+printHex :: fn(x: u32) {
+	buf : [8]u8
+	i: u32 = 0
+	y := x
+	while (i < 8) {
+		# digit: u8 = 
+		digit := y % 16
+		buf[7-i] = @numCast(digit + (if (digit < 10) 48 else 55))
+		y = y / 16
+		i = i + 1
+	}
+	println(buf[0.<])
+}
+
+printFloat :: fn(x: f32) {
+	buffer : [10]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+	doubleToStr(buffer[^], 10, @numCast(x))
+	print buffer[]
+}
+

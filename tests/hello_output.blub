@@ -1,0 +1,5 @@
+c :: @cImport("stdio_fixture.h", "c_")
+
+main :: fn() {
+    c.puts(c"Hello world")
+}

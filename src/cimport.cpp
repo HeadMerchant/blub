@@ -58,6 +58,16 @@ TypeIndex parseType(
     return cTypes[qualType];
   }
 
+  for (auto recordPrefix : {"struct ", "union ", "enum "}) {
+    if (qualType.starts_with(recordPrefix)) {
+      auto unqualified =
+        qualType.substr(std::char_traits<char>::length(recordPrefix));
+      if (cTypes.contains(unqualified)) {
+        return cTypes[unqualified];
+      }
+    }
+  }
+
   qualType = StringPool::inst().copy(qualType);
 
   // Tokenize base type
@@ -200,28 +210,38 @@ TypeIndex parseRecord(
     }
 
     OptionalType anonType = TypeIndex::null();
+    u32 anonymousFieldIndex = 0;
     for (auto structField : structFields) {
       std::string_view fieldKind;
       structField["kind"].get(fieldKind);
-      if (fieldKind == "FieldDecl") {
+      if (fieldKind == "RecordDecl") {
+        anonType = parseRecord(structField.value(), "", "", globals);
+      } else if (fieldKind == "FieldDecl") {
         std::string_view fieldName;
-        structField["name"].get(fieldName);
-        fieldName = StringPool::inst().copy(fieldName);
+        bool hasName = structField["name"].get(fieldName) == SUCCESS;
 
         TypeIndex fieldType;
         if (anonType) {
           fieldType = anonType;
+          anonType = TypeIndex::null();
         } else {
           std::string_view fieldTypeName;
           structField["type"]["qualType"].get(fieldTypeName);
           fieldType = parseType(fieldTypeName, globals);
         }
+
+        if (!hasName) {
+          auto anonymousFieldName = fmt::format(
+            "{}{}",
+            TypePool::anonymousFieldPrefix,
+            anonymousFieldIndex++
+          );
+          fieldName = StringPool::inst().copy(anonymousFieldName);
+        } else {
+          fieldName = StringPool::inst().copy(fieldName);
+        }
         Pool().getStruct(structIndex).defineField(fieldName, fieldType);
-      }
-      // else if (fieldKind == "RecordDecl") {
-      //   anonType = parseRecord(structField.value(), "", "", globals);
-      // }
-      else {
+      } else {
         log("Skipping inner node for struct of kind {}", fieldKind);
       }
     }
@@ -244,7 +264,7 @@ TypeIndex parseRecord(
       );
     }
 
-    OptionalType anonType;
+    OptionalType anonType = TypeIndex::null();
     for (ondemand::value variant : variants) {
       std::string_view variantKind;
       variant["kind"].get(variantKind);
@@ -266,13 +286,13 @@ TypeIndex parseRecord(
             variantType = anonType;
             anonType = TypeIndex::null();
           } else {
-            throw std::invalid_argument("Unknown type for union variant");
+            variantType = parseType(fieldTypeName, globals);
           }
         } else {
           variantType = parseType(fieldTypeName, globals);
         }
 
-        if (variant["name"].get(variantName)) {
+        if (variant["name"].get(variantName) == SUCCESS) {
           variantName = StringPool::inst().copy(variantName);
           namedVariants.push_back({variantType, variantName});
         } else {
@@ -320,9 +340,9 @@ Environment* cBindings(
   Environment& environment = importedFiles[cFile];
 
   // TODO: handle crash
-  auto astDumpFile = "ast.json";
+  auto astDumpFile = ".blub/ast.json";
   auto command = fmt::format(
-    "clang -Xclang -ast-dump=json {} > {}",
+    "clang -Xclang -ast-dump=json '{}' > '{}'",
     cFile.string(),
     astDumpFile
   );
@@ -474,4 +494,56 @@ Environment* cBindings(
 
   importedFiles[cFile] = environment;
   return &environment;
+}
+
+TEST_CASE("cimport handles unions and anonymous promoted fields") {
+  fs::path fixture =
+    fs::path(BLUB_SOURCE_DIR) / "tests/cimport_union_fixture.h";
+  std::queue<std::string> globals;
+  TypeCache definedTypes;
+
+  auto* env = cBindings(fixture, "ci_", globals, definedTypes);
+  REQUIRE(env != nullptr);
+
+  auto topUnionRef = env->find("top_union");
+  REQUIRE(topUnionRef != nullptr);
+  auto topUnionType = topUnionRef->unboxType();
+  REQUIRE(topUnionType);
+  CHECK(Pool().unbox<Union>(topUnionType) != nullptr);
+  CHECK(Pool().getFieldPath(topUnionType, "as_int"));
+
+  auto anonUnionRef = env->find("with_anon_union");
+  REQUIRE(anonUnionRef != nullptr);
+  auto anonUnionType = anonUnionRef->unboxType();
+  REQUIRE(anonUnionType);
+  auto promotedUnionField = Pool().getFieldPath(anonUnionType, "int_value");
+  auto promotedLeaf = Pool().getFieldPath(anonUnionType, "leaf");
+  CHECK(promotedUnionField);
+  CHECK(promotedLeaf);
+  CHECK_EQ(promotedUnionField.type, Pool()._s32);
+  CHECK_EQ(promotedUnionField.segments.size(), 2);
+  CHECK(
+    Pool().unbox<Union>(promotedUnionField.segments.front().fieldType) !=
+    nullptr
+  );
+
+  auto anonStructRef = env->find("with_anon_struct");
+  REQUIRE(anonStructRef != nullptr);
+  auto anonStructType = anonStructRef->unboxType();
+  REQUIRE(anonStructType);
+  auto promotedX = Pool().getFieldPath(anonStructType, "x");
+  CHECK(promotedX);
+  CHECK_EQ(promotedX.type, Pool()._s32);
+  CHECK_EQ(promotedX.segments.size(), 2);
+
+  auto nestedRef = env->find("with_nested_both");
+  REQUIRE(nestedRef != nullptr);
+  auto nestedType = nestedRef->unboxType();
+  REQUIRE(nestedType);
+  auto promotedLeft = Pool().getFieldPath(nestedType, "left");
+  auto promotedPair = Pool().getFieldPath(nestedType, "pair");
+  CHECK(promotedLeft);
+  CHECK(promotedPair);
+  CHECK_EQ(promotedLeft.type, Pool()._s32);
+  CHECK_EQ(promotedLeft.segments.size(), 3);
 }

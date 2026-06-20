@@ -974,7 +974,7 @@ struct TypeChecker {
       targetType = dereffed;
       lValue = true;
     }
-    auto field = Pool().getFieldIndex(targetType, fieldName);
+    auto field = Pool().getFieldPath(targetType, fieldName);
     if (field) {
       return {field.type, lValue};
     }
@@ -1008,10 +1008,10 @@ struct TypeChecker {
     }
 
     auto structDefinition = Pool().getStruct(expected);
-    if (!structDefinition) {
+    if (!structDefinition && !Pool().unbox<Union>(expected)) {
       crash(
         nodeIndex,
-        "Can't construct non-struct type {}",
+        "Can't construct non-aggregate type {}",
         TypeName(expected)
       );
     }

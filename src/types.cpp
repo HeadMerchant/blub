@@ -103,6 +103,7 @@ void TypePool::registerStorage(
         assignment.push(RegisterType::Int, sizing.byteSize);
       },
       [&](Float x) { assignment.push(RegisterType::Float, sizing.byteSize); },
+      [&](Union) { assignment.push(RegisterType::Int, sizing.byteSize); },
       [&]<AggregateType T>(T x) {
         for (auto element : x.fields()) {
           registerStorage(element, assignment);

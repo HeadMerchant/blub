@@ -1,0 +1,5 @@
+fmt :: import "fmt.blub"
+
+main :: fn() {
+    fmt.print("hello from fmt")
+}
