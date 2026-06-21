@@ -46,6 +46,7 @@ struct CompilerContext {
   struct {
     std::ofstream* outputFileStream;
     std::stringstream globalInitialization;
+    unordered_set<TypeIndex> emittedTypeDefinitions;
   } blub;
   struct {
     vector<std::string> linkedLibraries;
@@ -55,6 +56,9 @@ struct CompilerContext {
     std::ofstream* outputFileStream;
     std::stringstream globalInitialization;
     vector<std::string> linkedFiles;
+    optional<RegisterValue> embeddedPtxGlobal;
+    unordered_set<std::string> emittedImports;
+    unordered_set<TypeIndex> emittedTypeDefinitions;
   } cuda;
 
   static CompilerContext& inst() {
@@ -451,9 +455,10 @@ struct Compiler {
       break;
     }
     case ValueScope::Global: {
+      ensureTypeDefinition(assignee.type);
       globalsStack.push(
         fmt::format(
-          "{} = global {} undef align {}",
+          "{} = global {} zeroinitializer align {}",
           assignee,
           LlvmName(assignee.type),
           byteAlignment
@@ -462,6 +467,36 @@ struct Compiler {
       break;
     }
     }
+  }
+
+  void ensureTypeDefinition(TypeIndex type) {
+    auto& emittedTypes =
+      targetType == TargetType::Cpu
+        ? CompilerContext::inst().blub.emittedTypeDefinitions
+        : CompilerContext::inst().cuda.emittedTypeDefinitions;
+    if (emittedTypes.contains(type)) {
+      return;
+    }
+
+    auto* structDef = Pool().getStruct(type);
+    if (!structDef) {
+      return;
+    }
+
+    std::stringstream definition;
+    fmt::print(definition, "{} = type {{", LlvmName(type));
+    bool hasFields = false;
+    for (auto fieldType : structDef->fieldTypes()) {
+      ensureTypeDefinition(fieldType);
+      if (hasFields) {
+        definition << ", ";
+      }
+      fmt::print(definition, "{}", LlvmName(fieldType));
+      hasFields = true;
+    }
+    definition << "}";
+    globalsStack.push(definition.str());
+    emittedTypes.insert(type);
   }
 
   StackValue* makeDefinition(
@@ -738,7 +773,7 @@ struct Compiler {
     Reference value
   ) {
     auto storage = environment.addTemporary();
-    auto alignment = std::max(1u, Pool().getSizing(type).alignment.byteAlignment());
+    auto alignment = Pool().getSizing(type).alignment.byteAlignment();
 
     emitLine("%{} = alloca {}, align {}", storage, LlvmName(type), alignment);
     emitLine("store {} zeroinitializer, ptr %{}", LlvmName(type), storage);
@@ -759,6 +794,8 @@ struct Compiler {
     return Reference(result);
   }
 
+  // TODO: fold more type coercions in. should this just be called when compile
+  // returns???
   Reference coerceValue(Reference value, TypeIndex targetType) {
     auto valueType = value.getType();
     if (valueType == targetType) {
@@ -783,7 +820,10 @@ struct Compiler {
     return value;
   }
 
-  StackValue accessFieldPathPointer(StackValue object, const FieldPath& fieldPath) {
+  StackValue accessFieldPathPointer(
+    StackValue object,
+    const FieldPath& fieldPath
+  ) {
     StackValue current = object;
 
     for (auto segment : fieldPath.segments) {
@@ -1869,7 +1909,7 @@ struct Compiler {
       crash(nodeIndex, "Can't construct non-struct type {}", TypeName(type));
     }
     auto storage = environment.addTemporary();
-    auto alignment = std::max(1u, Pool().getSizing(type).alignment.byteAlignment());
+    auto alignment = Pool().getSizing(type).alignment.byteAlignment();
     auto rootPointer = StackValue(storage, type);
     emitLine("%{} = alloca {}, align {}", storage, LlvmName(type), alignment);
     emitLine("store {} zeroinitializer, ptr %{}", LlvmName(type), storage);
@@ -1886,7 +1926,8 @@ struct Compiler {
         }},
       };
       auto fieldPointer = accessFieldPathPointer(rootPointer, fieldPath);
-      auto argument = coerceValue(compile(positionalArguments[i], fieldType), fieldType);
+      auto argument =
+        coerceValue(compile(positionalArguments[i], fieldType), fieldType);
       doAssignment(fieldPointer, argument);
     }
 
@@ -1930,7 +1971,11 @@ struct Compiler {
       for (auto [variantType, variantName] : unionType->namedVariants) {
         if (variantName == nameToken->lexeme) {
           typeChecker.check(value, variantType);
-          return constructUnionValue(type, variantType, compile(value, variantType));
+          return constructUnionValue(
+            type,
+            variantType,
+            compile(value, variantType)
+          );
         }
       }
       crash(nameToken, "Unknown union field '{}'", nameToken->lexeme);
@@ -1939,7 +1984,8 @@ struct Compiler {
     if (positionalArguments.size() != 1 || !unionType->namedVariants.empty()) {
       crash(
         nodeIndex,
-        "Union construction requires a single positional argument for anonymous unions"
+        "Union construction requires a single positional argument for "
+        "anonymous unions"
       );
     }
 
@@ -1967,7 +2013,11 @@ struct Compiler {
         TypeName(type)
       );
     }
-    return constructUnionValue(type, matchedType, compile(valueNode, matchedType));
+    return constructUnionValue(
+      type,
+      matchedType,
+      compile(valueNode, matchedType)
+    );
   }
 
   Reference constructAggregate(
@@ -2234,6 +2284,12 @@ struct Compiler {
          .functionType = functionType,
          .selfType = environment.selfType()}
       );
+      if (
+        targetType == TargetType::Gpu &&
+        parser.getToken(nodeIndex)->type == TokenType::Kernel
+      ) {
+        environment.kernelSymbols[name] = registerNameToString(llvmName);
+      }
     } else {
       bool isKernel = parser.getToken(nodeIndex)->type == TokenType::Kernel;
       functionType
@@ -2382,9 +2438,11 @@ struct Compiler {
       );
     }
 
-    auto includeFile = fs::absolute(
-      inputFilePath.parent_path() / parser.getToken(argumentNodes[0])->lexeme
-    ).lexically_normal();
+    auto includeFile =
+      fs::absolute(
+        inputFilePath.parent_path() / parser.getToken(argumentNodes[0])->lexeme
+      )
+        .lexically_normal();
     auto fileName = includeFile.string();
     std::unordered_map<std::string_view, TypeIndex> definedTypes;
     for (auto [name, value] : args.named) {
@@ -2402,6 +2460,28 @@ struct Compiler {
     return Reference(
       cBindings(std::move(includeFile), prefix, globalsStack, definedTypes)
     );
+  }
+
+  ReturnType cudaPtx(NodeIndex module) {
+    auto importValue = compile(module);
+    auto importType = typeChecker.check(module).type;
+    auto* importInfo = findCudaImportInfo(importType);
+    if (!importInfo) {
+      crash(
+        module,
+        "Builtin '@cudaPtx' requires a value returned by '@cudaImport'"
+      );
+    }
+
+    auto loadedImport = toRegister(importValue);
+    auto result = environment.makeTemporary(Pool().pointerTo(Pool()._u8));
+    emitLine(
+      "{} = extractvalue {} {}, 0",
+      result,
+      LlvmName(importType),
+      loadedImport
+    );
+    return Reference(result);
   }
 
   ReturnType cDefine(Encodings::ArgumentList args) {
@@ -2846,8 +2926,50 @@ struct Compiler {
     }
     auto filePath = resolveBlubImportPath(fileName->lexeme);
     fmt::println("Importing: {}", filePath.string());
-    Environment* import = compile(filePath, TargetType::Gpu);
-    return Reference(CudaEnv{import});
+    auto& importInfo = getCudaImportInfo(filePath);
+
+    auto& cudaContext = CompilerContext::inst().cuda;
+    cudaContext.embeddedPtxGlobal = importInfo.ptxGlobal;
+    auto importKey = filePath.string();
+    if (!cudaContext.emittedImports.contains(importKey)) {
+      ensureTypeDefinition(importInfo.type);
+      for (auto [fieldName, symbolGlobal] : importInfo.symbolGlobals) {
+        auto exportedName = importInfo.kernelSymbols[fieldName];
+        auto escaped = escapeSourceString(exportedName, fileName).first;
+        globalsStack.push(
+          fmt::format(
+            "@{} = global [{} x i8] c\"{}\\00\" align 1",
+            symbolGlobal.name,
+            exportedName.size() + 1,
+            escaped
+          )
+        );
+      }
+      cudaContext.emittedImports.insert(importKey);
+    }
+
+    auto result = environment.makeTemporary(importInfo.type);
+    emitLine(
+      "{} = insertvalue {} undef, ptr @{}, 0",
+      result,
+      LlvmName(importInfo.type),
+      importInfo.ptxGlobal.name
+    );
+    u32 fieldIndex = 1;
+    for (auto [_, symbolGlobal] : importInfo.symbolGlobals) {
+      auto next = environment.makeTemporary(importInfo.type);
+      emitLine(
+        "{} = insertvalue {} {}, ptr @{}, {}",
+        next,
+        LlvmName(importInfo.type),
+        result,
+        symbolGlobal.name,
+        fieldIndex
+      );
+      result = next;
+      fieldIndex++;
+    }
+    return Reference(result);
   }
 
   ReturnType ifExpr(Encodings::If node) {
@@ -3045,11 +3167,7 @@ struct Compiler {
     }
     auto isUnion = parser.getToken(nodeIndex)->type == TokenType::Union;
     auto prettyName = nameOr(isUnion ? "Anonymous Union" : "Anonymous Struct");
-    log(
-      "Making {} with name: {}",
-      isUnion ? "union" : "struct",
-      prettyName
-    );
+    log("Making {} with name: {}", isUnion ? "union" : "struct", prettyName);
 
     if (isUnion) {
       Union unionDef;
@@ -3135,6 +3253,11 @@ struct Compiler {
     }
     typeInstruction << "}";
     globalsStack.push(typeInstruction.str());
+    auto& emittedTypes =
+      targetType == TargetType::Cpu
+        ? CompilerContext::inst().blub.emittedTypeDefinitions
+        : CompilerContext::inst().cuda.emittedTypeDefinitions;
+    emittedTypes.insert(typeIndex);
     typeCache[nodeIndex.value] = typeIndex;
     return Reference(typeIndex);
   }
@@ -3281,10 +3404,12 @@ struct Compiler {
       return Reference(accessFieldPathPointer(*object.lValue(), fieldPath));
     } else if (object.unbox<RegisterValue>()) {
       auto storage = environment.addTemporary();
-      auto alignment = std::max(1u, Pool().getSizing(type).alignment.byteAlignment());
+      auto alignment =
+        std::max(1u, Pool().getSizing(type).alignment.byteAlignment());
       emitLine("%{} = alloca {}, align {}", storage, LlvmName(type), alignment);
       emitLine("store {} {}, ptr %{}", LlvmName(type), object, storage);
-      auto fieldPointer = accessFieldPathPointer(StackValue(storage, type), fieldPath);
+      auto fieldPointer =
+        accessFieldPathPointer(StackValue(storage, type), fieldPath);
       auto loadedValue = environment.makeTemporary(fieldPath.type);
       emitLine(
         "{} = load {}, ptr {}",
@@ -4069,3 +4194,57 @@ struct Compiler {
 };
 
 static_assert(AstVisitor<Compiler>, "Compiler must implement AstVisitor");
+
+inline auto& cudaImportInfoCache() {
+  static std::unordered_map<std::string, CudaImportInfo> cache;
+  return cache;
+}
+
+inline CudaImportInfo& getCudaImportInfo(const fs::path& rawFilePath) {
+  auto& cache = cudaImportInfoCache();
+
+  auto filePath = fs::weakly_canonical(fs::absolute(rawFilePath));
+  auto key = filePath.string();
+  if (auto found = cache.find(key); found != cache.end()) {
+    return found->second;
+  }
+
+  auto* env = Compiler::compile(filePath, TargetType::Gpu);
+  auto& importInfo = cache[key];
+
+  u32 moduleIndex = Environment::structIndex();
+  auto typeName =
+    StringPool::inst().copy(fmt::format("CudaImport.{}", moduleIndex));
+  auto [typeIndex, structIndex] = Pool().makeStruct(typeName, moduleIndex);
+  auto& structDef = Pool().getStruct(structIndex);
+  auto ptrType = Pool().pointerTo(Pool()._u8);
+
+  importInfo.ptxFieldName = "__anon_cuda_import_ptx";
+  structDef.defineField(importInfo.ptxFieldName, ptrType);
+  importInfo.ptxGlobal =
+    RegisterValue("cuda_embedded_ptx", ptrType, ValueScope::Global);
+
+  for (auto [kernelName, symbolName] : env->kernelSymbols) {
+    auto fieldName = StringPool::inst().copy(kernelName);
+    structDef.defineField(fieldName, ptrType);
+    importInfo.kernelSymbols[fieldName] = symbolName;
+    importInfo.symbolGlobals[fieldName] = RegisterValue(
+      StringPool::inst().copy(
+        fmt::format("cuda_symbol_{}_{}", moduleIndex, fieldName)
+      ),
+      ptrType,
+      ValueScope::Global
+    );
+  }
+  importInfo.type = typeIndex;
+  return importInfo;
+}
+
+inline CudaImportInfo* findCudaImportInfo(TypeIndex type) {
+  for (auto& [_, info] : cudaImportInfoCache()) {
+    if (info.type == type) {
+      return &info;
+    }
+  }
+  return nullptr;
+}

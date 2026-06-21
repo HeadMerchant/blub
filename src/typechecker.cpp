@@ -1,7 +1,7 @@
+#include "typechecker.h"
 #include "common.h"
 #include "llvmcomp.h"
 #include "parser.h"
-#include "typechecker.h"
 #include "types.h"
 
 TypeIndex TypeChecker::materialize(NodeIndex nodeIndex, string_view name) {

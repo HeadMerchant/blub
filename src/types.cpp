@@ -1,7 +1,7 @@
+#include "types.h"
 #include "abi.h"
 #include "common.h"
 #include "fmt/format.h"
-#include "types.h"
 #include <ranges>
 
 Logger TypePool::logger(LogLevel::TypeCheck);

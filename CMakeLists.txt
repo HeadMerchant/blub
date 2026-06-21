@@ -12,10 +12,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE Debug)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-file(GLOB_RECURSE sources src/*.cpp src/*.h )
+file(GLOB_RECURSE sources CONFIGURE_DEPENDS src/*.cpp src/*.h )
 list(REMOVE_ITEM sources src/main.cpp)
 
-add_executable(blub ${sources})
+add_executable(blub src/main.cpp ${sources})
 target_include_directories(blub PRIVATE src)
 
 target_compile_options(blub PRIVATE -Werror=unused-variable -Werror=implicit-fallthrough)
@@ -72,5 +72,11 @@ add_custom_command (
 
 # TODO: put standard library in here
 target_compile_definitions(blub PRIVATE
+    BLUB_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     LIB_BLUB_DIR="${CMAKE_CURRENT_BINARY_DIR}/lib"
 )
+
+if(BUILD_TESTS)
+  enable_testing()
+  add_test(NAME blub_tests COMMAND blub --test)
+endif()

@@ -1,5 +1,5 @@
-#include "common.h"
 #include "llvmcomp.h"
+#include "common.h"
 
 Compiler::ArithmeticOperator
   Compiler::multOp{"mul", "multiply", TokenType::Mult, false, false};

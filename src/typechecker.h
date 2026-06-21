@@ -706,6 +706,17 @@ struct TypeChecker {
     return {Pool().environment};
   }
 
+  ReturnType cudaPtx(NodeIndex module) {
+    auto argType = check(module).type;
+    if (!findCudaImportInfo(argType)) {
+      crash(
+        module,
+        "Builtin '@cudaPtx' requires a value returned by '@cudaImport'"
+      );
+    }
+    return {Pool().pointerTo(Pool()._u8)};
+  }
+
   ReturnType cDefine(Encodings::ArgumentList args) {
     return {Pool()._void};
   }
@@ -851,7 +862,12 @@ struct TypeChecker {
   }
 
   ReturnType cudaImport(TokenPointer fileName) {
-    return {Pool().environment};
+    auto filePath =
+      fs::absolute(
+        parser.tokenizer.inputFilePath.parent_path() / fileName->lexeme
+      )
+        .lexically_normal();
+    return {getCudaImportInfo(filePath).type};
   }
 
   ReturnType ifExpr(Encodings::If node) {

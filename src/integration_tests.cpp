@@ -163,14 +163,14 @@ TEST_CASE("blub file tests") {
       REQUIRE(runtimeResult.exitedNormally);
 
       if (auto expectedOutputPath = expectationPathFor(testPath, ".out")) {
-        auto expected =
-          normalizeOutput(readFile(expectedOutputPath.value()));
+        auto expected = normalizeOutput(readFile(expectedOutputPath.value()));
         auto actual = normalizeOutput(runtimeResult.output);
         CHECK_EQ(actual, expected);
       }
 
-      if (auto expectedExitCodePath =
-            expectationPathFor(testPath, ".exitcode")) {
+      if (
+        auto expectedExitCodePath = expectationPathFor(testPath, ".exitcode")
+      ) {
         auto expectedExitCodeText = readFile(expectedExitCodePath.value());
         auto expectedExitCode = std::stoi(expectedExitCodeText);
         CHECK_EQ(runtimeResult.exitCode, expectedExitCode);

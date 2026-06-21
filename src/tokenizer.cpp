@@ -17,6 +17,7 @@ std::unordered_map<std::string_view, TokenType> Tokenizer::builtinFunctions = {
   {"global",       TokenType::BUILTIN_Global      },
   {"cudaImport",   TokenType::CudaImport          },
   {"name",         TokenType::BUILTIN_Name        },
+  {"cudaPtx",      TokenType::BUILTIN_CudaPtx     },
 };
 
 std::unordered_map<std::string_view, TokenType> Tokenizer::keywords = {

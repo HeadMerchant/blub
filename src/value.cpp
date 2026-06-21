@@ -1,6 +1,6 @@
+#include "value.h"
 #include "common.h"
 #include "types.h"
-#include "value.h"
 #include <variant>
 
 static FunctionType printType{
@@ -40,4 +40,17 @@ Logger Environment::log{LogLevel::Compile};
 
 Reference BoundFunction::getSelf() {
   return std::visit(overloaded{[](auto x) { return Reference(x); }}, self);
+}
+
+string_view registerNameToString(RegisterName name) {
+  return std::visit(
+    overloaded{
+      [](string_view name) { return name; },
+      [](u32 name) {
+        auto stringName = fmt::format("{}", name);
+        return StringPool::inst().copy(stringName);
+      },
+    },
+    name
+  );
 }

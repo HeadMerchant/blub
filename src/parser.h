@@ -45,6 +45,7 @@ enum class UnaryOps {
   Return,
   Using,
   BuiltinName,
+  CudaPtx,
   /* TODO: make these builtins their own nodes
     Link,
     LinkDir,
@@ -1378,6 +1379,16 @@ public:
       return addNode(
         Encodings::UnaryOp({
           .operand = {toIndex(fileNode).value},
+          .operation = UnaryOps::CudaImport,
+        }),
+        token
+      );
+    }
+
+    if (auto token = match(TokenType::BUILTIN_CudaPtx)) {
+      return addNode(
+        Encodings::UnaryOp({
+          .operand = {expression().value},
           .operation = UnaryOps::CudaImport,
         }),
         token

@@ -5,6 +5,7 @@
 #include "llvmcomp.h"
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <getopt.h>
 #include <iostream>
 #include <ranges>
@@ -15,6 +16,50 @@
 #include "doctest.h"
 
 string_view kernelIr = "main.cu.ll";
+
+void compileCuda(string_view buildDir, string_view cudaArch);
+
+namespace {
+
+std::string escapeLlvmString(std::string_view input) {
+  std::string escaped;
+  escaped.reserve(input.size() * 2);
+  for (unsigned char c : input) {
+    if (c >= 32 && c <= 126 && c != '\\' && c != '"') {
+      escaped.push_back(static_cast<char>(c));
+      continue;
+    }
+    escaped += fmt::format("\\{:02X}", static_cast<unsigned int>(c));
+  }
+  return escaped;
+}
+
+void emitEmbeddedNullTerminatedFile(
+  std::ofstream& outFile,
+  const fs::path& filePath,
+  const RegisterValue& global
+) {
+  std::ifstream input(filePath, std::ios::binary);
+  if (!input.is_open()) {
+    throw std::invalid_argument(
+      "Unable to open embedded file " + filePath.string()
+    );
+  }
+
+  std::string contents{
+    std::istreambuf_iterator<char>(input),
+    std::istreambuf_iterator<char>()
+  };
+  auto escaped = escapeLlvmString(contents);
+  outFile << fmt::format(
+    "@{} = global [{} x i8] c\"{}\\00\" align 1\n",
+    global.name,
+    contents.size() + 1,
+    escaped
+  );
+}
+
+} // namespace
 
 int main(int argc, char** argv) {
   bool shouldRunTests = false;
@@ -191,6 +236,16 @@ int main(int argc, char** argv) {
   contextInst.blub.outputFileStream = &outFile;
   contextInst.cuda.outputFileStream = &outKernel;
   Compiler::compile(sourceFile, TargetType::Cpu);
+
+  if (contextInst.cuda.embeddedPtxGlobal) {
+    compileCuda(buildDirName, cudaArch);
+    emitEmbeddedNullTerminatedFile(
+      outFile,
+      fs::path(buildDir) / "out.ptx",
+      *contextInst.cuda.embeddedPtxGlobal
+    );
+  }
+
   outFile << "define void @.ctor() {\n"
           << CompilerContext::inst().blub.globalInitialization.str()
           << "ret void\n}";

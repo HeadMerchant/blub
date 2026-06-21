@@ -132,6 +132,7 @@ enum class TokenType {
   BUILTIN_Shared,
   BUILTIN_Global,
   BUILTIN_Name,
+  BUILTIN_CudaPtx,
 
   // CUDA
   CudaImport,
@@ -243,6 +244,7 @@ public:
       TokenType::BUILTIN_LinkDir,
       TokenType::BUILTIN_CImport,
       TokenType::BUILTIN_Type,
+      TokenType::BUILTIN_CudaPtx,
     };
 
     return builtinTokens.contains(this->type);

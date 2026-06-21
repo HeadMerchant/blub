@@ -132,6 +132,13 @@ struct ZeroInit {};
 struct CudaEnv {
   Environment* env;
 };
+struct CudaImportInfo {
+  TypeIndex type = TypeIndex::null();
+  RegisterValue ptxGlobal;
+  string_view ptxFieldName;
+  ordered_map<string_view, string_view> kernelSymbols;
+  ordered_map<string_view, RegisterValue> symbolGlobals;
+};
 struct Kernel {
   u32 index;
   FunctionType function;
@@ -383,6 +390,7 @@ public:
   std::vector<Environment*> imports;
   std::string prefix;
   std::vector<Environment*> usings;
+  ordered_map<string_view, string_view> kernelSymbols;
 
   u32 nextTemporary = 1;
   u32 lastTemporary() {
@@ -741,3 +749,7 @@ public:
     return ss;
   }
 };
+
+string_view registerNameToString(RegisterName name);
+CudaImportInfo& getCudaImportInfo(const fs::path& filePath);
+CudaImportInfo* findCudaImportInfo(TypeIndex type);

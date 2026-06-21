@@ -63,6 +63,7 @@ concept AstVisitor = requires(T t, NodeIndex nodeIndex, TokenPointer token) {
   {
     t.cImport(Encodings::ArgumentList{})
   } -> std::same_as<typename T::ReturnType>;
+  { t.cudaPtx(nodeIndex) } -> std::same_as<typename T::ReturnType>;
   {
     t.cDefine(Encodings::ArgumentList{})
   } -> std::same_as<typename T::ReturnType>;
@@ -457,6 +458,9 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
       return t.cudaImport(parser.getToken(TokenIndex{node.operand.value}));
     }
     case UnaryOps::BuiltinName: {
+      return t.builtinName(node.operand);
+    }
+    case UnaryOps::CudaPtx: {
       return t.builtinName(node.operand);
     }
     }

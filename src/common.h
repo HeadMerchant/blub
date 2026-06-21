@@ -104,6 +104,9 @@ struct StringPool {
     return newView;
   }
 
+  std::string_view copy(const char*) = delete;
+  template <std::size_t N> void foo(const char (&)[N]) = delete;
+
   StringPool(u32 capacity) {
     bytes = (char*)malloc(capacity);
     this->capacity = capacity;
