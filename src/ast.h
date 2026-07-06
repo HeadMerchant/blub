@@ -63,6 +63,7 @@ concept AstVisitor = requires(T t, NodeIndex nodeIndex, TokenPointer token) {
   {
     t.cImport(Encodings::ArgumentList{})
   } -> std::same_as<typename T::ReturnType>;
+  { t.crashBuiltin() } -> std::same_as<typename T::ReturnType>;
   { t.cudaPtx(nodeIndex) } -> std::same_as<typename T::ReturnType>;
   {
     t.cDefine(Encodings::ArgumentList{})
@@ -336,6 +337,9 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
     if (token->type == TokenType::Null) {
       return t.nullPointer();
     }
+    if (token->type == TokenType::BUILTIN_Crash) {
+      return t.crashBuiltin();
+    }
     auto cudaFunction = cudaBuiltins.find(token->type);
     if (cudaFunction != cudaBuiltins.end()) {
       return t.cudaBuiltin(token, cudaFunction->second);
@@ -461,7 +465,7 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
       return t.builtinName(node.operand);
     }
     case UnaryOps::CudaPtx: {
-      return t.builtinName(node.operand);
+      return t.cudaPtx(node.operand);
     }
     }
   }

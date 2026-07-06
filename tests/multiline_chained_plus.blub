@@ -1,0 +1,9 @@
+fmt :: import "fmt.blub"
+
+main :: fn() {
+    sum := 1 +
+        2 +
+        3 +
+        4
+    fmt.print_s32(sum)
+}

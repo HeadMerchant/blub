@@ -1,0 +1,9 @@
+fmt :: import "fmt.blub"
+
+main :: fn() {
+    value := 8 >>
+        1 ~
+        3 &
+        7
+    fmt.print_s32(value)
+}

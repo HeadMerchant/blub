@@ -17,9 +17,37 @@
 
 string_view kernelIr = "main.cu.ll";
 
-void compileCuda(string_view buildDir, string_view cudaArch);
+void compileCuda(
+  string_view buildDir,
+  string_view cudaArch,
+  const fs::path& cudaApiDir
+);
 
 namespace {
+
+fs::path findLibdevice(const fs::path& cudaApiDir) {
+  fs::path libdeviceDir = cudaApiDir / "nvvm" / "libdevice";
+  fs::path defaultLibdevice = libdeviceDir / "libdevice.10.bc";
+  if (fs::exists(defaultLibdevice)) {
+    return defaultLibdevice;
+  }
+
+  for (const auto& entry : fs::directory_iterator(libdeviceDir)) {
+    if (!entry.is_regular_file()) {
+      continue;
+    }
+    auto filename = entry.path().filename().string();
+    if (
+      entry.path().extension() == ".bc" && filename.starts_with("libdevice")
+    ) {
+      return entry.path();
+    }
+  }
+
+  throw std::invalid_argument(
+    "Unable to find libdevice bitcode under " + libdeviceDir.string()
+  );
+}
 
 std::string escapeLlvmString(std::string_view input) {
   std::string escaped;
@@ -238,7 +266,9 @@ int main(int argc, char** argv) {
   Compiler::compile(sourceFile, TargetType::Cpu);
 
   if (contextInst.cuda.embeddedPtxGlobal) {
-    compileCuda(buildDirName, cudaArch);
+    outKernel.flush();
+    outKernel.close();
+    compileCuda(buildDirName, cudaArch, fs::path(cudaApiDir));
     emitEmbeddedNullTerminatedFile(
       outFile,
       fs::path(buildDir) / "out.ptx",
@@ -300,18 +330,36 @@ int main(int argc, char** argv) {
   fmt::println("clanged");
 }
 
-void compileCuda(string_view buildDir, string_view cudaArch) {
+void compileCuda(
+  string_view buildDir,
+  string_view cudaArch,
+  const fs::path& cudaApiDir
+) {
   auto& importedFiles = CompilerContext::inst().cuda.linkedFiles;
   std::string kernelIr = fmt::format("{}/main.cu.ll", buildDir);
+  std::string linkedKernelIr = fmt::format("{}/main.linked.cu.ll", buildDir);
   std::string outPtx = fmt::format("{}/out.ptx", buildDir);
   std::string finalCubin = fmt::format("{}/kernel.cubin", buildDir);
   std::string cudaObjFile = fmt::format("{}/kernel_cubin.o", buildDir);
+  fs::path libdevice = findLibdevice(cudaApiDir);
+
+  auto linkCommand = fmt::format(
+    "llvm-link {} {} -o {}",
+    kernelIr,
+    libdevice.string(),
+    linkedKernelIr
+  );
+  fmt::println("Linking blub cuda IR with libdevice: {}", linkCommand);
+  if (auto rc = std::system(linkCommand.c_str())) {
+    fmt::println(std::cerr, "Error linking blub CUDA LLVM IR with libdevice");
+    abort();
+  }
 
   // # 2. lower your IR to PTX
   auto compileCommand = fmt::format(
     "llc -march=nvptx64 -mcpu={} {} -o {}",
     cudaArch,
-    kernelIr,
+    linkedKernelIr,
     outPtx
   );
   fmt::println("Compiling blub cuda code: {}", compileCommand);

@@ -194,7 +194,11 @@ struct TypeChecker {
     auto def = parser.getDefinition(node.definition);
     auto type =
       def.type ? materialize(def.type, def.name->lexeme) : Pool().infer;
+    auto assignmentToken = parser.getToken(nodeIndex)->type;
     auto assigneeType = check(node.value, type).type;
+    if (assignmentToken == TokenType::Colon && type == Pool().infer) {
+      return {Pool()._void};
+    }
     if (auto fullType = Pool().isAssignable(assigneeType, type)) {
       check(node.value, fullType);
     } else {
@@ -365,6 +369,17 @@ struct TypeChecker {
         );
       }
       for (auto i = 0; i < arguments.size(); i++) {
+        if ((u32)(i + 1) >= params.size()) {
+          crash(
+            arguments[i],
+            "Internal error: method '{}.{}' expected parameter {} but only "
+            "has {} parameter(s)",
+            TypeName(aType),
+            methodName,
+            i + 1,
+            params.size()
+          );
+        }
         auto paramType = params[i + 1];
         check(arguments[i], paramType);
       }
@@ -414,6 +429,15 @@ struct TypeChecker {
           methodName,
           methodName,
           params.size()
+        );
+      }
+      if (params.size() <= 1) {
+        crash(
+          a,
+          "Internal error: operator method '{}.{}' is missing its rhs "
+          "parameter",
+          TypeName(aType),
+          methodName
         );
       }
       auto bType = params[1];
@@ -656,7 +680,7 @@ struct TypeChecker {
         TypeName(inType)
       );
     }
-    if (!Pool().isNumber(inType)) {
+    if (!Pool().isNumber(outType)) {
       crash(
         nodeIndex,
         "Unable to @numCast to non-numeric type {}",
@@ -704,6 +728,10 @@ struct TypeChecker {
 
   ReturnType cImport(Encodings::ArgumentList args) {
     return {Pool().environment};
+  }
+
+  ReturnType crashBuiltin() {
+    return {Pool().never};
   }
 
   ReturnType cudaPtx(NodeIndex module) {
@@ -858,6 +886,14 @@ struct TypeChecker {
   }
 
   ReturnType usingExpr(NodeIndex operand) {
+    auto value = compile(operand);
+    if (auto imported = value.unboxEnv()) {
+      env.usings.push_back(imported);
+      for (auto nested : imported->usings) {
+        env.usings.push_back(nested);
+      }
+      return {Pool()._void};
+    }
     return {Pool()._void};
   }
 
@@ -1075,6 +1111,12 @@ struct TypeChecker {
           params.size()
         );
       }
+      if (params.empty()) {
+        crash(
+          functionNode,
+          "Internal error: unary function lost its parameter"
+        );
+      }
       check(argNode, params[0]);
       return {unboundFunction->returnType};
     } else if (auto boundFunction = Pool().unboxBoundFunction(callerType)) {
@@ -1087,6 +1129,12 @@ struct TypeChecker {
           "provided "
           "function takes {}",
           params.size() - 1
+        );
+      }
+      if (params.size() <= 1) {
+        crash(
+          functionNode,
+          "Internal error: bound method lost its non-self parameter"
         );
       }
       check(argNode, params[1]);

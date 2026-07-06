@@ -63,6 +63,7 @@ struct RegisterValue {
   RegisterName name;
   TypeIndex type;
   ValueScope scope;
+  u32 addressSpace = 0;
 
   friend std::ostream& operator<<(std::ostream& o, const RegisterValue& x) {
     fmt::print(o, "{}{}", x.scope == ValueScope::Local ? "%" : "@", x.name);
@@ -76,6 +77,7 @@ public:
   RegisterName name;
   TypeIndex type;
   ValueScope scope;
+  u32 addressSpace = 0;
 
   friend std::ostream& operator<<(std::ostream& o, const StackValue& x) {
     fmt::print(o, "{}{}", x.scope == ValueScope::Local ? "%" : "@", x.name);
@@ -84,10 +86,13 @@ public:
 };
 template <> struct fmt::formatter<StackValue> : ostream_formatter {};
 
+enum class FunctionConvention { CpuAbi, GpuAbi, GpuKernelAbi };
+
 class Function {
 public:
   FunctionType type;
   RegisterName globalName;
+  FunctionConvention convention = FunctionConvention::CpuAbi;
 };
 
 class BoundFunction {
@@ -400,7 +405,7 @@ public:
   static u32 nextGlobalTemporary;
   static u32 nextStructIndex;
 
-  u32 currentLabel = 0;
+  Label currentLabel = Label::null();
   bool hasReturned = false;
 
   using WitnessTable =
@@ -504,6 +509,10 @@ public:
       throw std::invalid_argument("Internal error: missed environment type");
     }
     }
+  }
+
+  Label nextLabel() {
+    return Label(addTemporary());
   }
 
   RegisterValue makeTemporary(TypeIndex type) {

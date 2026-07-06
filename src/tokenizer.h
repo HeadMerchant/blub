@@ -133,6 +133,7 @@ enum class TokenType {
   BUILTIN_Global,
   BUILTIN_Name,
   BUILTIN_CudaPtx,
+  BUILTIN_Crash,
 
   // CUDA
   CudaImport,
@@ -244,7 +245,6 @@ public:
       TokenType::BUILTIN_LinkDir,
       TokenType::BUILTIN_CImport,
       TokenType::BUILTIN_Type,
-      TokenType::BUILTIN_CudaPtx,
     };
 
     return builtinTokens.contains(this->type);
@@ -252,31 +252,19 @@ public:
 
   bool isLiteral() const {
     static unordered_set<TokenType> literals = {
-      TokenType::String,
-      TokenType::Decimal,
-      TokenType::Integer,
-      TokenType::NullTerminatedString,
-      TokenType::True,
-      TokenType::False,
-      TokenType::Identifier,
-      TokenType::Opaque,
-      TokenType::CudaBlockIdxX,
-      TokenType::CudaBlockIdxY,
-      TokenType::CudaBlockIdxZ,
-      TokenType::CudaBlockDimX,
-      TokenType::CudaBlockDimY,
-      TokenType::CudaBlockDimZ,
-      TokenType::CudaThreadIdxX,
-      TokenType::CudaThreadIdxY,
-      TokenType::CudaThreadIdxZ,
-      TokenType::CudaGridDimX,
-      TokenType::CudaGridDimY,
-      TokenType::CudaGridDimZ,
-      TokenType::Char,
-      TokenType::Self,
-      TokenType::HexInt,
-      TokenType::Undef,
-      TokenType::Null
+      TokenType::String,         TokenType::Decimal,
+      TokenType::Integer,        TokenType::NullTerminatedString,
+      TokenType::True,           TokenType::False,
+      TokenType::Identifier,     TokenType::Opaque,
+      TokenType::CudaBlockIdxX,  TokenType::CudaBlockIdxY,
+      TokenType::CudaBlockIdxZ,  TokenType::CudaBlockDimX,
+      TokenType::CudaBlockDimY,  TokenType::CudaBlockDimZ,
+      TokenType::CudaThreadIdxX, TokenType::CudaThreadIdxY,
+      TokenType::CudaThreadIdxZ, TokenType::CudaGridDimX,
+      TokenType::CudaGridDimY,   TokenType::CudaGridDimZ,
+      TokenType::Char,           TokenType::Self,
+      TokenType::HexInt,         TokenType::Undef,
+      TokenType::Null,           TokenType::BUILTIN_Crash,
     };
 
     return literals.contains(this->type);

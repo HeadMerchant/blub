@@ -23,9 +23,29 @@ using u32 = uint32_t;
 using u64 = uint64_t;
 using s8 = int8_t;
 using RegisterName = std::variant<std::string_view, u32>;
-// using s16 = int16_t;
-// using s32 = int32_t;
-// using s64 = int64_t;
+
+class Environment;
+
+struct Label {
+private:
+  u32 index;
+
+  explicit Label(u32 index) : index(index) {}
+  friend class Environment;
+  friend struct fmt::formatter<Label>;
+
+public:
+  static Label null() {
+    return Label(0);
+  }
+};
+
+template <> struct fmt::formatter<Label> : fmt::formatter<u32> {
+  template <typename FormatContext>
+  auto format(const Label& obj, FormatContext& ctx) const {
+    return fmt::format_to(ctx.out(), "L{}", obj.index);
+  }
+};
 
 #undef assert
 #define assert(cond)                                                          \

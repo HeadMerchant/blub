@@ -1,0 +1,13 @@
+quat :: struct {
+	x: f32
+	y: f32
+	z: f32
+	w: f32
+}
+
+using @cImport("cimport_type_fixture.h", "ci_", ci_Quat=quat)
+
+main :: fn() {
+	q: quat = (0, 0, 0, 1)
+	_ := MulQ(q, q)
+}

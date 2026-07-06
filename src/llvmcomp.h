@@ -24,14 +24,15 @@ struct FunctionStub {
   NodeIndex definitionNode;
   FunctionType functionType;
   TypeIndex selfType;
+  FunctionConvention convention = FunctionConvention::CpuAbi;
 };
 
 struct SwitchCase {
   stringstream instructions;
   Reference condition;
   Reference result;
-  u32 entryBlock;
-  u32 exitLabel;
+  Label entryBlock = Label::null();
+  Label exitLabel = Label::null();
   struct {
     bool returns : 1;
     bool breaks : 1;
@@ -104,6 +105,7 @@ struct Compiler {
     string_view aggregateTypename;
     // Used bc llvm return types with floats are sussy
     RegisterAssignment registers;
+    FunctionConvention convention = FunctionConvention::CpuAbi;
   } returns;
 
   fs::path inputFilePath;
@@ -165,6 +167,250 @@ struct Compiler {
     requires LlvmNamesOnly<Args...>
   void emit(fmt::format_string<Args...> fmt, Args&&... args) {
     fmt::print(*outputFile, fmt, std::forward<Args>(args)...);
+  }
+
+  std::string llvmPointerType(u32 addressSpace = 0) const {
+    if (addressSpace == 0) {
+      return "ptr";
+    }
+    return fmt::format("ptr addrspace({})", addressSpace);
+  }
+
+  std::string pointerOperandType(const StackValue& value) const {
+    return llvmPointerType(value.addressSpace);
+  }
+
+  std::string pointerOperandType(const RegisterValue& value) const {
+    return llvmPointerType(value.addressSpace);
+  }
+
+  std::string kernelParameterType(TypeIndex type) const {
+    if (Pool().isPointer(type) || Pool().multiPointerElement(type)) {
+      return llvmPointerType(1);
+    }
+    return fmt::format("{}", LlvmName(type));
+  }
+
+  u32 gpuAddressSpaceForType(TypeIndex type) const {
+    if (Pool().isPointer(type) || Pool().multiPointerElement(type)) {
+      return 1;
+    }
+    return 0;
+  }
+
+  std::string gpuParameterType(TypeIndex type) const {
+    if (Pool().isPointer(type) || Pool().multiPointerElement(type)) {
+      return llvmPointerType(gpuAddressSpaceForType(type));
+    }
+    return fmt::format("{}", LlvmName(type));
+  }
+
+  std::string llvmValueType(TypeIndex type) const {
+    if (targetType == TargetType::Gpu) {
+      return gpuParameterType(type);
+    }
+    return fmt::format("{}", LlvmName(type));
+  }
+
+  u32 valueAddressSpaceForType(TypeIndex type) const {
+    if (targetType == TargetType::Gpu) {
+      return gpuAddressSpaceForType(type);
+    }
+    return 0;
+  }
+
+  FunctionConvention selectFunctionConvention(NodeIndex functionNode) {
+    bool isKernel = parser.getToken(functionNode)->type == TokenType::Kernel;
+    if (targetType == TargetType::Gpu) {
+      return isKernel ? FunctionConvention::GpuKernelAbi
+                      : FunctionConvention::GpuAbi;
+    }
+    if (isKernel) {
+      crash(functionNode, "Cannot define a kernel in a CPU target");
+    }
+    return FunctionConvention::CpuAbi;
+  }
+
+  bool isGpuConvention(FunctionConvention convention) const {
+    return convention == FunctionConvention::GpuAbi ||
+           convention == FunctionConvention::GpuKernelAbi;
+  }
+
+  void declareGpuFunction(
+    std::ostream& out,
+    Function function,
+    bool define
+  ) const {
+    out << (define ? "define " : "declare ");
+    if (function.convention == FunctionConvention::GpuKernelAbi) {
+      out << "ptx_kernel ";
+    }
+    out << fmt::format(
+      "{} @\"{}\"(",
+      gpuParameterType(function.type.returnType),
+      function.globalName
+    );
+    bool hasMultiple = false;
+    u32 parameterIndex = 0;
+    for (auto type : Pool().tupleElements(function.type.parameters)) {
+      if (hasMultiple) {
+        out << ", ";
+      }
+      out << gpuParameterType(type);
+      if (define) {
+        out << fmt::format(" %arg{}", parameterIndex);
+      }
+      hasMultiple = true;
+      parameterIndex++;
+    }
+    out << ")";
+  }
+
+  DeclarationResult declareFunction(
+    std::ostream& out,
+    Function function,
+    bool define
+  ) {
+    if (isGpuConvention(function.convention)) {
+      declareGpuFunction(out, function, define);
+      return {};
+    }
+    out << (define ? "define " : "declare ");
+    return declareParamRegisters(out, function);
+  }
+
+  void defineGpuParameters(
+    span<NodeIndex> requiredParameters,
+    Function function
+  ) {
+    auto parameterTypes = Pool().tupleElements(function.type.parameters);
+    assert(requiredParameters.size() == parameterTypes.size());
+    vector<Identifier> paramNames;
+    paramNames.reserve(requiredParameters.size());
+    for (auto [parameterIndex, paramNode] : enumerate(requiredParameters)) {
+      TypeIndex paramType = parameterTypes[parameterIndex];
+      auto parameterDefinition = parser.getDefinition(paramNode);
+      string_view paramName = parameterDefinition.name->lexeme;
+      if (
+        std::find(paramNames.begin(), paramNames.end(), paramName) !=
+        paramNames.end()
+      ) {
+        crash(paramNode, "Duplicate function parameter {}", paramName);
+      }
+      paramNames.push_back(paramName);
+      auto llvmParamName =
+        StringPool::inst().copy(fmt::format("arg{}", parameterIndex));
+      auto stackValue = StackValue(paramName, paramType);
+      emitDefinition(stackValue);
+      emitLine(
+        "store {} %{}, {} {}",
+        gpuParameterType(paramType),
+        llvmParamName,
+        pointerOperandType(stackValue),
+        stackValue
+      );
+      if (!environment.define(
+            paramName,
+            Reference(stackValue),
+            parser.locationOf(paramNode)
+          )) {
+        auto original = environment.definitionLocation(paramName);
+        fmt::println(std::cerr, "{} originally defined at:", paramName);
+        original->underline(std::cerr);
+        crash(paramNode, "Parameter name {} shadows a higher scope", paramName);
+      }
+    }
+  }
+
+  u32 callGpuFunctionWithArgs(Function function, span<Reference> args) {
+    auto returnType = function.type.returnType;
+    bool isVoid = Pool().isVoid(returnType);
+    u32 returnRegister = 0;
+    if (!isVoid) {
+      returnRegister = environment.addTemporary();
+      emit(
+        "{} = ",
+        RegisterValue{
+          .name = returnRegister,
+          .type = returnType,
+          .scope = ValueScope::Local,
+          .addressSpace = gpuAddressSpaceForType(returnType),
+        }
+      );
+    }
+
+    fmt::print(
+      *outputFile,
+      "call {} @\"{}\"(",
+      gpuParameterType(returnType),
+      function.globalName
+    );
+    auto paramTypes = Pool().tupleElements(function.type.parameters);
+    for (u32 i = 0; i < args.size(); i++) {
+      if (i != 0) {
+        emit(", ");
+      }
+      fmt::print(
+        *outputFile,
+        "{} {}",
+        gpuParameterType(paramTypes[i]),
+        args[i]
+      );
+    }
+    emitLine(")");
+    return returnRegister;
+  }
+
+  u32 callFunctionWithConvention(Function function, span<Reference> args) {
+    if (isGpuConvention(function.convention)) {
+      return callGpuFunctionWithArgs(function, args);
+    }
+    OutContext callCtx{.outputFile = *outputFile, .environment = environment};
+    return callAbiFunctionWithArgs(callCtx, function, args);
+  }
+
+  u32 functionReturnAddressSpace(Function function) const {
+    return isGpuConvention(function.convention)
+             ? gpuAddressSpaceForType(function.type.returnType)
+             : 0;
+  }
+
+  void emitReturnValue(TypeIndex returnType, Reference value) {
+    if (isGpuConvention(returns.convention)) {
+      fmt::println(
+        *outputFile,
+        "ret {} {}",
+        gpuParameterType(returnType),
+        value
+      );
+      return;
+    }
+
+    auto registers = returns.registers;
+    if (registers.isMemory()) {
+      emitLine("store {} {}, ptr %0\nret void", LlvmName(returnType), value);
+    } else if (registers.allInt() || !Pool().isAggregate(returnType)) {
+      emitLine("ret {} {}", LlvmName(returnType), value);
+    } else {
+      if (returns.aggregateTypename.empty()) {
+        crash(
+          nodeIndex,
+          "Expected an aggregate llvm type name in context for return value, "
+          "but was left empty"
+        );
+      }
+      auto storage = environment.addTemporary();
+      auto transmuted = environment.addTemporary();
+      emitLine("%{} = alloca {}", storage, LlvmName(returnType));
+      emitLine("store {} {}, ptr %{}", LlvmName(returnType), value, storage);
+      emitLine(
+        "%{} = load {}, ptr %{}",
+        transmuted,
+        returns.aggregateTypename,
+        storage
+      );
+      emitLine("ret {} %{}", returns.aggregateTypename, transmuted);
+    }
   }
 
   ReturnType block(Encodings::Block node) {
@@ -244,7 +490,7 @@ struct Compiler {
       stringstream instruction;
       // Reserve one for loading stack values
       environment.addTemporary();
-      u32 block = environment.addTemporary();
+      auto block = environment.nextLabel();
       environment.currentLabel = block;
       cases.push_back({
         .condition = compile(condition),
@@ -281,7 +527,7 @@ struct Compiler {
       stringstream instruction;
       // Reserve one for loading stack values
       environment.addTemporary();
-      u32 block = environment.addTemporary();
+      auto block = environment.nextLabel();
       environment.currentLabel = block;
       hasDefault = true;
       cases.push_back({
@@ -297,7 +543,7 @@ struct Compiler {
     // Reserve one for loading stack values
     // environment.addTemporary();
 
-    auto endBlock = environment.addTemporary();
+    auto endBlock = environment.nextLabel();
     auto defaultBlock = hasDefault ? cases.back().entryBlock : endBlock;
 
     emit(
@@ -427,7 +673,13 @@ struct Compiler {
         TypeName(environment.find(definitionName)->getType())
       );
 
-      emitLine("store {} {}, ptr {}", LlvmName(assignedType), value, *assignee);
+      emitLine(
+        "store {} {}, {} {}",
+        llvmValueType(assignedType),
+        value,
+        pointerOperandType(*assignee),
+        *assignee
+      );
     } else {
       parser.crash(
         nodeIndex,
@@ -701,7 +953,14 @@ struct Compiler {
   }
 
   ReturnType integer(TokenPointer token) {
-    int64_t intVal = std::stoi(token->lexeme.data());
+    int64_t intVal;
+    auto lexeme = token->lexeme;
+    if (
+      std::from_chars(lexeme.data(), lexeme.data() + lexeme.size(), intVal)
+        .ec == std::errc::result_out_of_range
+    ) {
+      crash(token, "Unable to parse integer '{}'", lexeme);
+    }
     auto type = typeChecker.check(nodeIndex).type;
     if (auto floatType = Pool().unbox<Float>(type)) {
       return Reference(FloatLiteral((double)intVal, floatType->precision));
@@ -753,16 +1012,17 @@ struct Compiler {
       );
     }
     auto result = environment.makeTemporary(Pool()._u32);
-    emitLine("{} = call i32 {}", result, cudaBuiltins[token->type]);
+    emitLine("{} = call i32 {}()", result, cudaBuiltins[token->type]);
     return Reference(result);
   }
 
   void doAssignment(StackValue assignee, Reference value) {
     auto loadedValue = toRegister(coerceValue(value, assignee.type));
     emitLine(
-      "store {} {}, ptr {}",
-      LlvmName(assignee.type),
+      "store {} {}, {} {}",
+      llvmValueType(assignee.type),
       loadedValue,
+      pointerOperandType(assignee),
       assignee
     );
   }
@@ -802,6 +1062,26 @@ struct Compiler {
       return value;
     }
 
+    if (auto intLiteral = value.unbox<IntLiteral>()) {
+      if (Pool().isFloat(targetType)) {
+        auto precision = Pool().getFloat(targetType)->precision;
+        return Reference(FloatLiteral((double)intLiteral->value, precision));
+      }
+      if (Pool().isInt(targetType)) {
+        return Reference(IntLiteral(intLiteral->value, targetType));
+      }
+    }
+
+    if (auto floatLiteral = value.unbox<FloatLiteral>()) {
+      if (Pool().isFloat(targetType)) {
+        auto precision = Pool().getFloat(targetType)->precision;
+        return Reference(FloatLiteral(floatLiteral->value, precision));
+      }
+      if (Pool().isInt(targetType)) {
+        return Reference(IntLiteral((int64_t)floatLiteral->value, targetType));
+      }
+    }
+
     if (
       auto unionType = Pool().unbox<Union>(targetType);
       unionType && !Pool().unbox<Union>(valueType)
@@ -828,15 +1108,27 @@ struct Compiler {
 
     for (auto segment : fieldPath.segments) {
       auto fieldPointer = environment.addTemporary();
-      auto result = StackValue(fieldPointer, segment.fieldType);
+      auto result = StackValue(
+        fieldPointer,
+        segment.fieldType,
+        ValueScope::Local,
+        current.addressSpace
+      );
 
       if (Pool().unbox<Union>(segment.aggregateType)) {
-        emitLine("{} = bitcast ptr {} to ptr", result, current);
+        emitLine(
+          "{} = bitcast {} {} to {}",
+          result,
+          pointerOperandType(current),
+          current,
+          pointerOperandType(result)
+        );
       } else {
         emitLine(
-          "{} = getelementptr inbounds {}, ptr {}, i32 0, i32 {}",
+          "{} = getelementptr inbounds {}, {} {}, i32 0, i32 {}",
           result,
           LlvmName(segment.aggregateType),
+          pointerOperandType(current),
           current,
           segment.index
         );
@@ -1027,7 +1319,8 @@ struct Compiler {
       positionalArguments,
       namedArguments,
       fields,
-      selfArg
+      selfArg,
+      func
     );
 
     // TODO: optional arguments
@@ -1044,11 +1337,8 @@ struct Compiler {
       );
     }
 
-    OutContext callCtx{.outputFile = *outputFile, .environment = environment};
-
     // TODO: ZST
-    u32 resultRegister =
-      callAbiFunctionWithArgs(callCtx, *func, args.positional);
+    u32 resultRegister = callFunctionWithConvention(*func, args.positional);
     if (Pool().isVoid(func->type.returnType)) {
       return Reference::Void();
     }
@@ -1056,7 +1346,8 @@ struct Compiler {
       RegisterValue{
         .name = resultRegister,
         .type = func->type.returnType,
-        .scope = ValueScope::Local
+        .scope = ValueScope::Local,
+        .addressSpace = functionReturnAddressSpace(*func)
       }
     );
   }
@@ -1089,6 +1380,14 @@ struct Compiler {
         );
       }
 
+      if (params.empty()) {
+        crash(
+          nodeIndex,
+          "Internal error: method '{}.{}' lost its self parameter",
+          TypeName(aType),
+          methodName
+        );
+      }
       if (auto dereffedType = Pool().dereference(params[0])) {
         if (auto lValue = object.lValue()) {
           object = Reference(RegisterValue(
@@ -1183,6 +1482,8 @@ struct Compiler {
         return Reference(FloatLiteral(literalArithmetic(a, b, op.type)));
       }
 
+      aVal = coerceValue(aVal, type);
+      bVal = coerceValue(bVal, type);
       aVal = toRegister(aVal);
       bVal = toRegister(bVal);
 
@@ -1234,6 +1535,15 @@ struct Compiler {
             op.methodName,
             op.methodName,
             params.size()
+          );
+        }
+        if (params.size() <= 1) {
+          crash(
+            a,
+            "Internal error: operator method '{}.{}' is missing its rhs "
+            "parameter",
+            TypeName(aType),
+            op.methodName
           );
         }
         auto bType = params[1];
@@ -1294,11 +1604,11 @@ struct Compiler {
       return Reference(false);
     }
 
-    auto trueLabel = environment.addTemporary();
+    auto trueLabel = environment.nextLabel();
     std::stringstream rightInstruction;
     environment.currentLabel = trueLabel;
     auto rightVal = compile(b, rightInstruction, boolType);
-    auto falseLabel = environment.addTemporary();
+    auto falseLabel = environment.nextLabel();
 
     emitLine(
       "br i1 {}, label %{}, label %{}\n{}:",
@@ -1345,11 +1655,11 @@ struct Compiler {
     }
     leftVal = toRegister(leftVal);
 
-    auto falseLabel = environment.addTemporary();
+    auto falseLabel = environment.nextLabel();
     std::stringstream rightInstruction;
     environment.currentLabel = falseLabel;
     auto rightVal = compile(b, rightInstruction, boolType);
-    auto trueLabel = environment.addTemporary();
+    auto trueLabel = environment.nextLabel();
 
     emitLine(
       "br i1 {}, label %{}, label %{}\n{}:",
@@ -1406,6 +1716,12 @@ struct Compiler {
       case TokenType::Xor: {
         return Reference(IntLiteral(aLit->value ^ bLit->value));
       }
+      case TokenType::ShiftLeft: {
+        return Reference(IntLiteral(aLit->value << bLit->value));
+      }
+      case TokenType::ShiftRight: {
+        return Reference(IntLiteral(aLit->value >> bLit->value));
+      }
       default: {
         crash(nodeIndex, "Unknown bitwise op");
       }
@@ -1414,10 +1730,24 @@ struct Compiler {
     aVal = toRegister(aVal);
     bVal = toRegister(bVal);
     auto result = environment.makeTemporary(type);
+    auto instruction = op.instruction;
+    if (op.type == TokenType::ShiftRight) {
+      if (Pool().isSignedInt(type)) {
+        instruction = "ashr";
+      } else if (Pool().isUnsignedInt(type)) {
+        instruction = "lshr";
+      } else {
+        crash(
+          nodeIndex,
+          "Can't right shift non-integer type {}",
+          TypeName(type)
+        );
+      }
+    }
     emitLine(
       "{} = {} {} {}, {}",
       result,
-      op.instruction,
+      instruction,
       LlvmName(type),
       aVal,
       bVal
@@ -1447,25 +1777,24 @@ struct Compiler {
     return bitwiseOp(a, b, {TokenType::ShiftLeft, "shl"});
   }
 
-  // TODO: arithemetic vs logical shift
   ReturnType shiftRight(NodeIndex a, NodeIndex b) {
     return bitwiseOp(a, b, {TokenType::ShiftRight, "shr"});
   }
 
   ReturnType whileLoop(NodeIndex condition, NodeIndex body) {
     typeChecker.check(nodeIndex);
-    auto loopHeader = environment.addTemporary();
+    auto loopHeader = environment.nextLabel();
     emitLine("br label %{}\n{}:", loopHeader, loopHeader);
     environment.currentLabel = loopHeader;
     auto conditionLiteral = compile(condition, Pool()._bool);
     conditionLiteral = toRegister(conditionLiteral);
-    auto loopBody = environment.addTemporary();
+    auto loopBody = environment.nextLabel();
     environment.currentLabel = loopBody;
 
     std::stringstream bodyInstruction;
     compile(body, bodyInstruction, Pool().infer);
 
-    auto endLabel = environment.addTemporary();
+    auto endLabel = environment.nextLabel();
     emitLine(
       "br i1 {}, label %{}, label %{}\n{}:",
       conditionLiteral,
@@ -1506,7 +1835,12 @@ struct Compiler {
   pair<RegisterValue, RegisterValue> getSliceElements(RegisterValue slice) {
     auto elementType = Pool().sliceElementType(slice.type);
     assert(elementType);
-    auto dataPointer = environment.makeTemporary(elementType);
+    auto dataPointer = RegisterValue{
+      .name = environment.addTemporary(),
+      .type = elementType,
+      .scope = ValueScope::Local,
+      .addressSpace = valueAddressSpaceForType(elementType),
+    };
     auto length = environment.makeTemporary(Pool()._usize);
     emitLine(
       "{} = extractvalue {} {}, 0",
@@ -1620,16 +1954,22 @@ struct Compiler {
 
       if (Pool().isInt(indexType)) {
         auto index = toRegister(indexVal);
-        auto result = StackValue(environment.addTemporary(), elementType);
+        auto result = StackValue(
+          environment.addTemporary(),
+          elementType,
+          ValueScope::Local,
+          dataPointer.addressSpace
+        );
 
         if (Pool().isSignedInt(indexType)) {
           guardLowerBound(index);
         }
         guardIndexInBounds(index, lengthBound);
         emitLine(
-          "{} = getelementptr {}, ptr {}, {} {}",
+          "{} = getelementptr {}, {} {}, {} {}",
           result,
           LlvmName(elementType),
+          pointerOperandType(std::get<RegisterValue>(leftLiteral.value)),
           leftLiteral,
           LlvmName(indexType),
           index
@@ -1647,11 +1987,18 @@ struct Compiler {
       auto dataPointer = toRegister(list);
       if (Pool().isInt(indexType)) {
         auto rightLiteral = toRegister(indexVal);
-        auto result =
-          Reference(StackValue(environment.addTemporary(), elementType));
+        auto basePointer = std::get<RegisterValue>(dataPointer.value);
+        auto result = Reference(StackValue(
+          environment.addTemporary(),
+          elementType,
+          ValueScope::Local,
+          basePointer.addressSpace
+        ));
         emitLine(
-          "{} = getelementptr ptr, ptr {}, {} {}",
+          "{} = getelementptr {}, {} {}, {} {}",
           result,
+          LlvmName(elementType),
+          pointerOperandType(basePointer),
           dataPointer,
           LlvmName(indexType),
           rightLiteral
@@ -1680,10 +2027,12 @@ struct Compiler {
         auto lengthRef = RangeBound(length);
         guardIndexInBounds(index, lengthRef);
         auto result = StackValue(environment.addTemporary(), elementType);
+        auto listPointer = *list.lValue();
         emitLine(
-          "{} = getelementptr {}, ptr {}, {} {}",
+          "{} = getelementptr {}, {} {}, {} {}",
           result,
           LlvmName(elementType),
+          pointerOperandType(listPointer),
           list,
           LlvmName(indexType),
           index
@@ -1710,8 +2059,8 @@ struct Compiler {
 
   void guardLowerBound(Reference& index) {
     auto isNegative = environment.makeTemporary(Pool()._bool);
-    auto crashBlockId = environment.addTemporary();
-    auto continueBlockId = environment.addTemporary();
+    auto crashBlockId = environment.nextLabel();
+    auto continueBlockId = environment.nextLabel();
     emitLine(
       "{} = icmp slt {} {}, 0",
       isNegative,
@@ -1764,11 +2113,19 @@ struct Compiler {
     }
 
     auto lengthRef = Reference(guardNonnegativeLength(lower, upperBound));
-    auto newStartPoint = environment.makeTemporary(dataPointer.getType());
+    auto dataPointerValue =
+      std::get<RegisterValue>(toRegister(dataPointer).value);
+    auto newStartPoint = RegisterValue{
+      .name = environment.addTemporary(),
+      .type = dataPointer.getType(),
+      .scope = ValueScope::Local,
+      .addressSpace = dataPointerValue.addressSpace,
+    };
     emitLine(
-      "{} = getelementptr {}, ptr {}, {} {}",
+      "{} = getelementptr {}, {} {}, {} {}",
       newStartPoint,
       LlvmName(newStartPoint.type),
+      pointerOperandType(dataPointerValue),
       dataPointer,
       LlvmName(usize),
       lower
@@ -1828,7 +2185,8 @@ struct Compiler {
     span<NodeIndex> positionalArguments,
     Encodings::NamedValues namedArguments,
     const FieldMap& fields,
-    Reference* selfArg = nullptr
+    Reference* selfArg = nullptr,
+    Function* function = nullptr
   ) {
     Arguments result;
     auto& positionalArgs = result.positional;
@@ -1838,6 +2196,18 @@ struct Compiler {
     }
     u32 i = positionalArgs.size();
     for (auto argNode : positionalArguments) {
+      if (i >= parameterTypes.size()) {
+        crash(
+          argNode,
+          "Internal error while packing arguments for '{}': saw {} explicit "
+          "arguments with{} bound self, but function type only has {} "
+          "parameter(s)",
+          function ? fmt::format("{}", function->globalName) : "<unknown>",
+          positionalArguments.size(),
+          selfArg ? "" : "out",
+          parameterTypes.size()
+        );
+      }
       auto paramType = parameterTypes[i];
       auto targetType = typeChecker.check(argNode, paramType).type;
       auto argument = coerceValue(compile(argNode, paramType), paramType);
@@ -1916,6 +2286,15 @@ struct Compiler {
 
     auto fieldTypes = structDefinition->fieldTypes();
     for (u32 i = 0; i < positionalArguments.size(); i++) {
+      if (i >= fieldTypes.size()) {
+        crash(
+          positionalArguments[i],
+          "Internal error: aggregate constructor expected {} positional "
+          "field(s), but saw at least {}",
+          fieldTypes.size(),
+          i + 1
+        );
+      }
       auto fieldType = fieldTypes[i];
       auto fieldPath = FieldPath{
         .type = fieldType,
@@ -2265,10 +2644,17 @@ struct Compiler {
       } else if (name == "main") {
         llvmName = "main";
       } else {
-        llvmName = environment.nextGlobalIndex();
+        auto suffix = environment.nextGlobalIndex();
+        if (!name.empty()) {
+          llvmName =
+            StringPool::inst().copy(fmt::format("{}_{}", name, suffix));
+        } else {
+          llvmName = StringPool::inst().copy(fmt::format("anon_{}", suffix));
+        }
       }
     }
 
+    auto convention = selectFunctionConvention(nodeIndex);
     if (!forwardDeclare) {
       log("Defining function: {}", name);
       log("with self type");
@@ -2282,33 +2668,57 @@ struct Compiler {
         {.name = llvmName,
          .definitionNode = nodeIndex,
          .functionType = functionType,
-         .selfType = environment.selfType()}
+         .selfType = environment.selfType(),
+         .convention = convention}
       );
-      if (
-        targetType == TargetType::Gpu &&
-        parser.getToken(nodeIndex)->type == TokenType::Kernel
-      ) {
+      if (convention == FunctionConvention::GpuKernelAbi) {
         environment.kernelSymbols[name] = registerNameToString(llvmName);
       }
     } else {
-      bool isKernel = parser.getToken(nodeIndex)->type == TokenType::Kernel;
-      functionType
-        .forwardDeclare(llvmName, globalsStack, isKernel ? "ptx_kernel " : "");
+      std::stringstream declaration;
+      declareFunction(
+        declaration,
+        Function{
+          .type = functionType,
+          .globalName = llvmName,
+          .convention = convention,
+        },
+        false
+      );
+      globalsStack.push(declaration.str());
     }
 
-    return Reference(Function(functionType, llvmName));
+    return Reference(
+      Function{
+        .type = functionType,
+        .globalName = llvmName,
+        .convention = convention,
+      }
+    );
   }
 
   ReturnType numCast(Encodings::ArgumentList args) {
     TypeIndex outType = typeChecker.check(nodeIndex, expectedType).type;
     auto object = compile(args.positional[0]);
+    auto inType = typeChecker.check(args.positional[0]).type;
+
+    if (auto intLiteral = object.unbox<IntLiteral>()) {
+      if (Pool().isFloat(outType)) {
+        auto precision = Pool().getFloat(outType)->precision;
+        return Reference(FloatLiteral((double)intLiteral->value, precision));
+      }
+      return Reference(IntLiteral(intLiteral->value, outType));
+    } else if (auto floatLiteral = object.unbox<FloatLiteral>()) {
+      if (Pool().isFloat(outType)) {
+        auto precision = Pool().getFloat(outType)->precision;
+        return Reference(FloatLiteral(floatLiteral->value, precision));
+      }
+      return Reference(IntLiteral((int64_t)floatLiteral->value, outType));
+    }
 
     object = toRegister(object);
 
-    auto inType = typeChecker.check(args.positional[0]).type;
     Reference result(environment.makeTemporary(outType));
-    bool isTrunc = inType.value > outType.value;
-    std::string_view instructionName = isTrunc ? "trunc" : "ext";
     if (inType == outType) {
       crash(
         nodeIndex,
@@ -2317,14 +2727,19 @@ struct Compiler {
         TypeName(outType)
       );
     }
-    std::string_view typePrefix;
-
     if (Pool().isFloat(inType) && Pool().isFloat(outType)) {
-      typePrefix = "fp";
-    } else if (Pool().isSignedInt(inType)) {
-      typePrefix = isTrunc ? "" : "s";
-    } else if (Pool().isUnsignedInt(inType)) {
-      typePrefix = isTrunc ? "" : "z";
+      auto inBits = Pool().getFloat(inType)->bitSize();
+      auto outBits = Pool().getFloat(outType)->bitSize();
+      auto instructionName = inBits > outBits ? "trunc" : "ext";
+      emitLine(
+        "{} = fp{} {} {} to {}",
+        result,
+        instructionName,
+        LlvmName(inType),
+        object,
+        LlvmName(outType)
+      );
+      return result;
     } else if (Pool().isFloat(inType)) {
       char sign;
       if (Pool().isUnsignedInt(outType)) sign = 'u';
@@ -2366,6 +2781,23 @@ struct Compiler {
         LlvmName(outType)
       );
       return result;
+    }
+
+    auto inBits = Pool().getSizing(inType).bitSize;
+    auto outBits = Pool().getSizing(outType).bitSize;
+    if (inBits == outBits) {
+      return Reference(
+        RegisterValue(std::get<RegisterValue>(object.value).name, outType)
+      );
+    }
+
+    bool isTrunc = inBits > outBits;
+    std::string_view instructionName = isTrunc ? "trunc" : "ext";
+    std::string_view typePrefix;
+    if (Pool().isSignedInt(inType)) {
+      typePrefix = isTrunc ? "" : "s";
+    } else if (Pool().isUnsignedInt(inType)) {
+      typePrefix = isTrunc ? "" : "z";
     } else {
       crash(
         nodeIndex,
@@ -2405,6 +2837,26 @@ struct Compiler {
     return fs::weakly_canonical(localPath);
   }
 
+  void ensureClangInclude(const std::string& fileName) {
+    auto& clangArgs = CompilerContext::inst().c.clangArgs;
+    for (size_t i = 0; i + 1 < clangArgs.size(); ++i) {
+      if (clangArgs[i] == "-include" && clangArgs[i + 1] == fileName) {
+        return;
+      }
+    }
+    auto includeIt =
+      std::find(clangArgs.begin(), clangArgs.end(), std::string("-include"));
+    if (includeIt == clangArgs.end()) {
+      clangArgs.push_back("-include");
+      clangArgs.push_back(fileName);
+      return;
+    }
+
+    auto insertIndex = static_cast<size_t>(includeIt - clangArgs.begin());
+    clangArgs.insert(clangArgs.begin() + insertIndex, fileName);
+    clangArgs.insert(clangArgs.begin() + insertIndex, "-include");
+  }
+
   ReturnType bitCast(Encodings::ArgumentList args) {
     auto targetType = typeChecker.check(nodeIndex, expectedType).type;
     auto inType = typeChecker.check(args.positional[0]).type;
@@ -2415,6 +2867,7 @@ struct Compiler {
       Pool().getSizing(targetType).alignment.byteAlignment()
     );
     emitLine("%{} = alloca {}, align {}", storage, LlvmName(inType), alignment);
+    emitLine("store {} {}, ptr %{}", LlvmName(inType), in, storage);
 
     Reference resultName(environment.makeTemporary(targetType));
     emitLine(
@@ -2453,13 +2906,19 @@ struct Compiler {
         TODO("Error for passing non-type into types");
       }
     }
-    CompilerContext::inst().c.clangArgs.push_back("-include");
-    CompilerContext::inst().c.clangArgs.push_back(std::move(fileName));
+    ensureClangInclude(fileName);
 
     auto prefix = std::string(parser.getToken(argumentNodes[1])->lexeme);
     return Reference(
       cBindings(std::move(includeFile), prefix, globalsStack, definedTypes)
     );
+  }
+
+  ReturnType crashBuiltin() {
+    emitLine("call void @llvm.trap()");
+    emitLine("unreachable");
+    environment.hasReturned = true;
+    return Reference(Never{});
   }
 
   ReturnType cudaPtx(NodeIndex module) {
@@ -2629,8 +3088,9 @@ struct Compiler {
         }
         return Reference(StackValue(
           registerValue->name,
-          registerValue->type,
-          registerValue->scope
+          dereferencedType,
+          registerValue->scope,
+          registerValue->addressSpace
         ));
       } else if (auto lValue = pointer.lValue()) {
         OptionalType dereferencedType = Pool().dereference(lValue->type);
@@ -2642,7 +3102,12 @@ struct Compiler {
           );
         }
         auto registerValue = std::get<RegisterValue>(toRegister(pointer).value);
-        return Reference(StackValue(registerValue.name, dereferencedType));
+        return Reference(StackValue(
+          registerValue.name,
+          dereferencedType,
+          registerValue.scope,
+          registerValue.addressSpace
+        ));
       } else {
         crash(nodeIndex, "Unable to dereference value");
       }
@@ -2691,7 +3156,7 @@ struct Compiler {
     }
     auto valueName = toRegister(value);
     auto resultName = Reference(environment.makeTemporary(type));
-    emitLine("{} = not i1 {}", resultName, valueName);
+    emitLine("{} = xor i1 {}, true", resultName, valueName);
     return resultName;
   }
 
@@ -2862,31 +3327,7 @@ struct Compiler {
           TypeName(returnType)
         );
       }
-      auto registers = returns.registers;
-      if (registers.isMemory()) {
-        emitLine("store {} {}, ptr %0\nret void", LlvmName(returnType), value);
-      } else if (registers.allInt() || !Pool().isAggregate(returnType)) {
-        emitLine("ret {} {}", LlvmName(returnType), value);
-      } else {
-        if (returns.aggregateTypename.empty()) {
-          crash(
-            returnValue,
-            "Expected an aggregate llvm type name in context for return "
-            "value, but was left empty"
-          );
-        }
-        auto storage = environment.addTemporary();
-        auto transmuted = environment.addTemporary();
-        emitLine("%{} = alloca {}", storage, LlvmName(returnType));
-        emitLine("store {} {}, ptr %{}", LlvmName(returnType), value, storage);
-        emitLine(
-          "%{} = load {}, ptr %{}",
-          transmuted,
-          returns.aggregateTypename,
-          storage
-        );
-        emitLine("ret {} %{}", returns.aggregateTypename, transmuted);
-      }
+      emitReturnValue(returnType, value);
     } else {
       if (!Pool().isVoid(returnType)) {
         crash(
@@ -2980,7 +3421,7 @@ struct Compiler {
 
     auto comptime = condition.isComptime();
     std::stringstream ifInstruction;
-    u32 ifLabel = environment.addTemporary();
+    auto ifLabel = environment.nextLabel();
     if (!comptime) {
       fmt::println(ifInstruction, "{}:", ifLabel);
     }
@@ -3002,7 +3443,7 @@ struct Compiler {
     // Else
     bool hasElse = !!node.elseClause;
     std::stringstream elseInstruction;
-    u32 elseLabel = hasElse ? environment.addTemporary() : 0;
+    auto elseLabel = hasElse ? environment.nextLabel() : Label::null();
     if (hasElse) fmt::println(elseInstruction, "{}:", elseLabel);
     environment.currentLabel = elseLabel;
     SwitchCase elseCase = hasElse ? SwitchCase{
@@ -3043,11 +3484,11 @@ struct Compiler {
       }
     }
 
-    u32 endLabel;
+    Label endLabel = Label::null();
     if (hasElse) {
       emitLine("br i1 {}, label %{}, label %{}", condition, ifLabel, elseLabel);
       emitLine(ifInstruction);
-      endLabel = environment.addTemporary();
+      endLabel = environment.nextLabel();
       if (!ifCase.returns) {
         emitLine("br label %{}", endLabel);
       }
@@ -3056,7 +3497,7 @@ struct Compiler {
         emitLine("br label %{}", endLabel);
       }
     } else {
-      endLabel = environment.addTemporary();
+      endLabel = environment.nextLabel();
       emitLine("br i1 {}, label %{}, label %{}", condition, ifLabel, endLabel);
       emitLine(ifInstruction);
       if (!ifCase.returns) {
@@ -3380,7 +3821,12 @@ struct Compiler {
       if (auto lValue = object.lValue()) {
         if (takesPointer) {
           return Reference(BoundFunction(
-            RegisterValue(lValue->name, selfType, lValue->scope),
+            RegisterValue(
+              lValue->name,
+              selfType,
+              lValue->scope,
+              lValue->addressSpace
+            ),
             method
           ));
         }
@@ -3553,14 +3999,23 @@ struct Compiler {
       auto type = iterator.getType();
       auto elementType = Pool().sliceElementType(type)
     ) {
-      auto loopHeader = environment.addTemporary();
+      auto loopHeader = environment.nextLabel();
       emitLine("br label %{}\n{}:", loopHeader, loopHeader);
       auto sliceRegister = toRegister(iterator);
-      auto slicePointer =
-        environment.makeTemporary(Pool().multiPointerTo(elementType));
+      auto slicePointer = RegisterValue{
+        .name = environment.addTemporary(),
+        .type = Pool().multiPointerTo(elementType),
+        .scope = ValueScope::Local,
+        .addressSpace =
+          valueAddressSpaceForType(Pool().multiPointerTo(elementType)),
+      };
       auto sliceLength = environment.makeTemporary(Pool()._usize);
-      auto endPointer =
-        environment.makeTemporary(Pool().multiPointerTo(elementType));
+      auto endPointer = RegisterValue{
+        .name = environment.addTemporary(),
+        .type = Pool().multiPointerTo(elementType),
+        .scope = ValueScope::Local,
+        .addressSpace = slicePointer.addressSpace,
+      };
 
       emitLine(
         "{} = extractElement {} {}, {} 0",
@@ -3577,22 +4032,31 @@ struct Compiler {
         LlvmName(sliceLength.type)
       );
       emitLine(
-        "{} = getelementptr {}, ptr {}, {} {}",
+        "{} = getelementptr {}, {} {}, {} {}",
         endPointer,
         LlvmName(elementType),
+        pointerOperandType(slicePointer),
         slicePointer,
         LlvmName(sliceLength.type),
         sliceLength
       );
 
-      auto loopCondition = environment.addTemporary();
+      auto loopCondition = environment.nextLabel();
       emitLine("{}:", loopCondition);
       // TODO: by ref vs by value
       auto iterationName = node.capture->lexeme;
-      auto iterationVariable =
-        StackValue(environment.addTemporary(), elementType);
-      auto nextIterationVar =
-        environment.makeTemporary(Pool().multiPointerTo(elementType));
+      auto iterationVariable = StackValue(
+        environment.addTemporary(),
+        elementType,
+        ValueScope::Local,
+        slicePointer.addressSpace
+      );
+      auto nextIterationVar = RegisterValue{
+        .name = environment.addTemporary(),
+        .type = Pool().multiPointerTo(elementType),
+        .scope = ValueScope::Local,
+        .addressSpace = slicePointer.addressSpace,
+      };
       auto defGuard = environment.pushScope();
       if (!environment.define(
             iterationName,
@@ -3610,29 +4074,30 @@ struct Compiler {
         );
       }
 
-      auto loopBound =
-        environment.makeTemporary(Pool().multiPointerTo(elementType));
+      auto loopBound = environment.makeTemporary(Pool()._bool);
 
-      auto loopBody = environment.addTemporary();
+      auto loopBody = environment.nextLabel();
 
       // TODO: loop value??
       stringstream body;
       compile(node.body, body);
 
-      auto loopUpdate = environment.addTemporary();
-      auto endLabel = environment.addTemporary();
+      auto loopUpdate = environment.nextLabel();
+      auto endLabel = environment.nextLabel();
 
       emitLine(
-        "{} = phi ptr [{}, %{}], [{}, %{}]",
+        "{} = phi {} [{}, %{}], [{}, %{}]",
         iterationVariable,
+        pointerOperandType(iterationVariable),
         slicePointer,
         loopHeader,
         nextIterationVar,
         loopUpdate
       );
       emitLine(
-        "{} = icmp eq ptr {}, {}",
+        "{} = icmp eq {} {}, {}",
         loopBound,
+        pointerOperandType(iterationVariable),
         iterationVariable,
         endPointer
       );
@@ -3640,11 +4105,12 @@ struct Compiler {
       emitLine("{}:", loopBody);
       emitLine(body);
 
-      emitLine("br %{}\n{}:", loopUpdate, loopUpdate);
+      emitLine("br label %{}\n{}:", loopUpdate, loopUpdate);
       emitLine(
-        "{} = getelementptr {}, ptr {}, i64 1\nbr %{}\n{}:",
+        "{} = getelementptr {}, {} {}, i64 1\nbr label %{}\n{}:",
         nextIterationVar,
         LlvmName(elementType),
+        pointerOperandType(iterationVariable),
         iterationVariable,
         loopCondition,
         endLabel
@@ -3672,9 +4138,20 @@ struct Compiler {
   Reference toRegister(Reference value) {
     if (auto lValue = value.lValue()) {
       auto type = value.getType();
-      auto registerIndex = environment.makeTemporary(type);
+      auto registerIndex = RegisterValue{
+        .name = environment.addTemporary(),
+        .type = type,
+        .scope = ValueScope::Local,
+        .addressSpace = valueAddressSpaceForType(type),
+      };
       auto registerValue = Reference(registerIndex);
-      emitLine("{} = load {}, ptr {}", registerValue, LlvmName(type), value);
+      emitLine(
+        "{} = load {}, {} {}",
+        registerValue,
+        llvmValueType(type),
+        pointerOperandType(*lValue),
+        value
+      );
       return Reference(registerIndex);
     } else {
       return value;
@@ -3683,8 +4160,8 @@ struct Compiler {
 
   void guardExclusiveInBounds(Reference& index, RangeBound& baseLength) {
     auto isOutsideBounds = environment.makeTemporary(Pool()._bool);
-    auto crashBlockId = environment.addTemporary();
-    auto continueBlockId = environment.addTemporary();
+    auto crashBlockId = environment.nextLabel();
+    auto continueBlockId = environment.nextLabel();
     emitLine(
       "{} = icmp ult {} {}, {}",
       isOutsideBounds,
@@ -3708,8 +4185,8 @@ struct Compiler {
     extendToUsize(usedIndex);
 
     auto isOutsideBounds = environment.makeTemporary(Pool()._bool);
-    auto crashBlockId = environment.addTemporary();
-    auto continueBlockId = environment.addTemporary();
+    auto crashBlockId = environment.nextLabel();
+    auto continueBlockId = environment.nextLabel();
     emitLine(
       "{} = icmp ule {} {}, {}",
       isOutsideBounds,
@@ -3734,8 +4211,8 @@ struct Compiler {
     emitLine("{} = sub {} {}, {}", length, LlvmName(usize), upper, lower);
 
     auto lengthIsNegative = environment.makeTemporary(Pool()._bool);
-    auto crashBlockId = environment.addTemporary();
-    auto continueBlockId = environment.addTemporary();
+    auto crashBlockId = environment.nextLabel();
+    auto continueBlockId = environment.nextLabel();
     emitLine(
       "{} = icmp slt {} {}, 0",
       lengthIsNegative,
@@ -3930,8 +4407,8 @@ struct Compiler {
 
     while (!functionStubs.empty()) {
       auto stub = functionStubs.back();
-      codegenFunction(stub);
       functionStubs.pop_back();
+      codegenFunction(stub);
       while (!globalsStack.empty()) {
         *finalFile << globalsStack.front() << "\n";
         globalsStack.pop();
@@ -3943,99 +4420,7 @@ struct Compiler {
     return std::move(environment);
   }
 
-  void codegenKernel(FunctionStub stub) {
-    environment.hasReturned = false;
-    auto envGuard = environment.pushScope();
-    environment.scopes.back().envType = EnvType::Function;
-    environment.scopes.back().self = stub.selfType;
-    log("Codegening kernel {} with self type:", stub.name);
-    if (stub.selfType) {
-      log("{}", TypeName(stub.selfType));
-    } else {
-      log("Missing self type");
-    }
-    std::stringstream instruction;
-    auto stackGuard = push(
-      {.outputFile = &instruction,
-       .expectedType = Pool().infer,
-       .nodeIndex = stub.definitionNode,
-       .name = {}}
-    );
-    // auto& instruction = *outputFile;
-    emit("define ptx_kernel void @\"{}\"(", stub.name);
-
-    // auto declarationResult = declareParamRegisters(instruction, function);
-    // environment.nextTemporary = declarationResult.entryLabel + 1;
-    auto parameterTypes = Pool().tupleElements(stub.functionType.parameters);
-    bool hasMultiple = false;
-    for (auto type : parameterTypes) {
-      if (hasMultiple) instruction << ", ";
-      if (Pool().dereference(type)) {
-        instruction << "addrspace(1) ptr";
-      } else {
-        emit("{}", LlvmName(type));
-      }
-      hasMultiple = true;
-    }
-    instruction << ") {\n";
-    auto node = parser.getFunctionLiteral(stub.definitionNode);
-    auto parameters = parser.getParameterList(node.parameters);
-    u32 parameterIndex = 0;
-    for (NodeIndex paramNode : parameters.requiredParameters) {
-      TypeIndex paramType = parameterTypes[parameterIndex];
-      auto parameterDefinition = parser.getDefinition(paramNode);
-      string_view paramName = parameterDefinition.name->lexeme;
-      if (!environment.define(
-            paramName,
-            Reference(RegisterValue(parameterIndex, paramType)),
-            parser.locationOf(paramNode)
-          )) {
-        auto original = environment.definitionLocation(paramName);
-        fmt::println(std::cerr, "{} originally defined at:", paramName);
-        original->underline(std::cerr);
-        crash(paramNode, "Parameter name {} shadows a higher scope", paramName);
-      }
-      parameterIndex++;
-    }
-
-    for (NodeIndex parameterIndex : parameters.optionalParameters) {
-      Todo(parameterIndex, "Named parameters/default values for cuda kernels");
-    }
-
-    // Load parameter registers
-    FunctionType functionType = stub.functionType;
-    auto returnType = functionType.returnType;
-
-    returns = {
-      .type = returnType,
-      .aggregateTypename = "",
-      .registers = Pool().registerStorage(returnType),
-    };
-    environment.scopes.back().returnType = returnType;
-
-    auto body = parser.getBlock(node.body);
-    for (auto statement : body.elements) {
-      compile(statement);
-    }
-
-    if (!environment.hasReturned) {
-      if (returnType == Pool()._void) {
-        instruction << "ret void\n";
-      } else {
-        crash(stub.definitionNode, "Return required for all code paths");
-      }
-    }
-
-    instruction << "}\n\n";
-    environment.scopes.back().envType = EnvType::Global;
-    globalsStack.push(instruction.str());
-  }
-
   void codegenFunction(FunctionStub stub) {
-    if (parser.getToken(stub.definitionNode)->type == TokenType::Kernel) {
-      codegenKernel(stub);
-      return;
-    }
     environment.hasReturned = false;
     auto envGuard = environment.pushScope();
     environment.scopes.back().envType = EnvType::Function;
@@ -4053,61 +4438,88 @@ struct Compiler {
        .nodeIndex = stub.definitionNode,
        .name = {}}
     );
-    // auto& instruction = *outputFile;
-    instruction << "define ";
+    Function function{
+      .type = stub.functionType,
+      .globalName = stub.name,
+      .convention = stub.convention,
+    };
 
-    Function function(stub.functionType, stub.name);
-
-    auto declarationResult = declareParamRegisters(instruction, function);
-    environment.nextTemporary = declarationResult.entryLabel + 1;
+    auto declarationResult = declareFunction(instruction, function, true);
+    if (function.convention == FunctionConvention::CpuAbi) {
+      environment.nextTemporary = declarationResult.entryLabel + 1;
+    } else {
+      environment.nextTemporary = 1000;
+    }
     auto node = parser.getFunctionLiteral(stub.definitionNode);
     auto parameters = parser.getParameterList(node.parameters);
 
     // TODO: attributes
     // https://llvm.org/docs/LangRef.html#function-attributes
     instruction << " {\n";
-
-    vector<Identifier> paramNames;
-    paramNames.reserve(
-      parameters.requiredParameters.size() +
-      parameters.optionalParameters.size()
-    );
-    u32 parameterIndex = 0;
-    auto parameterTypes = Pool().tupleElements(stub.functionType.parameters);
-    for (NodeIndex paramNode : parameters.requiredParameters) {
-      TypeIndex paramType = parameterTypes[parameterIndex];
-      auto parameterDefinition = parser.getDefinition(paramNode);
-      string_view paramName = parameterDefinition.name->lexeme;
-
-      if (
-        std::find(paramNames.begin(), paramNames.end(), paramName) !=
-        paramNames.end()
-      ) {
-        crash(paramNode, "Duplicate function parameter {}", paramName);
-      }
-      paramNames.push_back(paramName);
-      if (!environment.define(
-            paramName,
-            Reference(StackValue(paramName, paramType)),
-            parser.locationOf(paramNode)
-          )) {
-        auto original = environment.definitionLocation(paramName);
-        fmt::println(std::cerr, "{} originally defined at:", paramName);
-        original->underline(std::cerr);
-        crash(paramNode, "Parameter name {} shadows a higher scope", paramName);
-      }
-      parameterIndex++;
-    }
+    environment.currentLabel = environment.nextLabel();
+    emitLine("{}:", environment.currentLabel);
 
     for (NodeIndex parameterIndex : parameters.optionalParameters) {
-      Todo(parameterIndex, "Named parameters/default values");
+      if (function.convention == FunctionConvention::CpuAbi) {
+        Todo(parameterIndex, "Named parameters/default values");
+      } else if (function.convention == FunctionConvention::GpuKernelAbi) {
+        Todo(
+          parameterIndex,
+          "Named parameters/default values for cuda kernels"
+        );
+      } else {
+        Todo(
+          parameterIndex,
+          "Named parameters/default values for gpu functions"
+        );
+      }
     }
 
-    OutContext loadingContext{
-      .outputFile = instruction,
-      .environment = environment
-    };
-    loadParameterRegisters(loadingContext, stub.functionType, paramNames);
+    if (function.convention == FunctionConvention::CpuAbi) {
+      vector<Identifier> paramNames;
+      paramNames.reserve(
+        parameters.requiredParameters.size() +
+        parameters.optionalParameters.size()
+      );
+      u32 parameterIndex = 0;
+      auto parameterTypes = Pool().tupleElements(stub.functionType.parameters);
+      for (NodeIndex paramNode : parameters.requiredParameters) {
+        TypeIndex paramType = parameterTypes[parameterIndex];
+        auto parameterDefinition = parser.getDefinition(paramNode);
+        string_view paramName = parameterDefinition.name->lexeme;
+
+        if (
+          std::find(paramNames.begin(), paramNames.end(), paramName) !=
+          paramNames.end()
+        ) {
+          crash(paramNode, "Duplicate function parameter {}", paramName);
+        }
+        paramNames.push_back(paramName);
+        if (!environment.define(
+              paramName,
+              Reference(StackValue(paramName, paramType)),
+              parser.locationOf(paramNode)
+            )) {
+          auto original = environment.definitionLocation(paramName);
+          fmt::println(std::cerr, "{} originally defined at:", paramName);
+          original->underline(std::cerr);
+          crash(
+            paramNode,
+            "Parameter name {} shadows a higher scope",
+            paramName
+          );
+        }
+        parameterIndex++;
+      }
+
+      OutContext loadingContext{
+        .outputFile = instruction,
+        .environment = environment
+      };
+      loadParameterRegisters(loadingContext, stub.functionType, paramNames);
+    } else {
+      defineGpuParameters(parameters.requiredParameters, function);
+    }
 
     FunctionType functionType = stub.functionType;
     auto returnType = functionType.returnType;
@@ -4116,6 +4528,7 @@ struct Compiler {
       .type = returnType,
       .aggregateTypename = declarationResult.aggregateReturnTypeName,
       .registers = Pool().registerStorage(returnType),
+      .convention = function.convention,
     };
     environment.scopes.back().returnType = returnType;
 
@@ -4154,14 +4567,6 @@ struct Compiler {
     StackItemsGuard guard{stackItems, *this};
     stackItems = newFrame;
     return guard;
-  }
-
-  Reference dispatchKernel(
-    InstancedKernel kernel,
-    ChildSpan positionalArgs,
-    Encodings::NamedValues namedArguments
-  ) {
-    TODO("Dispatch kernel");
   }
 
   Reference nullPointer() {

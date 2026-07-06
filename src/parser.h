@@ -81,7 +81,6 @@ struct ASTNode {
 };
 
 using TokenPointer = const Token*;
-using NodeList = std::vector<TokenIndex>;
 using DataSpan = std::span<u32>;
 using ChildSpan = std::span<NodeIndex>;
 using TokenSpan = std::span<TokenIndex>;
@@ -782,8 +781,51 @@ public:
   NodeIndex comparison() {
     static std::vector<TokenType> types =
       {TokenType::Lt, TokenType::Leq, TokenType::Gt, TokenType::Geq};
-    auto expr = shift();
+    auto expr = bitwiseOr();
     while (auto op = match(types)) {
+      acceptN(TokenType::StatementBreak);
+      auto node = Encodings::BinaryOp{
+        .left = expr,
+        .right = bitwiseOr(),
+        .operation = op
+      };
+      expr = addNode(node);
+    }
+    return expr;
+  }
+
+  NodeIndex bitwiseOr() {
+    auto expr = bitwiseXor();
+    while (auto op = match(TokenType::BitOr)) {
+      acceptN(TokenType::StatementBreak);
+      auto node = Encodings::BinaryOp{
+        .left = expr,
+        .right = bitwiseXor(),
+        .operation = op
+      };
+      expr = addNode(node);
+    }
+    return expr;
+  }
+
+  NodeIndex bitwiseXor() {
+    auto expr = bitwiseAnd();
+    while (auto op = match(TokenType::Xor)) {
+      acceptN(TokenType::StatementBreak);
+      auto node = Encodings::BinaryOp{
+        .left = expr,
+        .right = bitwiseAnd(),
+        .operation = op
+      };
+      expr = addNode(node);
+    }
+    return expr;
+  }
+
+  NodeIndex bitwiseAnd() {
+    auto expr = shift();
+    while (auto op = match(TokenType::BitAnd)) {
+      acceptN(TokenType::StatementBreak);
       auto node =
         Encodings::BinaryOp{.left = expr, .right = shift(), .operation = op};
       expr = addNode(node);
@@ -799,6 +841,7 @@ public:
     auto expr = addition();
     while (match(types)) {
       TokenPointer op = previous();
+      acceptN(TokenType::StatementBreak);
       auto node =
         Encodings::BinaryOp{.left = expr, .right = addition(), .operation = op};
       expr = addNode(node);
@@ -810,6 +853,7 @@ public:
     static std::vector<TokenType> types = {TokenType::Plus, TokenType::Minus};
     auto expr = multiplication();
     while (auto op = match(types)) {
+      acceptN(TokenType::StatementBreak);
       auto node = Encodings::BinaryOp{
         .left = expr,
         .right = multiplication(),
@@ -821,16 +865,12 @@ public:
   }
 
   NodeIndex multiplication() {
-    static std::vector<TokenType> productOps = {
-      TokenType::Mult,
-      TokenType::Div,
-      TokenType::ShiftRight,
-      TokenType::ShiftLeft,
-      TokenType::Remainder
-    };
+    static std::vector<TokenType> productOps =
+      {TokenType::Mult, TokenType::Div, TokenType::Remainder};
     auto expr = unary();
     while (true) {
       if (auto op = match(productOps)) {
+        acceptN(TokenType::StatementBreak);
         auto node =
           Encodings::BinaryOp{.left = expr, .right = unary(), .operation = op};
         expr = addNode(node);
@@ -1389,7 +1429,7 @@ public:
       return addNode(
         Encodings::UnaryOp({
           .operand = {expression().value},
-          .operation = UnaryOps::CudaImport,
+          .operation = UnaryOps::CudaPtx,
         }),
         token
       );
@@ -1519,7 +1559,7 @@ public:
 
     OptionalNode body = NodeIndex::null();
     // Forward declaration
-    if (!check(TokenType::StatementBreak)) {
+    if (check(TokenType::LeftCurlyBrace)) {
       body = block();
     }
     auto node = Encodings::FunctionLiteral{

@@ -11,6 +11,7 @@ namespace {
 struct ProcessResult {
   int exitCode;
   bool exitedNormally;
+  int termSignal;
   std::string output;
 };
 
@@ -64,6 +65,7 @@ ProcessResult runProcess(
   return {
     .exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : status,
     .exitedNormally = WIFEXITED(status),
+    .termSignal = WIFSIGNALED(status) ? WTERMSIG(status) : 0,
     .output = std::move(output),
   };
 }
@@ -160,7 +162,15 @@ TEST_CASE("blub file tests") {
 
       auto runtimeResult = runProcess({outputBinary.string()}, projectRoot);
       INFO(runtimeResult.output);
-      REQUIRE(runtimeResult.exitedNormally);
+      auto expectedSignalPath = expectationPathFor(testPath, ".signal");
+      if (expectedSignalPath) {
+        REQUIRE_FALSE(runtimeResult.exitedNormally);
+        auto expectedSignalText = readFile(expectedSignalPath.value());
+        auto expectedSignal = std::stoi(expectedSignalText);
+        CHECK_EQ(runtimeResult.termSignal, expectedSignal);
+      } else {
+        REQUIRE(runtimeResult.exitedNormally);
+      }
 
       if (auto expectedOutputPath = expectationPathFor(testPath, ".out")) {
         auto expected = normalizeOutput(readFile(expectedOutputPath.value()));

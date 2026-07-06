@@ -18,6 +18,20 @@ std::unordered_map<std::string_view, TokenType> Tokenizer::builtinFunctions = {
   {"cudaImport",   TokenType::CudaImport          },
   {"name",         TokenType::BUILTIN_Name        },
   {"cudaPtx",      TokenType::BUILTIN_CudaPtx     },
+  {"blockIdxX",    TokenType::CudaBlockIdxX       },
+  {"blockIdxY",    TokenType::CudaBlockIdxY       },
+  {"blockIdxZ",    TokenType::CudaBlockIdxZ       },
+  {"blockDimX",    TokenType::CudaBlockDimX       },
+  {"blockDimY",    TokenType::CudaBlockDimY       },
+  {"blockDimZ",    TokenType::CudaBlockDimZ       },
+  {"threadIdxX",   TokenType::CudaThreadIdxX      },
+  {"threadIdxY",   TokenType::CudaThreadIdxY      },
+  {"threadIdxZ",   TokenType::CudaThreadIdxZ      },
+  {"gridDimX",     TokenType::CudaGridDimX        },
+  {"gridDimY",     TokenType::CudaGridDimY        },
+  {"gridDimZ",     TokenType::CudaGridDimZ        },
+  // TODO
+  {"crash",        TokenType::BUILTIN_Crash       },
 };
 
 std::unordered_map<std::string_view, TokenType> Tokenizer::keywords = {

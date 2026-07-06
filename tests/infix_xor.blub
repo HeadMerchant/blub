@@ -1,0 +1,5 @@
+fmt :: import "fmt.blub"
+
+main :: fn() {
+    fmt.print_s32(12 ~ 10)
+}
