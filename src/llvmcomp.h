@@ -169,27 +169,12 @@ struct Compiler {
     fmt::print(*outputFile, fmt, std::forward<Args>(args)...);
   }
 
-  std::string llvmPointerType(u32 addressSpace = 0) const {
-    if (addressSpace == 0) {
-      return "ptr";
-    }
-    return fmt::format("ptr addrspace({})", addressSpace);
-  }
-
-  std::string pointerOperandType(const StackValue& value) const {
-    return llvmPointerType(value.addressSpace);
-  }
-
-  std::string pointerOperandType(const RegisterValue& value) const {
-    return llvmPointerType(value.addressSpace);
-  }
-
-  std::string kernelParameterType(TypeIndex type) const {
-    if (Pool().isPointer(type) || Pool().multiPointerElement(type)) {
-      return llvmPointerType(1);
-    }
-    return fmt::format("{}", LlvmName(type));
-  }
+  // std::string kernelParameterType(TypeIndex type) const {
+  //   if (Pool().isPointer(type) || Pool().multiPointerElement(type)) {
+  //     return llvmPointerType(1);
+  //   }
+  //   return fmt::format("{}", LlvmName(type));
+  // }
 
   u32 gpuAddressSpaceForType(TypeIndex type) const {
     if (Pool().isPointer(type) || Pool().multiPointerElement(type)) {
@@ -198,12 +183,12 @@ struct Compiler {
     return 0;
   }
 
-  std::string gpuParameterType(TypeIndex type) const {
-    if (Pool().isPointer(type) || Pool().multiPointerElement(type)) {
-      return llvmPointerType(gpuAddressSpaceForType(type));
-    }
-    return fmt::format("{}", LlvmName(type));
-  }
+  // std::string gpuParameterType(TypeIndex type) const {
+  //   if (Pool().isPointer(type) || Pool().multiPointerElement(type)) {
+  //     return llvmPointerType(gpuAddressSpaceForType(type));
+  //   }
+  //   return fmt::format("{}", LlvmName(type));
+  // }
 
   std::string llvmValueType(TypeIndex type) const {
     if (targetType == TargetType::Gpu) {
@@ -306,7 +291,7 @@ struct Compiler {
         "store {} %{}, {} {}",
         gpuParameterType(paramType),
         llvmParamName,
-        pointerOperandType(stackValue),
+        stackValue.addressSpace,
         stackValue
       );
       if (!environment.define(
@@ -677,7 +662,7 @@ struct Compiler {
         "store {} {}, {} {}",
         llvmValueType(assignedType),
         value,
-        pointerOperandType(*assignee),
+        assignee->addressSpace,
         *assignee
       );
     } else {
@@ -1022,7 +1007,7 @@ struct Compiler {
       "store {} {}, {} {}",
       llvmValueType(assignee.type),
       loadedValue,
-      pointerOperandType(assignee),
+      assignee.addressSpace,
       assignee
     );
   }
@@ -1119,16 +1104,16 @@ struct Compiler {
         emitLine(
           "{} = bitcast {} {} to {}",
           result,
-          pointerOperandType(current),
+          current.addressSpace,
           current,
-          pointerOperandType(result)
+          result.addressSpace
         );
       } else {
         emitLine(
           "{} = getelementptr inbounds {}, {} {}, i32 0, i32 {}",
           result,
           LlvmName(segment.aggregateType),
-          pointerOperandType(current),
+          current.addressSpace,
           current,
           segment.index
         );
@@ -1969,7 +1954,7 @@ struct Compiler {
           "{} = getelementptr {}, {} {}, {} {}",
           result,
           LlvmName(elementType),
-          pointerOperandType(std::get<RegisterValue>(leftLiteral.value)),
+          std::get<RegisterValue>(leftLiteral.value).addressSpace,
           leftLiteral,
           LlvmName(indexType),
           index
@@ -1998,7 +1983,7 @@ struct Compiler {
           "{} = getelementptr {}, {} {}, {} {}",
           result,
           LlvmName(elementType),
-          pointerOperandType(basePointer),
+          basePointer.addressSpace,
           dataPointer,
           LlvmName(indexType),
           rightLiteral
@@ -2032,7 +2017,7 @@ struct Compiler {
           "{} = getelementptr {}, {} {}, {} {}",
           result,
           LlvmName(elementType),
-          pointerOperandType(listPointer),
+          listPointer.addressSpace,
           list,
           LlvmName(indexType),
           index
@@ -2125,7 +2110,7 @@ struct Compiler {
       "{} = getelementptr {}, {} {}, {} {}",
       newStartPoint,
       LlvmName(newStartPoint.type),
-      pointerOperandType(dataPointerValue),
+      dataPointerValue.addressSpace,
       dataPointer,
       LlvmName(usize),
       lower
@@ -4006,8 +3991,9 @@ struct Compiler {
         .name = environment.addTemporary(),
         .type = Pool().multiPointerTo(elementType),
         .scope = ValueScope::Local,
-        .addressSpace =
-          valueAddressSpaceForType(Pool().multiPointerTo(elementType)),
+        .addressSpace = {
+          valueAddressSpaceForType(Pool().multiPointerTo(elementType))
+        },
       };
       auto sliceLength = environment.makeTemporary(Pool()._usize);
       auto endPointer = RegisterValue{
@@ -4035,7 +4021,7 @@ struct Compiler {
         "{} = getelementptr {}, {} {}, {} {}",
         endPointer,
         LlvmName(elementType),
-        pointerOperandType(slicePointer),
+        slicePointer.addressSpace,
         slicePointer,
         LlvmName(sliceLength.type),
         sliceLength
@@ -4088,7 +4074,7 @@ struct Compiler {
       emitLine(
         "{} = phi {} [{}, %{}], [{}, %{}]",
         iterationVariable,
-        pointerOperandType(iterationVariable),
+        iterationVariable.addressSpace,
         slicePointer,
         loopHeader,
         nextIterationVar,
@@ -4097,7 +4083,7 @@ struct Compiler {
       emitLine(
         "{} = icmp eq {} {}, {}",
         loopBound,
-        pointerOperandType(iterationVariable),
+        iterationVariable.addressSpace,
         iterationVariable,
         endPointer
       );
@@ -4110,7 +4096,7 @@ struct Compiler {
         "{} = getelementptr {}, {} {}, i64 1\nbr label %{}\n{}:",
         nextIterationVar,
         LlvmName(elementType),
-        pointerOperandType(iterationVariable),
+        iterationVariable.addressSpace,
         iterationVariable,
         loopCondition,
         endLabel
@@ -4142,14 +4128,14 @@ struct Compiler {
         .name = environment.addTemporary(),
         .type = type,
         .scope = ValueScope::Local,
-        .addressSpace = valueAddressSpaceForType(type),
+        .addressSpace = {valueAddressSpaceForType(type)},
       };
       auto registerValue = Reference(registerIndex);
       emitLine(
         "{} = load {}, {} {}",
         registerValue,
         llvmValueType(type),
-        pointerOperandType(*lValue),
+        lValue->addressSpace,
         value
       );
       return Reference(registerIndex);

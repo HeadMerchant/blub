@@ -63,7 +63,7 @@ struct RegisterValue {
   RegisterName name;
   TypeIndex type;
   ValueScope scope;
-  u32 addressSpace = 0;
+  AddressSpace addressSpace = {0};
 
   friend std::ostream& operator<<(std::ostream& o, const RegisterValue& x) {
     fmt::print(o, "{}{}", x.scope == ValueScope::Local ? "%" : "@", x.name);
@@ -77,7 +77,7 @@ public:
   RegisterName name;
   TypeIndex type;
   ValueScope scope;
-  u32 addressSpace = 0;
+  AddressSpace addressSpace = {0};
 
   friend std::ostream& operator<<(std::ostream& o, const StackValue& x) {
     fmt::print(o, "{}{}", x.scope == ValueScope::Local ? "%" : "@", x.name);

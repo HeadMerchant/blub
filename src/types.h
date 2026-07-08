@@ -1462,3 +1462,18 @@ TEST_CASE("Built-in type registers") {
     }
   }
 }
+
+struct AddressSpace {
+  u32 addressSpace = 0;
+
+  friend std::ostream& operator<<(std::ostream& o, const AddressSpace& p) {
+    if (p.addressSpace == 0) {
+      o << "ptr";
+    } else {
+      fmt::print(o, "ptr addrspace({})", p.addressSpace);
+    }
+    return o;
+  }
+};
+
+template <> struct fmt::formatter<AddressSpace> : fmt::ostream_formatter {};
