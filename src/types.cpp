@@ -1,7 +1,7 @@
-#include "types.h"
 #include "abi.h"
 #include "common.h"
 #include "fmt/format.h"
+#include "types.h"
 #include <ranges>
 
 Logger TypePool::logger(LogLevel::TypeCheck);
@@ -43,6 +43,7 @@ OptionalType TypePool::dereference(TypeIndex type) {
 
 template <> struct fmt::formatter<TypeIndex> : ostream_formatter {};
 
+// TODO: remove
 void TypePool::defineLLVMStruct(
   StructIndex structIndex,
   std::queue<std::string>& globals

@@ -57,6 +57,7 @@ struct CompilerContext {
     std::ofstream* outputFileStream;
     std::stringstream globalInitialization;
     vector<std::string> linkedFiles;
+    // TODO: support multiple ptx globals
     optional<RegisterValue> embeddedPtxGlobal;
     unordered_set<std::string> emittedImports;
     unordered_set<TypeIndex> emittedTypeDefinitions;
@@ -169,13 +170,6 @@ struct Compiler {
     fmt::print(*outputFile, fmt, std::forward<Args>(args)...);
   }
 
-  // std::string kernelParameterType(TypeIndex type) const {
-  //   if (Pool().isPointer(type) || Pool().multiPointerElement(type)) {
-  //     return llvmPointerType(1);
-  //   }
-  //   return fmt::format("{}", LlvmName(type));
-  // }
-
   u32 gpuAddressSpaceForType(TypeIndex type) const {
     if (Pool().isPointer(type) || Pool().multiPointerElement(type)) {
       return 1;
@@ -183,12 +177,12 @@ struct Compiler {
     return 0;
   }
 
-  // std::string gpuParameterType(TypeIndex type) const {
-  //   if (Pool().isPointer(type) || Pool().multiPointerElement(type)) {
-  //     return llvmPointerType(gpuAddressSpaceForType(type));
-  //   }
-  //   return fmt::format("{}", LlvmName(type));
-  // }
+  std::string gpuParameterType(TypeIndex type) const {
+    if (Pool().isPointer(type) || Pool().multiPointerElement(type)) {
+      return fmt::format("{}", AddressSpace(1));
+    }
+    return fmt::format("{}", LlvmName(type));
+  }
 
   std::string llvmValueType(TypeIndex type) const {
     if (targetType == TargetType::Gpu) {
@@ -319,7 +313,7 @@ struct Compiler {
           .name = returnRegister,
           .type = returnType,
           .scope = ValueScope::Local,
-          .addressSpace = gpuAddressSpaceForType(returnType),
+          .addressSpace = {gpuAddressSpaceForType(returnType)},
         }
       );
     }
@@ -586,7 +580,6 @@ struct Compiler {
 
   ReturnType declaration(Encodings::Declaration node) {
     // NOTE: don't support using non-identifiers
-
     auto definitionNode = parser.getDefinition(node.definition);
     auto definitionName = definitionNode.name->lexeme;
 
@@ -672,12 +665,13 @@ struct Compiler {
       );
     }
 
-    // stackItems = oldFrame;
     // TODO: support assignment as expression???
     return Reference::Void();
   }
 
   void emitDefinition(StackValue assignee) {
+    ensureTypeDefinition(assignee.type);
+
     auto byteAlignment =
       Pool().getSizing(assignee.type).alignment.byteAlignment();
 
@@ -692,11 +686,16 @@ struct Compiler {
       break;
     }
     case ValueScope::Global: {
-      ensureTypeDefinition(assignee.type);
+      if (
+        targetType == TargetType::Gpu && assignee.addressSpace.addressSpace == 0
+      ) {
+        TODO("Error for GPU global in default address space");
+      }
       globalsStack.push(
         fmt::format(
-          "{} = global {} zeroinitializer align {}",
+          "{} = internal addrspace({}) global {} zeroinitializer align {}",
           assignee,
+          assignee.addressSpace.addressSpace,
           LlvmName(assignee.type),
           byteAlignment
         )
@@ -755,7 +754,9 @@ struct Compiler {
       Reference(StackValue(
         isGlobal ? environment.nextGlobalIndex() : environment.addTemporary(),
         type,
-        isGlobal ? ValueScope::Global : ValueScope::Local
+        isGlobal ? ValueScope::Global : ValueScope::Local,
+        isGlobal && targetType == TargetType::Gpu ? AddressSpace::cudaConstant()
+                                                  : AddressSpace()
       )),
       parser.locationOf(defNode)
     );
@@ -888,7 +889,6 @@ struct Compiler {
   ReturnType string(TokenPointer token) {
     auto global = environment.makeGlobal(Pool()._u8);
     auto [stringValue, length] = escapeSourceString(token->lexeme, token);
-    // TODO: use string types instead of C strings
     globalsStack.push(
       fmt::format(
         "{} = global [{} x i8] c\"{}\" align 1\n",
@@ -1332,7 +1332,7 @@ struct Compiler {
         .name = resultRegister,
         .type = func->type.returnType,
         .scope = ValueScope::Local,
-        .addressSpace = functionReturnAddressSpace(*func)
+        .addressSpace = {functionReturnAddressSpace(*func)}
       }
     );
   }
@@ -1824,7 +1824,7 @@ struct Compiler {
       .name = environment.addTemporary(),
       .type = elementType,
       .scope = ValueScope::Local,
-      .addressSpace = valueAddressSpaceForType(elementType),
+      .addressSpace = {valueAddressSpaceForType(elementType)},
     };
     auto length = environment.makeTemporary(Pool()._usize);
     emitLine(
@@ -2656,9 +2656,6 @@ struct Compiler {
          .selfType = environment.selfType(),
          .convention = convention}
       );
-      if (convention == FunctionConvention::GpuKernelAbi) {
-        environment.kernelSymbols[name] = registerNameToString(llvmName);
-      }
     } else {
       std::stringstream declaration;
       declareFunction(
@@ -2678,6 +2675,7 @@ struct Compiler {
         .type = functionType,
         .globalName = llvmName,
         .convention = convention,
+        .isKernel = parser.getToken(nodeIndex)->type == TokenType::Kernel,
       }
     );
   }
@@ -2907,25 +2905,22 @@ struct Compiler {
   }
 
   ReturnType cudaPtx(NodeIndex module) {
-    auto importValue = compile(module);
-    auto importType = typeChecker.check(module).type;
-    auto* importInfo = findCudaImportInfo(importType);
-    if (!importInfo) {
+    auto moduleVal = compile(module);
+    if (!moduleVal.unbox<CudaEnv>()) {
       crash(
         module,
-        "Builtin '@cudaPtx' requires a value returned by '@cudaImport'"
+        "Argument for '@cudaPtx' must be a cuda module, but a '{}' was "
+        "provided",
+        TypeName(moduleVal.getType())
       );
     }
 
-    auto loadedImport = toRegister(importValue);
-    auto result = environment.makeTemporary(Pool().pointerTo(Pool()._u8));
-    emitLine(
-      "{} = extractvalue {} {}, 0",
-      result,
-      LlvmName(importType),
-      loadedImport
-    );
-    return Reference(result);
+    auto ptxBytecode = CompilerContext::inst().cuda.embeddedPtxGlobal;
+    if (!ptxBytecode) {
+      crash(nodeIndex, "No ptx bytecode found (internal error)");
+    }
+
+    return Reference(ptxBytecode.value());
   }
 
   ReturnType cDefine(Encodings::ArgumentList args) {
@@ -3352,50 +3347,7 @@ struct Compiler {
     }
     auto filePath = resolveBlubImportPath(fileName->lexeme);
     fmt::println("Importing: {}", filePath.string());
-    auto& importInfo = getCudaImportInfo(filePath);
-
-    auto& cudaContext = CompilerContext::inst().cuda;
-    cudaContext.embeddedPtxGlobal = importInfo.ptxGlobal;
-    auto importKey = filePath.string();
-    if (!cudaContext.emittedImports.contains(importKey)) {
-      ensureTypeDefinition(importInfo.type);
-      for (auto [fieldName, symbolGlobal] : importInfo.symbolGlobals) {
-        auto exportedName = importInfo.kernelSymbols[fieldName];
-        auto escaped = escapeSourceString(exportedName, fileName).first;
-        globalsStack.push(
-          fmt::format(
-            "@{} = global [{} x i8] c\"{}\\00\" align 1",
-            symbolGlobal.name,
-            exportedName.size() + 1,
-            escaped
-          )
-        );
-      }
-      cudaContext.emittedImports.insert(importKey);
-    }
-
-    auto result = environment.makeTemporary(importInfo.type);
-    emitLine(
-      "{} = insertvalue {} undef, ptr @{}, 0",
-      result,
-      LlvmName(importInfo.type),
-      importInfo.ptxGlobal.name
-    );
-    u32 fieldIndex = 1;
-    for (auto [_, symbolGlobal] : importInfo.symbolGlobals) {
-      auto next = environment.makeTemporary(importInfo.type);
-      emitLine(
-        "{} = insertvalue {} {}, ptr @{}, {}",
-        next,
-        LlvmName(importInfo.type),
-        result,
-        symbolGlobal.name,
-        fieldIndex
-      );
-      result = next;
-      fieldIndex++;
-    }
-    return Reference(result);
+    return Reference(importCudaFile(filePath));
   }
 
   ReturnType ifExpr(Encodings::If node) {
@@ -3499,6 +3451,13 @@ struct Compiler {
     emitLine("{}:", endLabel);
 
     if (hasResultValue) {
+      if (ifCase.returns) {
+        return elseCase.result;
+      }
+      if (elseCase.returns) {
+        return ifCase.result;
+      }
+
       auto phiResult =
         lValue ? Reference(StackValue(environment.addTemporary(), type))
                : Reference(environment.makeTemporary(type));
@@ -3739,7 +3698,11 @@ struct Compiler {
       );
     }
 
-    if (auto fileEnv = object.unboxEnv()) {
+    auto fileEnv = object.unboxEnv();
+    if (auto cudaEnv = object.unbox<CudaEnv>()) {
+      fileEnv = cudaEnv->env;
+    }
+    if (fileEnv) {
       if (auto value = fileEnv->find(fieldName)) {
         return *value;
       }
@@ -3748,33 +3711,6 @@ struct Compiler {
       auto members = fileEnv->defs | std::views::transform([](const auto& x) {
                        return x.first;
                      });
-      for (auto [name, value] : fileEnv->defs) {
-        log("{}: {}", name, TypeName(value.getType()));
-      }
-      crash(
-        node.fieldName,
-        "Unable to find member '{}' in module\nAvailable fields are {}",
-        fieldName,
-        fmt::join(members, ", ")
-      );
-    } else if (auto cudaImport = object.unbox<CudaEnv>()) {
-      auto fileEnv = cudaImport->env;
-      if (auto value = fileEnv->find(fieldName)) {
-        if (auto kernel = value->unbox<Kernel>()) {
-          return Reference(*kernel);
-        }
-        crash(
-          node.fieldName,
-          "Cuda-imported member '{}' can't be accessed because it's not a "
-          "kernel",
-          fieldName
-        );
-      }
-      auto members =
-        fileEnv->defs | std::views::filter([](pair<string_view, Reference> x) {
-          return x.second.unbox<Kernel>() != nullptr;
-        }) |
-        std::views::transform([](const auto& x) { return x.first; });
       for (auto [name, value] : fileEnv->defs) {
         log("{}: {}", name, TypeName(value.getType()));
       }
@@ -4582,60 +4518,78 @@ struct Compiler {
       );
     }
   }
+
+  Reference copyCudaSymbol(RegisterName name) {
+    auto result = environment.makeGlobal(Pool().u8ptr);
+    stringstream global;
+    fmt::print(global, "{} = global [", result);
+    std::visit(
+      overloaded{
+        [&global](u32 x) {
+          // Don't care about perf here
+          auto stringed = std::to_string(x);
+          fmt::println(
+            global,
+            "{} x i8] c\"{}\\00\" align 1",
+            stringed.length() + 1,
+            stringed
+          );
+        },
+        [&global](Identifier x) {
+          fmt::println(
+            global,
+            "{} x i8] c\"{}\\00\" align 1",
+            x.length() + 1,
+            x
+          );
+        }
+      },
+      name
+    );
+    globalsStack.push(global.str());
+    return Reference(result);
+  }
+
+  CudaEnv importCudaFile(const fs::path& rawFilePath) {
+    struct CudaInfo {
+      Environment env;
+      RegisterName bytecodeGlobal;
+    };
+    static unordered_map<fs::path, CudaInfo> cache;
+    auto filePath = fs::weakly_canonical(fs::absolute(rawFilePath));
+    if (auto found = cache.find(filePath); found != cache.end()) {
+      return {&found->second.env, found->second.bytecodeGlobal};
+    }
+
+    auto* env = Compiler::compile(filePath, TargetType::Gpu);
+    auto& importInfo = cache[filePath];
+
+    for (auto [name, value] : env->defs) {
+      if (auto gpuFunc = value.unbox<Function>()) {
+        if (gpuFunc->isKernel) {
+          importInfo.env.defs[name] = copyCudaSymbol(gpuFunc->globalName);
+        } else {
+          // TODO: put sentinel here that gives compiler error when read
+        }
+      } else if (auto global = value.unbox<StackValue>()) {
+        importInfo.env.defs[name] = copyCudaSymbol(global->name);
+      } else if (value.isComptime()) {
+        importInfo.env.defs[name] = value;
+      } else {
+        log("Skipping import for cuda symbol '{}'", name);
+      }
+    }
+
+    // TODO: support multiple ptx globals
+    auto& bytecodeGlobal = CompilerContext::inst().cuda.embeddedPtxGlobal;
+    auto val = bytecodeGlobal.value_or(
+      RegisterValue(environment.addGlobal(), Pool().pointerTo(Pool()._u8))
+    );
+    bytecodeGlobal = val;
+    importInfo.bytecodeGlobal = val.name;
+
+    return {&importInfo.env, importInfo.bytecodeGlobal};
+  }
 };
 
 static_assert(AstVisitor<Compiler>, "Compiler must implement AstVisitor");
-
-inline auto& cudaImportInfoCache() {
-  static std::unordered_map<std::string, CudaImportInfo> cache;
-  return cache;
-}
-
-inline CudaImportInfo& getCudaImportInfo(const fs::path& rawFilePath) {
-  auto& cache = cudaImportInfoCache();
-
-  auto filePath = fs::weakly_canonical(fs::absolute(rawFilePath));
-  auto key = filePath.string();
-  if (auto found = cache.find(key); found != cache.end()) {
-    return found->second;
-  }
-
-  auto* env = Compiler::compile(filePath, TargetType::Gpu);
-  auto& importInfo = cache[key];
-
-  u32 moduleIndex = Environment::structIndex();
-  auto typeName =
-    StringPool::inst().copy(fmt::format("CudaImport.{}", moduleIndex));
-  auto [typeIndex, structIndex] = Pool().makeStruct(typeName, moduleIndex);
-  auto& structDef = Pool().getStruct(structIndex);
-  auto ptrType = Pool().pointerTo(Pool()._u8);
-
-  importInfo.ptxFieldName = "__anon_cuda_import_ptx";
-  structDef.defineField(importInfo.ptxFieldName, ptrType);
-  importInfo.ptxGlobal =
-    RegisterValue("cuda_embedded_ptx", ptrType, ValueScope::Global);
-
-  for (auto [kernelName, symbolName] : env->kernelSymbols) {
-    auto fieldName = StringPool::inst().copy(kernelName);
-    structDef.defineField(fieldName, ptrType);
-    importInfo.kernelSymbols[fieldName] = symbolName;
-    importInfo.symbolGlobals[fieldName] = RegisterValue(
-      StringPool::inst().copy(
-        fmt::format("cuda_symbol_{}_{}", moduleIndex, fieldName)
-      ),
-      ptrType,
-      ValueScope::Global
-    );
-  }
-  importInfo.type = typeIndex;
-  return importInfo;
-}
-
-inline CudaImportInfo* findCudaImportInfo(TypeIndex type) {
-  for (auto& [_, info] : cudaImportInfoCache()) {
-    if (info.type == type) {
-      return &info;
-    }
-  }
-  return nullptr;
-}

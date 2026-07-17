@@ -1,0 +1,54 @@
+write :: fn(fd: s32, buf: [^]u8, count: usize)
+
+print :: fn(buf: []u8) {
+	stdout :: 1
+	write(stdout, buf.data, buf.length)
+}
+
+println :: fn(buf: []u8) {
+	std :: 1
+	print(buf)
+	print("\n")
+}
+
+print_u32 :: fn(x: u32) {
+	zero : [1]u8
+	if (x == 0) {
+		print(buf[zero[]])
+		return
+	}
+	buf : [10]u8
+	i := 9
+	y := x
+	while (y > 0) {
+		digit := y % 10
+		y = y / 10
+		buf[i] = '0' + @numCast(digit, u8)
+		i = i - 1
+	}
+	print(buf[i..])
+}
+
+print_s32 :: fn(x: s32) {
+	zero : [1]u8
+	if (x == 0) {
+		print(buf[zero[]])
+		return
+	}
+	buf : [11]u8
+	isNegative := x < 0
+	i := 10
+	y := if (isNegative) -x else x
+	while (y > 0) {
+		digit := y % 10
+		y = y / 10
+		buf[i] = '0' + @numCast(digit, u8)
+		i = i - 1
+	}
+	if (isNegative) {
+		buf[i] = '-'
+		i = i - 1
+	}
+	print(buf[i..])
+}
+

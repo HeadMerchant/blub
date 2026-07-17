@@ -93,6 +93,7 @@ public:
   FunctionType type;
   RegisterName globalName;
   FunctionConvention convention = FunctionConvention::CpuAbi;
+  bool isKernel = false;
 };
 
 class BoundFunction {
@@ -136,22 +137,7 @@ struct VoidRef {};
 struct ZeroInit {};
 struct CudaEnv {
   Environment* env;
-};
-struct CudaImportInfo {
-  TypeIndex type = TypeIndex::null();
-  RegisterValue ptxGlobal;
-  string_view ptxFieldName;
-  ordered_map<string_view, string_view> kernelSymbols;
-  ordered_map<string_view, RegisterValue> symbolGlobals;
-};
-struct Kernel {
-  u32 index;
-  FunctionType function;
-};
-struct InstancedKernel {
-  Kernel kernel;
-  RegisterValue blockDim;
-  RegisterValue gridDim;
+  RegisterName ptxGlobal;
 };
 struct NullPointer {};
 
@@ -171,8 +157,6 @@ using UnderlyingValue = std::variant<
   Range,
   VoidRef,
   ZeroInit,
-  Kernel,
-  InstancedKernel,
   NullPointer>;
 
 struct Reference {
@@ -243,15 +227,13 @@ struct Reference {
         [](Never x) { return x.type ? Pool().never : x.type; },
         [](TypeIndex) { return Pool().type; },
         [](Environment*) { return Pool().environment; },
-        [](CudaEnv) { return Pool().environment; },
+        [](CudaEnv) { return Pool().cudaEnvType; },
         [](GenericValue) { return Pool().generic; },
         [](Function x) { return Pool().addFunction(x.type); },
         [](BoundFunction x) { return Pool().boundFunction(x.method->type); },
         [](Range x) { return Pool().rangeLiteral; },
         [](VoidRef x) { return Pool()._void; },
         [](ZeroInit) { return Pool().never; },
-        [](Kernel x) { return Pool().addFunction(x.function); },
-        [](InstancedKernel x) { return Pool().addFunction(x.kernel.function); },
         [](NullPointer) { return Pool().pointerTo(Pool()._void); },
       },
       value
@@ -271,7 +253,6 @@ struct Reference {
       Function,
       GenericValue,
       Environment*,
-      Kernel,
       CudaEnv>(value);
     if (comptime) {
       return true;
@@ -350,8 +331,6 @@ struct Reference {
         [&o](Range x) { TODO("Can't convert ranges into llvm names"); },
         [&o](VoidRef x) { TODO("Can't convert void into llvm name"); },
         [&o](ZeroInit) { o << "zeroinitializer"; },
-        [&o](Kernel x) { o << x.index; },
-        [&o](InstancedKernel x) { o << x.kernel.index; },
         [&o](NullPointer) { o << "null"; },
       },
       x.value
@@ -395,7 +374,6 @@ public:
   std::vector<Environment*> imports;
   std::string prefix;
   std::vector<Environment*> usings;
-  ordered_map<string_view, string_view> kernelSymbols;
 
   u32 nextTemporary = 1;
   u32 lastTemporary() {
@@ -758,7 +736,3 @@ public:
     return ss;
   }
 };
-
-string_view registerNameToString(RegisterName name);
-CudaImportInfo& getCudaImportInfo(const fs::path& filePath);
-CudaImportInfo* findCudaImportInfo(TypeIndex type);

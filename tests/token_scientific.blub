@@ -1,0 +1,9 @@
+fmt :: import "fmt.blub"
+
+main :: fn() {
+    fmt.printFloat(5e2)
+	fmt.println("")
+    fmt.printFloat(5)
+	fmt.println("")
+	fmt.printFloat(5e-2)
+}

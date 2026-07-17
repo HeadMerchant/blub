@@ -346,6 +346,7 @@ struct IntLiteralType {};
 struct FloatLiteralType {};
 struct Type {};
 struct EnvironmentType {};
+struct CudaEnvType {};
 // TODO: implement params and return type
 struct TypeOfGeneric {};
 struct RangeLiteral {};
@@ -391,6 +392,7 @@ using UnderlyingType = std::variant<
   FloatLiteralType,
   Type,
   EnvironmentType,
+  CudaEnvType,
   TypeOfGeneric,
   RangeLiteral,
   AlignedType,
@@ -473,6 +475,7 @@ public:
   TypeIndex floatLiteral;
   TypeIndex type;
   TypeIndex environment;
+  TypeIndex cudaEnvType;
   TypeIndex generic;
   TypeIndex rangeLiteral;
   TypeIndex unsignedRangeLiteral;
@@ -483,8 +486,11 @@ public:
     return {index};
   }
 
+  TypeIndex u8ptr;
+  TypeIndex u8slice;
+  TypeIndex u8multipointer;
+
   TypePool() {
-    // 23 builtins initialized
     underlyingTypes.reserve(256);
 
     // Index 0 is a null
@@ -517,9 +523,15 @@ public:
 
     type = addType(Type{});
     environment = addType(EnvironmentType{});
+    cudaEnvType = addType(CudaEnvType{});
     generic = addType(TypeOfGeneric{});
     rangeLiteral = addType(RangeLiteral{});
     unsignedRangeLiteral = addType(RangeLiteral{});
+
+    auto u8Pointers = pointerTypesFor(_u8);
+    u8ptr = u8Pointers.pointer;
+    u8slice = u8Pointers.slice;
+    u8multipointer = u8Pointers.multiPointer;
   }
 
   TypeIndex pointerTo(TypeIndex type) {
@@ -1000,6 +1012,10 @@ public:
           TODO("Error for sizing Environment type");
           return Sizing{};
         },
+        [](CudaEnvType) {
+          TODO("Error for sizing Cuda Environment type");
+          return Sizing{};
+        },
         [](TypeOfGeneric) {
           TODO("Error for sizing Generic type");
           return Sizing{};
@@ -1309,6 +1325,7 @@ struct TypeName {
         [&o](FloatLiteralType) { o << "float literal"; },
         [&o](TypeOfGeneric) { o << "generic"; },
         [&o](EnvironmentType) { o << "environment"; },
+        [&o](CudaEnvType) { o << "Cuda Environment"; },
         [&o](Type) { o << "type"; },
         [&o](RangeLiteral) { o << "range"; },
         [&o](AlignedType x) {
@@ -1398,10 +1415,13 @@ struct LlvmName {
         [&o](IntLiteralType) { o << "i32"; },
         [&o](FloatLiteralType) { o << "float"; },
         [&o](TypeOfGeneric) {
-          TODO("Error for llvm name for float literal type");
+          TODO("Error for llvm name for uninstantiated generic type");
         },
         [&o](EnvironmentType) {
-          TODO("Error for llvm name for float literal type");
+          TODO("Error for llvm name for environment type");
+        },
+        [&o](CudaEnvType) {
+          TODO("Error for llvm name for cuda environment type");
         },
         [&o](Type) { TODO("Error for llvm name for type literal type"); },
         [&o](RangeLiteral) {
@@ -1473,6 +1493,18 @@ struct AddressSpace {
       fmt::print(o, "ptr addrspace({})", p.addressSpace);
     }
     return o;
+  }
+
+  static AddressSpace cudaConstant() {
+    return {4};
+  }
+
+  static AddressSpace cudaShared() {
+    return {3};
+  }
+
+  static AddressSpace cudaGlobal() {
+    return {1};
   }
 };
 

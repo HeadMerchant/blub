@@ -2,6 +2,7 @@
 #include "common.h"
 #include "fmt/base.h"
 #include "fmt/format.h"
+#include "llvmcomp.h"
 #include "types.h"
 #include "value.h"
 #include <cctype>
@@ -253,6 +254,7 @@ TypeIndex parseRecord(
     }
 
     Pool().defineLLVMStruct(structIndex, globals);
+    CompilerContext::inst().blub.emittedTypeDefinitions.insert(typeIndex);
     resultTypeIndex = typeIndex;
   } else if (tagUsed == "union") {
     std::vector<TypeIndex> anonymousVariants;

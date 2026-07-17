@@ -615,6 +615,19 @@ struct Tokenizer {
       }
       advance();
     }
+
+    // E notation
+    if (peek() == 'e') {
+      hasDecimal = true;
+      advance();
+      if (peek() == '-') advance();
+      if (!isdigit(peek())) {
+        crash("Expected positive or negative integer after exponent");
+      }
+      while (isdigit(peek()))
+        advance();
+    }
+
     TokenType tokenType = hasDecimal ? TokenType::Decimal : TokenType::Integer;
     addToken(tokenType);
   }
@@ -692,7 +705,7 @@ public:
   };
 
   TokenLocation locationOf(std::string_view lexeme) const {
-    // i32 charIndex = lexeme.data() - sourceCode.data();
+    // TODO: line contents for crashing during tokenization
     u32 charIndex = lexeme.begin() - sourceCode.begin();
     auto line = std::lower_bound(
       firstCharacterOnLine.begin(),
@@ -729,13 +742,3 @@ public:
     abort();
   }
 };
-
-// TEST_CASE("Bro") {
-//   fmt::println("Binop start: {}", (int)TokenType::BINOP_START);
-//   fmt::println("Double equal: {}", (int)TokenType::DoubleEqual);
-//   fmt::println("Binop end: {}", (int)TokenType::BINOP_END);
-//   fmt::println("Shift right: {}", (int)TokenType::ShiftRight);
-//   fmt::println("Binop=start: {}", (int)TokenType::BINOP_ASSIGN_START);
-//   fmt::println("Binop=end: {}", (int)TokenType::BINOP_ASSIGN_END);
-//   FAIL("failing");
-// }

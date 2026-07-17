@@ -78,8 +78,12 @@ printHex :: fn(x: u32) {
 }
 
 printFloat :: fn(x: f32) {
-	buffer : [10]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-	doubleToStr(buffer[^], 10, @numCast(x))
-	print buffer[]
-}
+      buffer : [32]u8
+      written := doubleToStr(buffer[^], 32, @numCast(x))
+
+      if (written > 0) {
+          length := @numCast(written, usize)
+          print(buffer[0.<length])
+      }
+  }
 

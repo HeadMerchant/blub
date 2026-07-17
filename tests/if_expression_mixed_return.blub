@@ -1,0 +1,21 @@
+fmt :: import "fmt.blub"
+
+trueArmReturns :: fn(condition: bool) -> s32 {
+	return if (condition) return 11 else 12
+}
+
+falseArmReturns :: fn(condition: bool) -> s32 {
+	return if (condition) 21 else return 22
+}
+
+printNumber :: fn(value: s32) {
+	fmt.print_s32(value)
+	fmt.println("")
+}
+
+main :: fn() {
+	printNumber(trueArmReturns(true))
+	printNumber(trueArmReturns(false))
+	printNumber(falseArmReturns(true))
+	printNumber(falseArmReturns(false))
+}

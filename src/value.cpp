@@ -1,6 +1,6 @@
-#include "value.h"
 #include "common.h"
 #include "types.h"
+#include "value.h"
 #include <variant>
 
 static FunctionType printType{
@@ -8,7 +8,7 @@ static FunctionType printType{
     Pool()
       .tupleOf({Pool().multiPointerTo(Pool()._u8), Pool()._usize, Pool()._f64})
       .second,
-  .returnType = Pool()._void
+  .returnType = Pool()._u32
 };
 static Function printDouble{
   .type = printType,

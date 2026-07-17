@@ -135,7 +135,7 @@ int main(int argc, char** argv) {
     {"log",       optional_argument, 0, (int)ArgFlags::log     },
     {0,           0,                 0, 0                      },
   };
-  string_view cudaArch = "sm_86";
+  string_view cudaArch = "sm_75";
   string_view cudaApiDir = "/opt/cuda";
   while ((opt = getopt_long(argc, argv, "o:l:", longArgs, nullptr)) != -1) {
     auto flag = (ArgFlags)opt;
@@ -251,11 +251,11 @@ int main(int argc, char** argv) {
   // TODO: 32-bit
   std::string_view printDouble =
     "declare i32 @snprintf(ptr, i64, ptr, ...)\n"
-    "define void @.doubleToStr(ptr %out, i64 %len, double %arg) {\n"
+    "define i32 @.doubleToStr(ptr %out, i64 %len, double %arg) {\n"
     "  %res = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %out, i64 %len, ptr "
     "@.doubleFmtString, double "
     "%arg)\n"
-    "  ret void\n"
+    "  ret i32 %res\n"
     "}\n";
   outFile << printDouble;
   outKernel << sliceDef;
@@ -355,7 +355,18 @@ void compileCuda(
     abort();
   }
 
-  // # 2. lower your IR to PTX
+  // Needed on older GPUs
+  auto optCommand = fmt::format(
+    "opt -passes='nvvm-reflect,default<O2>' {} -o {}",
+    linkedKernelIr,
+    linkedKernelIr
+  );
+  fmt::println("Running cuda opt pass: {}", optCommand);
+  if (auto rc = std::system(optCommand.c_str())) {
+    fmt::println(std::cerr, "Error running cuda opt pass");
+    abort();
+  }
+
   auto compileCommand = fmt::format(
     "llc -march=nvptx64 -mcpu={} {} -o {}",
     cudaArch,

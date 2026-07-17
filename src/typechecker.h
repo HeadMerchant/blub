@@ -735,13 +735,7 @@ struct TypeChecker {
   }
 
   ReturnType cudaPtx(NodeIndex module) {
-    auto argType = check(module).type;
-    if (!findCudaImportInfo(argType)) {
-      crash(
-        module,
-        "Builtin '@cudaPtx' requires a value returned by '@cudaImport'"
-      );
-    }
+    check(module, Pool().cudaEnvType);
     return {Pool().pointerTo(Pool()._u8)};
   }
 
@@ -903,7 +897,7 @@ struct TypeChecker {
         parser.tokenizer.inputFilePath.parent_path() / fileName->lexeme
       )
         .lexically_normal();
-    return {getCudaImportInfo(filePath).type};
+    return {Pool().cudaEnvType};
   }
 
   ReturnType ifExpr(Encodings::If node) {
@@ -945,7 +939,7 @@ struct TypeChecker {
     fmt::println(out, fmt, std::forward<Args>(args)...);
 
     log("Crashed node index: {}", nodeIndex.value);
-    dumpTypes(out);
+    // dumpTypes(out);
     abort();
   }
 
@@ -1018,6 +1012,22 @@ struct TypeChecker {
         }
         env->debug();
         crash(node.fieldName, "No definition for name '{}'", fieldName);
+      }
+      crash(node.fieldName, "Internal error: missing environment");
+    }
+
+    if (targetType == Pool().cudaEnvType) {
+      auto object = compile(node.object, targetType);
+      if (auto env = object.unbox<CudaEnv>()) {
+        if (auto object = env->env->find(fieldName)) {
+          return {object->getType()};
+        }
+        env->env->debug();
+        crash(
+          node.fieldName,
+          "Cuda environment missing definition for name '{}'",
+          fieldName
+        );
       }
       crash(node.fieldName, "Internal error: missing environment");
     }
