@@ -44,10 +44,18 @@ struct SwitchCase {
 enum class TargetType { Cpu, Gpu };
 
 struct CompilerContext {
+  struct LinkageContext {
+    fs::path sourceRoot;
+    bool initialized = false;
+    unordered_set<string_view> typeNames;
+    unordered_set<string_view> globalNames;
+  };
+
   struct {
     std::ofstream* outputFileStream;
     std::stringstream globalInitialization;
     unordered_set<TypeIndex> emittedTypeDefinitions;
+    LinkageContext linkage;
   } blub;
   struct {
     vector<std::string> linkedLibraries;
@@ -61,6 +69,8 @@ struct CompilerContext {
     optional<RegisterValue> embeddedPtxGlobal;
     unordered_set<std::string> emittedImports;
     unordered_set<TypeIndex> emittedTypeDefinitions;
+    LinkageContext linkage;
+    // vector<pair<std::string, std::string>> ptxSymbolRenames;
   } cuda;
 
   static CompilerContext& inst() {
@@ -87,7 +97,8 @@ struct CompilerContext {
   std::ostream* outputFile;  \
   OptionalType expectedType; \
   NodeIndex nodeIndex;       \
-  string_view name;
+  string_view name;          \
+  string_view linkageScope;
 
 // Individual statement
 struct Compiler {
@@ -115,6 +126,7 @@ struct Compiler {
   std::queue<std::string> globalsStack;
   static Logger log;
   TargetType targetType;
+  std::string modulePrefix;
   std::vector<FunctionStub> functionStubs;
 
   using ReturnType = Reference;
@@ -123,6 +135,55 @@ struct Compiler {
   TypeChecker typeChecker;
 
   Parser& parser;
+
+  CompilerContext::LinkageContext& linkageContext() {
+    return targetType == TargetType::Cpu ? CompilerContext::inst().blub.linkage
+                                         : CompilerContext::inst().cuda.linkage;
+  }
+
+  template <typename... Args>
+  string_view qualifyLinkageName(
+    fmt::format_string<Args...> fmt,
+    Args&&... args
+  ) {
+    string_view prefix =
+      linkageScope.empty() ? string_view(modulePrefix) : linkageScope;
+    if (prefix.empty()) {
+      return copyStr(fmt, std::forward<Args>(args)...);
+    }
+    if (targetType == TargetType::Gpu) {
+      prefix = copyStr("{}$", prefix);
+    } else {
+      prefix = copyStr("{}.", prefix);
+    }
+    auto copied = copyStr(fmt, std::forward<Args>(args)...);
+    assert(prefix.data() + prefix.length() == copied.data());
+    return {prefix.data(), prefix.length() + copied.length()};
+  }
+
+  string_view qualifyLinkageName(string_view name) {
+    string_view prefix =
+      linkageScope.empty() ? string_view(modulePrefix) : linkageScope;
+    if (prefix.empty()) {
+      return copyStr("{}", name);
+    }
+    // TODO: should we allow '$' in identifiers????
+    if (targetType == TargetType::Gpu) {
+      return copyStr("{}${}", prefix, name);
+    } else {
+      return copyStr("{}.{}", prefix, name);
+    }
+  }
+
+  void claimLinkageName(string_view linkageName, bool isType) {
+    auto& names =
+      isType ? linkageContext().typeNames : linkageContext().globalNames;
+    // TODO: sussy
+    if (!names.insert(linkageName).second) {
+    // if (!names.insert(std::string(linkageName)).second) {
+      crash(nodeIndex, "Duplicate LLVM linkage name '{}'", linkageName);
+    }
+  }
 
   struct TypeValue {
     TypeIndex type;
@@ -143,6 +204,11 @@ struct Compiler {
     stackItems.outputFile = &outFile;
     stackItems.expectedType = targetType;
     stackItems.nodeIndex = index;
+    if (parser.getNode(index).nodeType == NodeType::Declaration) {
+      auto declaration = parser.getDeclaration(index);
+      stackItems.name =
+        parser.getDefinition(declaration.definition).name->lexeme;
+    }
 
     typeChecker.check(nodeIndex, targetType);
     auto result = astVisit(index, parser, *this);
@@ -277,8 +343,8 @@ struct Compiler {
         crash(paramNode, "Duplicate function parameter {}", paramName);
       }
       paramNames.push_back(paramName);
-      auto llvmParamName =
-        StringPool::inst().copy(fmt::format("arg{}", parameterIndex));
+      // TODO: needed?
+      auto llvmParamName = copyStr("arg{}", parameterIndex);
       auto stackValue = StackValue(paramName, paramType);
       emitDefinition(stackValue);
       emitLine(
@@ -749,10 +815,17 @@ struct Compiler {
       }
     }
     bool isGlobal = environment.envType() == EnvType::Global;
+    RegisterName storageName;
+    if (isGlobal) {
+      storageName = qualifyLinkageName(name->lexeme);
+      claimLinkageName(registerNameToString(storageName), false);
+    } else {
+      storageName = environment.addTemporary();
+    }
     Reference* definition = environment.define(
       name->lexeme,
       Reference(StackValue(
-        isGlobal ? environment.nextGlobalIndex() : environment.addTemporary(),
+        storageName,
         type,
         isGlobal ? ValueScope::Global : ValueScope::Local,
         isGlobal && targetType == TargetType::Gpu ? AddressSpace::cudaConstant()
@@ -2553,6 +2626,16 @@ struct Compiler {
       auto declaration = parser.getDeclaration(index);
       auto nameToken = parser.getDefinition(declaration.definition).name;
       auto name = nameToken->lexeme;
+      auto frame = stackItems;
+      frame.name = name;
+      if (auto* structType = Pool().getStruct(targetType)) {
+        frame.linkageScope =
+          StringPool::inst().copy(registerNameToString(structType->llvmName));
+      } else {
+        frame.linkageScope =
+          qualifyLinkageName(parser.getToken(typeNode)->lexeme);
+      }
+      auto guard = push(frame);
       auto value = compile(declaration.value);
       log("impl {}.{} = {}", TypeName(targetType), name, value);
       auto [_, succeeded] = statics.emplace(name, value);
@@ -2580,8 +2663,13 @@ struct Compiler {
     NodeIndex returnIndex,
     NodeIndex body
   ) {
+    auto functionScope = name.empty() ? linkageScope : qualifyLinkageName(name);
     TypeIndex returnType = Pool()._void;
     if (returnIndex) {
+      auto frame = stackItems;
+      frame.linkageScope = functionScope;
+      frame.name = "return";
+      auto guard = push(frame);
       returnType = compile(returnIndex, Pool().type).unboxType();
       if (!returnType) {
         crash(
@@ -2599,6 +2687,10 @@ struct Compiler {
         crash(parameterIndex, "Parameters must have a type");
       }
 
+      auto frame = stackItems;
+      frame.linkageScope = functionScope;
+      frame.name = parameterDefinition.name->lexeme;
+      auto guard = push(frame);
       auto parameterType = compile(parameterDefinition.type).unboxType();
       if (!parameterType) {
         crash(
@@ -2618,25 +2710,16 @@ struct Compiler {
     RegisterName llvmName;
     if (token->type == TokenType::String) {
       llvmName = token->lexeme;
+    } else if (forwardDeclare) {
+      llvmName = name;
     } else {
-      if (forwardDeclare) {
-        llvmName = name;
-        // crash(
-        //   nodeIndex,
-        //   "Can't forward declare anoymnous function; Anonymous functions "
-        //   "require a body"
-        // );
-      } else if (name == "main") {
-        llvmName = "main";
+      if (!name.empty()) {
+        llvmName = qualifyLinkageName(name);
       } else {
         auto suffix = environment.nextGlobalIndex();
-        if (!name.empty()) {
-          llvmName =
-            StringPool::inst().copy(fmt::format("{}_{}", name, suffix));
-        } else {
-          llvmName = StringPool::inst().copy(fmt::format("anon_{}", suffix));
-        }
+        llvmName = qualifyLinkageName(copyStr("anon.{}", suffix));
       }
+      claimLinkageName(registerNameToString(llvmName), false);
     }
 
     auto convention = selectFunctionConvention(nodeIndex);
@@ -2892,9 +2975,13 @@ struct Compiler {
     ensureClangInclude(fileName);
 
     auto prefix = std::string(parser.getToken(argumentNodes[1])->lexeme);
-    return Reference(
-      cBindings(std::move(includeFile), prefix, globalsStack, definedTypes)
-    );
+    return Reference(cBindings(
+      std::move(includeFile),
+      prefix,
+      globalsStack,
+      definedTypes,
+      [this](TypeIndex type) { ensureTypeDefinition(type); }
+    ));
   }
 
   ReturnType crashBuiltin() {
@@ -3562,6 +3649,9 @@ struct Compiler {
         case NodeType::Definition: {
           auto definitionNode = parser.getDefinition(fieldIndex);
           auto fieldName = definitionNode.name->lexeme;
+          auto fieldFrame = stackItems;
+          fieldFrame.name = fieldName;
+          auto fieldGuard = push(fieldFrame);
           OptionalType type = compile(definitionNode.type).unboxType();
           if (!type) {
             crash(
@@ -3589,11 +3679,15 @@ struct Compiler {
       return Reference(typeIndex);
     }
 
-    // TODO: methods
-    u32 llvmName = environment.structIndex();
+    auto llvmName =
+      name.empty()
+        ? qualifyLinkageName("anon.type.{}", environment.structIndex())
+        : qualifyLinkageName(name);
+    claimLinkageName(llvmName, true);
     std::stringstream typeInstruction;
     auto frame = stackItems;
     frame.outputFile = &typeInstruction;
+    frame.linkageScope = llvmName;
     auto guard = push(frame);
     auto [typeIndex, structIndex] = Pool().makeStruct(prettyName, llvmName);
     auto envGuard = environment.pushScope();
@@ -3609,6 +3703,9 @@ struct Compiler {
         if (hasFields) typeInstruction << ", ";
         auto definitionNode = parser.getDefinition(fieldIndex);
         auto fieldName = definitionNode.name->lexeme;
+        auto fieldFrame = stackItems;
+        fieldFrame.name = fieldName;
+        auto fieldGuard = push(fieldFrame);
         OptionalType type = compile(definitionNode.type).unboxType();
         if (!type) {
           crash(
@@ -4275,6 +4372,27 @@ struct Compiler {
     return fileContents;
   }
 
+  static optional<fs::path> pathBelow(
+    const fs::path& fileName,
+    const fs::path& root
+  ) {
+    auto relative = fileName.lexically_relative(root);
+    if (relative.empty()) return {};
+    auto first = relative.begin();
+    if (first != relative.end() && *first == "..") return {};
+    return relative;
+  }
+
+  static std::string moduleNameFromPath(fs::path relativePath) {
+    relativePath.replace_extension();
+    std::string result;
+    for (const auto& part : relativePath) {
+      if (!result.empty()) result += '.';
+      result += part.string();
+    }
+    return result;
+  }
+
   static Environment* compile(fs::path fileName, TargetType targetType) {
     fmt::println("Compiling file: {}", fileName.string());
     using Imports = std::unordered_map<std::string, Environment>;
@@ -4285,6 +4403,29 @@ struct Compiler {
       targetType == TargetType::Cpu ? cpuFiles : gpuFiles;
     fileName = fs::absolute(fileName);
     fileName = fs::weakly_canonical(fileName);
+
+    auto& linkage = targetType == TargetType::Cpu
+                      ? CompilerContext::inst().blub.linkage
+                      : CompilerContext::inst().cuda.linkage;
+    std::string modulePrefix;
+    if (!linkage.initialized) {
+      linkage.sourceRoot = fileName.parent_path();
+      linkage.initialized = true;
+    } else if (auto relative = pathBelow(fileName, linkage.sourceRoot)) {
+      modulePrefix = moduleNameFromPath(*relative);
+    } else {
+      auto libraryRoot = fs::weakly_canonical(fs::path(LIB_BLUB_DIR));
+      if (auto relative = pathBelow(fileName, libraryRoot)) {
+        modulePrefix = moduleNameFromPath(*relative);
+      } else {
+        throw std::invalid_argument(
+          fmt::format(
+            "Imported Blub file '{}' is outside the project and library roots",
+            fileName.string()
+          )
+        );
+      }
+    }
 
     if (compiledFiles.contains(fileName)) {
       return &compiledFiles[fileName];
@@ -4298,6 +4439,7 @@ struct Compiler {
 
     Compiler translationUnit(parser, program, targetType);
     translationUnit.inputFilePath = fileName;
+    translationUnit.modulePrefix = std::move(modulePrefix);
     auto [env, success] =
       compiledFiles.emplace(std::move(fileName), translationUnit.run());
     // TODO: remove
@@ -4358,7 +4500,8 @@ struct Compiler {
       {.outputFile = &instruction,
        .expectedType = Pool().infer,
        .nodeIndex = stub.definitionNode,
-       .name = {}}
+       .name = {},
+       .linkageScope = StringPool::inst().copy(registerNameToString(stub.name))}
     );
     Function function{
       .type = stub.functionType,
@@ -4475,7 +4618,15 @@ struct Compiler {
   Compiler(Parser& parser, ChildSpan program, TargetType targetType)
       : outputFile(CompilerContext::globalStream(targetType)), parser(parser),
         typeChecker(*this, environment, parser), program(program),
-        targetType(targetType) {}
+        targetType(targetType) {
+    stackItems = {
+      .outputFile = outputFile,
+      .expectedType = Pool().infer,
+      .nodeIndex = NodeIndex::null(),
+      .name = {},
+      .linkageScope = {},
+    };
+  }
 
   struct StackItemsGuard {
     StackItems prevFrame;
@@ -4520,7 +4671,7 @@ struct Compiler {
   }
 
   Reference copyCudaSymbol(RegisterName name) {
-    auto result = environment.makeGlobal(Pool().u8ptr);
+    auto result = RegisterValue(Environment::nextGlobalIndex(), Pool().u8ptr, ValueScope::Global);
     stringstream global;
     fmt::print(global, "{} = global [", result);
     std::visit(
@@ -4582,9 +4733,11 @@ struct Compiler {
 
     // TODO: support multiple ptx globals
     auto& bytecodeGlobal = CompilerContext::inst().cuda.embeddedPtxGlobal;
-    auto val = bytecodeGlobal.value_or(
-      RegisterValue(environment.addGlobal(), Pool().pointerTo(Pool()._u8))
-    );
+    auto val = bytecodeGlobal.value_or(RegisterValue(
+      ".cudaPtx",
+      Pool().pointerTo(Pool()._u8),
+      ValueScope::Global
+    ));
     bytecodeGlobal = val;
     importInfo.bytecodeGlobal = val.name;
 

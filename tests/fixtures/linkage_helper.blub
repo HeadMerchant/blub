@@ -1,0 +1,11 @@
+HelperType :: struct {
+	value: s32
+} impl {
+	touch :: fn(self: Self) {}
+}
+
+helperGlobal : HelperType
+
+helperFunction :: fn() {
+	helperGlobal.touch()
+}

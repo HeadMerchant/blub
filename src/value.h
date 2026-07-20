@@ -16,6 +16,8 @@
 
 class Environment;
 
+string_view registerNameToString(RegisterName name);
+
 class LLVMFunction {
 public:
   std::string definition;
@@ -499,18 +501,6 @@ public:
 
   StackValue makeGlobal(TypeIndex type) {
     return StackValue(globalIndex++, type, ValueScope::Global);
-  }
-
-  std::string addConstant(std::string_view name) {
-    return fmt::format("{}{}", prefix, name);
-  }
-
-  std::string addGlobal(std::string_view name) {
-    return fmt::format("%\"{}{}\"", prefix, name);
-  }
-
-  std::string addGlobal() {
-    return fmt::format("%.anon.{}{}", prefix, globalIndex++);
   }
 
   static u32 nextGlobalIndex() {

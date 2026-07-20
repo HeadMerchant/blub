@@ -111,10 +111,7 @@ struct StringPool {
   std::string_view copy(std::string_view view) {
     u32 newOffset = offset + view.length();
     // fmt::println("Using {}/{} bytes for strings", newOffset, capacity);
-    if (newOffset < offset || offset >= capacity) {
-      debug();
-      throw std::invalid_argument("OOM in string view pool");
-    }
+
     memcpy(bytes + offset, view.data(), view.length());
     std::string_view newView{bytes + offset, view.length()};
     // fmt::println("Copied '{}'", newView);
@@ -125,7 +122,7 @@ struct StringPool {
   }
 
   std::string_view copy(const char*) = delete;
-  template <std::size_t N> void foo(const char (&)[N]) = delete;
+  std::string_view copy(std::string) = delete;
 
   StringPool(u32 capacity) {
     bytes = (char*)malloc(capacity);
@@ -139,6 +136,21 @@ struct StringPool {
 
   static StringPool& inst();
 };
+
+template <typename... Args>
+string_view copyStr(fmt::format_string<Args...> fmt, Args&&... args) {
+  auto& inst = StringPool::inst();
+  auto remainder = inst.capacity - inst.offset;
+  auto startBytes = inst.bytes + inst.offset;
+  auto written = fmt::format_to_n(startBytes, remainder, fmt, std::forward<Args>(args)...);
+  if (written.size > remainder) {
+      inst.debug();
+      throw std::invalid_argument("OOM in string view pool");
+  }
+  auto copied = string_view(startBytes, written.size);
+  inst.offset += written.size;
+  return copied;
+}
 
 enum class LogLevel {
   Parsing = 1,
@@ -218,6 +230,7 @@ template <typename T> struct VecSpanCompare {
   }
 };
 
+// Keeping here for later usage. might not need
 template <typename K, typename V>
 using VecMap = std::map<std::vector<K>, V, VecSpanCompare<K>>;
 

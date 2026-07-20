@@ -1,0 +1,37 @@
+helper :: import "fixtures/linkage_helper.blub"
+ci :: @cImport("linkage_names_fixture.h", "ln_")
+
+RootType :: struct {
+	value: s32
+} impl {
+	touch :: fn(self: Self) {}
+}
+
+rootGlobal : RootType
+
+Container :: struct {
+	nested: struct {
+		value: s32
+	}
+}
+
+anonymousReturn :: fn() -> struct {
+	value: s32
+} {
+	return (1,)
+}
+
+rootFunction :: fn() {
+	inner :: fn() {}
+	inner()
+	rootGlobal.touch()
+	helper.helperFunction()
+	record := ci.record(value = 3)
+	_ := record.value
+	returned := anonymousReturn()
+	_ = returned.value
+}
+
+main :: fn() {
+	rootFunction()
+}

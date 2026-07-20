@@ -1,0 +1,14 @@
+%RootType = type {i32}
+%fixtures.linkage_helper.HelperType = type {i32}
+%ln_record = type {i32}
+%Container = type {%Container.nested}
+%Container.nested = type {i32}
+%anonymousReturn.return = type {i32}
+@rootGlobal = internal addrspace(0) global %RootType
+@fixtures.linkage_helper.helperGlobal = internal addrspace(0) global %fixtures.linkage_helper.HelperType
+define void @"rootFunction"()
+define void @"rootFunction.inner"()
+define %anonymousReturn.return @"anonymousReturn"()
+define void @"RootType.touch"(%RootType)
+define void @"fixtures.linkage_helper.helperFunction"()
+define void @"fixtures.linkage_helper.HelperType.touch"(%fixtures.linkage_helper.HelperType)

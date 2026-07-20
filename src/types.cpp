@@ -51,7 +51,7 @@ void TypePool::defineLLVMStruct(
   Struct& structDefinition = getStruct(structIndex);
   globals.push(
     fmt::format(
-      "%.struct.{} = type {{{}}}",
+      "%{} = type {{{}}}",
       structDefinition.llvmName,
       fmt::join(
         structDefinition.fieldTypes() |

@@ -111,6 +111,24 @@ std::string readFile(const fs::path& path) {
   return buffer.str();
 }
 
+void checkIrPatterns(
+  const fs::path& expectationPath,
+  const std::string& ir,
+  bool shouldContain
+) {
+  std::istringstream patterns(readFile(expectationPath));
+  std::string pattern;
+  while (std::getline(patterns, pattern)) {
+    if (pattern.empty()) continue;
+    INFO("IR pattern: " << pattern);
+    if (shouldContain) {
+      CHECK(ir.find(pattern) != std::string::npos);
+    } else {
+      CHECK(ir.find(pattern) == std::string::npos);
+    }
+  }
+}
+
 std::vector<fs::path> discoverBlubTests() {
   fs::path testsDir = fs::path(BLUB_SOURCE_DIR) / "tests";
   std::vector<fs::path> tests;
@@ -159,6 +177,14 @@ TEST_CASE("blub file tests") {
       INFO(compileResult.output);
       REQUIRE(compileResult.exitedNormally);
       REQUIRE_EQ(compileResult.exitCode, 0);
+
+      auto generatedIr = readFile(testsBuildDir / "main.ll");
+      if (auto patterns = expectationPathFor(testPath, ".ir.contains")) {
+        checkIrPatterns(*patterns, generatedIr, true);
+      }
+      if (auto patterns = expectationPathFor(testPath, ".ir.excludes")) {
+        checkIrPatterns(*patterns, generatedIr, false);
+      }
 
       auto runtimeResult = runProcess({outputBinary.string()}, projectRoot);
       INFO(runtimeResult.output);

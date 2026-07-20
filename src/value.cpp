@@ -47,8 +47,7 @@ string_view registerNameToString(RegisterName name) {
     overloaded{
       [](string_view name) { return name; },
       [](u32 name) {
-        auto stringName = fmt::format("{}", name);
-        return StringPool::inst().copy(stringName);
+        return copyStr("{}", name);
       },
     },
     name

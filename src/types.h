@@ -1388,7 +1388,7 @@ struct LlvmName {
         [&o](MultiPointer x) { o << "ptr"; },
         [&o](Slice x) { o << "%.slice"; },
         [&o](StructIndex x) {
-          fmt::print(o, "%.struct.{}", Pool().structPool[x.value].llvmName);
+          fmt::print(o, "%{}", Pool().structPool[x.value].llvmName);
         },
         [&o](TupleIndex x) {
           bool hasMultiple = false;

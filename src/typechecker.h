@@ -40,7 +40,12 @@ struct TypeChecker {
   }
 
   Reference compile(NodeIndex index, TypeIndex expected = Pool().infer);
-  TypeIndex materialize(NodeIndex nodeIndex, string_view name = "");
+  TypeIndex materialize(
+    NodeIndex nodeIndex,
+    string_view name = "",
+    string_view linkageScope = ""
+  );
+  string_view currentFunctionLinkageScope();
 
   ReturnType block(Encodings::Block node) {
     return {Pool()._void};
@@ -642,6 +647,7 @@ struct TypeChecker {
     NodeIndex returnIndex,
     NodeIndex body
   ) {
+    auto functionScope = currentFunctionLinkageScope();
     vector<TypeIndex> paramTypes;
     paramTypes.reserve(
       params.requiredParameters.size() + params.optionalParameters.size()
@@ -649,7 +655,9 @@ struct TypeChecker {
     for (auto required : params.requiredParameters) {
       auto definition = parser.getDefinition(required);
       check(definition.type, Pool().type);
-      paramTypes.push_back(materialize(definition.type));
+      paramTypes.push_back(materialize(
+        definition.type, definition.name->lexeme, functionScope
+      ));
     }
 
     for (auto _ : params.optionalParameters) {
@@ -659,7 +667,7 @@ struct TypeChecker {
     TypeIndex returnType = Pool()._void;
     if (returnIndex) {
       check(returnIndex, Pool().type);
-      returnType = materialize(returnIndex);
+      returnType = materialize(returnIndex, "return", functionScope);
     }
     return {
       Pool().addFunction({.parameters = tupleType, .returnType = returnType})

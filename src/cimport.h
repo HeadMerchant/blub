@@ -2,9 +2,11 @@
 #include "types.h"
 #include "value.h"
 #include <filesystem>
+#include <functional>
 #include <unordered_map>
 
 using TypeCache = std::unordered_map<std::string_view, TypeIndex>;
+using TypeEmitter = std::function<void(TypeIndex)>;
 
 // TODO: proper lexing+parsing: see
 // https://github.com/nothings/stb/blob/master/stb_c_lexer.h
@@ -16,5 +18,6 @@ Environment* cBindings(
   fs::path cFile,
   std::string prefix,
   std::queue<std::string>& globals,
-  TypeCache& definedTypes
+  TypeCache& definedTypes,
+  TypeEmitter emitType = {}
 );

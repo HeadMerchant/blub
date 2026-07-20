@@ -87,6 +87,38 @@ void emitEmbeddedNullTerminatedFile(
   );
 }
 
+// void rewritePtxSymbols(const fs::path& ptxPath) {
+//   auto replacements = CompilerContext::inst().cuda.ptxSymbolRenames;
+//   std::ranges::sort(replacements, [](const auto& a, const auto& b) {
+//     return a.first.size() > b.first.size();
+//   });
+//   if (replacements.empty()) return;
+
+//   std::ifstream input(ptxPath);
+//   if (!input.is_open()) {
+//     throw std::invalid_argument("Unable to open PTX file " + ptxPath.string());
+//   }
+//   std::string ptx{
+//     std::istreambuf_iterator<char>(input),
+//     std::istreambuf_iterator<char>()
+//   };
+//   input.close();
+
+//   for (const auto& [llvmName, ptxName] : replacements) {
+//     size_t position = 0;
+//     while ((position = ptx.find(llvmName, position)) != std::string::npos) {
+//       ptx.replace(position, llvmName.size(), ptxName);
+//       position += ptxName.size();
+//     }
+//   }
+
+//   std::ofstream output(ptxPath, std::ios::trunc);
+//   if (!output.is_open()) {
+//     throw std::invalid_argument("Unable to rewrite PTX file " + ptxPath.string());
+//   }
+//   output << ptx;
+// }
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -378,6 +410,7 @@ void compileCuda(
     fmt::println(std::cerr, "Error compiling blub LLVM IR to ptx");
     abort();
   }
+  // rewritePtxSymbols(outPtx);
 
   auto assembleCommand =
     fmt::format("ptxas -arch={} {} -o {}", cudaArch, outPtx, finalCubin);

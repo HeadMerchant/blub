@@ -678,18 +678,18 @@ TEST_CASE("Returning SSE/Recursive types") {
     vector<Identifier> paramNames = {"q1", "q2"};
     loadParameterRegisters(ctx, function.type, paramNames);
     string_view expected =
-      "%q1 = alloca %.struct.quat, align 16\n"
-      "%5 = getelementptr inbounds %.struct.quat, ptr %q1, i32 "
+      "%q1 = alloca %quat, align 16\n"
+      "%5 = getelementptr inbounds %quat, ptr %q1, i32 "
       "0, i32 0\n"
       "store <2 x float> %0, ptr %5\n"
-      "%6 = getelementptr inbounds %.struct.quat, ptr %q1, i32 "
+      "%6 = getelementptr inbounds %quat, ptr %q1, i32 "
       "0, i32 2\n"
       "store <2 x float> %1, ptr %6\n"
-      "%q2 = alloca %.struct.quat, align 16\n"
-      "%7 = getelementptr inbounds %.struct.quat, ptr %q2, i32 "
+      "%q2 = alloca %quat, align 16\n"
+      "%7 = getelementptr inbounds %quat, ptr %q2, i32 "
       "0, i32 0\n"
       "store <2 x float> %2, ptr %7\n"
-      "%8 = getelementptr inbounds %.struct.quat, ptr %q2, i32 "
+      "%8 = getelementptr inbounds %quat, ptr %q2, i32 "
       "0, i32 2\n"
       "store <2 x float> %3, ptr %8\n";
     CHECK_EQ(functionBody.str(), expected);
@@ -710,28 +710,28 @@ TEST_CASE("Returning SSE/Recursive types") {
     OutContext ctx{.outputFile = callSite, .environment = env};
     auto returnRegister = callAbiFunctionWithArgs(ctx, function, args);
     string_view expectedCallSite =
-      "%3 = extractvalue %.struct.quat %1, 0\n"
+      "%3 = extractvalue %quat %1, 0\n"
       "%4 = insertelement <2 x float> undef, float %3, i32 0\n"
-      "%5 = extractvalue %.struct.quat %1, 1\n"
+      "%5 = extractvalue %quat %1, 1\n"
       "%6 = insertelement <2 x float> %4, float %5, i32 1\n"
-      "%7 = extractvalue %.struct.quat %1, 2\n"
+      "%7 = extractvalue %quat %1, 2\n"
       "%8 = insertelement <2 x float> undef, float %7, i32 0\n"
-      "%9 = extractvalue %.struct.quat %1, 3\n"
+      "%9 = extractvalue %quat %1, 3\n"
       "%10 = insertelement <2 x float> %8, float %9, i32 1\n"
-      "%11 = extractvalue %.struct.quat %2, 0\n"
+      "%11 = extractvalue %quat %2, 0\n"
       "%12 = insertelement <2 x float> undef, float %11, i32 0\n"
-      "%13 = extractvalue %.struct.quat %2, 1\n"
+      "%13 = extractvalue %quat %2, 1\n"
       "%14 = insertelement <2 x float> %12, float %13, i32 1\n"
-      "%15 = extractvalue %.struct.quat %2, 2\n"
+      "%15 = extractvalue %quat %2, 2\n"
       "%16 = insertelement <2 x float> undef, float %15, i32 0\n"
-      "%17 = extractvalue %.struct.quat %2, 3\n"
+      "%17 = extractvalue %quat %2, 3\n"
       "%18 = insertelement <2 x float> %16, float %17, i32 1\n"
       "%19 = call {<2 x float>, <2 x float>} @\"multiply\"(<2 x float> %6, <2 "
       "x "
       "float> %10, <2 x float> %14, <2 x float> %18)\n"
       "%20 = alloca {<2 x float>, <2 x float>}, align 16\n"
       "store {<2 x float>, <2 x float>} %19, ptr %20\n"
-      "%21 = load %.struct.quat, ptr %20\n";
+      "%21 = load %quat, ptr %20\n";
     CHECK_EQ(returnRegister, 21);
     CHECK_EQ(callSite.str(), expectedCallSite);
   }
@@ -753,8 +753,8 @@ TEST_CASE("Passing in memory") {
   };
   SUBCASE("Declaration") {
     string_view expected =
-      "void @\"multiply\"(ptr sret(%.struct.mat) align 4, ptr noundef "
-      "byval(%.struct.mat) align 4, [8 x i16])";
+      "void @\"multiply\"(ptr sret(%mat) align 4, ptr noundef "
+      "byval(%mat) align 4, [8 x i16])";
     stringstream declaration;
     auto declarationResult = declareParamRegisters(declaration, function);
     CHECK_EQ(declaration.str(), expected);
@@ -771,7 +771,7 @@ TEST_CASE("Passing in memory") {
     vector<Identifier> paramNames = {"q1", "q2"};
     loadParameterRegisters(ctx, function.type, paramNames);
     string_view expected =
-      "%q1 = alloca %.struct.mat, align 4\n"
+      "%q1 = alloca %mat, align 4\n"
       "call void @llvm.memcpy.p0.p0.i8(ptr %q1, ptr %1, i64 64, i1 false)\n"
       "%q2 = alloca [8 x i16], align 2\n"
       "store [8 x i16] %2, ptr %q2\n";
@@ -794,13 +794,13 @@ TEST_CASE("Passing in memory") {
     OutContext ctx{.outputFile = callSite, .environment = env};
     auto returnRegister = callAbiFunctionWithArgs(ctx, function, args);
     string_view expectedCallSite =
-      "%3 = alloca %.struct.mat, align 4\n"
-      "%4 = alloca %.struct.mat, align 4\n"
-      "store %.struct.mat %1, ptr %4\n"
-      "call void @\"multiply\"(ptr sret(%.struct.mat) "
-      "align 4 %3, ptr noundef byval(%.struct.mat) "
+      "%3 = alloca %mat, align 4\n"
+      "%4 = alloca %mat, align 4\n"
+      "store %mat %1, ptr %4\n"
+      "call void @\"multiply\"(ptr sret(%mat) "
+      "align 4 %3, ptr noundef byval(%mat) "
       "align 4 %4, [8 x i16] %2)\n"
-      "%5 = load %.struct.mat, ptr %3\n";
+      "%5 = load %mat, ptr %3\n";
     CHECK_EQ(returnRegister, 5);
     CHECK_EQ(callSite.str(), expectedCallSite);
   }

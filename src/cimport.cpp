@@ -2,7 +2,6 @@
 #include "common.h"
 #include "fmt/base.h"
 #include "fmt/format.h"
-#include "llvmcomp.h"
 #include "types.h"
 #include "value.h"
 #include <cctype>
@@ -190,7 +189,8 @@ TypeIndex parseRecord(
   ondemand::value& node,
   Identifier cName,
   Identifier unprefixedName,
-  std::queue<std::string>& globals
+  std::queue<std::string>& globals,
+  const TypeEmitter& emitType
 ) {
   Logger log(LogLevel::CImport);
   std::string_view tagUsed;
@@ -216,7 +216,14 @@ TypeIndex parseRecord(
       std::string_view fieldKind;
       structField["kind"].get(fieldKind);
       if (fieldKind == "RecordDecl") {
-        anonType = parseRecord(structField.value(), "", "", globals);
+        auto anonymousName = copyStr(
+          "{}.anon.{}",
+          cName.empty() ? string_view("c") : cName,
+          anonymousFieldIndex
+        );
+        anonType = parseRecord(
+          structField.value(), anonymousName, "", globals, emitType
+        );
       } else if (fieldKind == "FieldDecl") {
         std::string_view fieldName;
         bool hasName = structField["name"].get(fieldName) == SUCCESS;
@@ -232,12 +239,11 @@ TypeIndex parseRecord(
         }
 
         if (!hasName) {
-          auto anonymousFieldName = fmt::format(
+          fieldName = copyStr(
             "{}{}",
             TypePool::anonymousFieldPrefix,
             anonymousFieldIndex++
           );
-          fieldName = StringPool::inst().copy(anonymousFieldName);
         } else {
           fieldName = StringPool::inst().copy(fieldName);
         }
@@ -253,8 +259,11 @@ TypeIndex parseRecord(
       log("{}: {}", fieldName, TypeName(type));
     }
 
-    Pool().defineLLVMStruct(structIndex, globals);
-    CompilerContext::inst().blub.emittedTypeDefinitions.insert(typeIndex);
+    if (emitType) {
+      emitType(typeIndex);
+    } else {
+      Pool().defineLLVMStruct(structIndex, globals);
+    }
     resultTypeIndex = typeIndex;
   } else if (tagUsed == "union") {
     std::vector<TypeIndex> anonymousVariants;
@@ -271,7 +280,14 @@ TypeIndex parseRecord(
       std::string_view variantKind;
       variant["kind"].get(variantKind);
       if (variantKind == "RecordDecl") {
-        anonType = parseRecord(variant, "", "", globals);
+        auto anonymousName = copyStr(
+          "{}.anon.{}",
+          cName.empty() ? "c" : cName,
+          anonymousVariants.size()
+        );
+        anonType = parseRecord(
+          variant, anonymousName, "", globals, emitType
+        );
       } else if (variantKind != "FieldDecl") {
         log("Skipping inner node for union {} of kind {}", cName, variantKind);
       } else {
@@ -324,7 +340,8 @@ Environment* cBindings(
   fs::path cFile,
   std::string prefix,
   std::queue<std::string>& globals,
-  TypeCache& definedTypes
+  TypeCache& definedTypes,
+  TypeEmitter emitType
 ) {
   auto fileName = cFile.string();
   static std::unordered_map<fs::path, Environment> importedFiles;
@@ -481,8 +498,9 @@ Environment* cBindings(
       functionType.forwardDeclare(declareName, globals, "");
       blubInterface.value = Function(functionType, declareName);
     } else if (kind == "RecordDecl") {
-      blubInterface.value =
-        parseRecord(node.value(), valueName, unprefixedValueName, globals);
+      blubInterface.value = parseRecord(
+        node.value(), valueName, unprefixedValueName, globals, emitType
+      );
     } else {
       log(
         "Skipping clang ast node of kind '{}'; name: '{}'",
