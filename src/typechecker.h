@@ -223,6 +223,7 @@ struct TypeChecker {
   }
 
   ReturnType definition(Encodings::Definition node) {
+    if (node.type) check(node.type, Pool().type);
     return {Pool()._void};
   }
 
@@ -470,6 +471,26 @@ struct TypeChecker {
 
   ReturnType multiply(NodeIndex a, NodeIndex b) {
     return arithmeticOperation(a, b, "multiply");
+  }
+
+  ReturnType power(NodeIndex base, NodeIndex exponent) {
+    auto baseType = check(base).type;
+    auto exponentType = check(exponent).type;
+    if (!Pool().isNumber(baseType)) {
+      crash(
+        base,
+        "Exponentiation requires a numeric base, but found '{}'",
+        TypeName(baseType)
+      );
+    }
+    if (!Pool().isInt(exponentType)) {
+      crash(
+        exponent,
+        "Exponentiation requires an integer exponent, but found '{}'",
+        TypeName(exponentType)
+      );
+    }
+    return {baseType};
   }
 
   ReturnType divide(NodeIndex a, NodeIndex b) {

@@ -1,0 +1,5 @@
+invalid :: fn(base: s32) -> s32 {
+	return base ** -1
+}
+
+main :: fn() {}

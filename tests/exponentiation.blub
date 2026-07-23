@@ -1,0 +1,46 @@
+fmt :: import "fmt.blub"
+
+calls := 0
+NamedExponent :: 5
+
+nextBase :: fn() -> s32 {
+	calls += 1
+	return 3
+}
+
+runtimePower :: fn(base: s32) -> s32 {
+	return base ** 13
+}
+
+runtimeReciprocal :: fn(base: f32) -> f32 {
+	return base ** -3
+}
+
+runtimeNamedPower :: fn(base: s32) -> s32 {
+	return base ** NamedExponent
+}
+
+printNumber :: fn(value: s32) {
+	fmt.print_s32(value)
+	fmt.println("")
+}
+
+main :: fn() {
+	printNumber(2 ** 3 ** 2)
+	printNumber(-2 ** 2)
+	printNumber((-2) ** 2)
+	printNumber(runtimePower(3))
+	printNumber(runtimeNamedPower(2))
+	printNumber(0 ** 0)
+
+	compound := 3
+	compound **= 4
+	printNumber(compound)
+
+	printNumber(nextBase() ** 0)
+	printNumber(calls)
+
+	fmt.printFloat(2.0 ** -3)
+	fmt.println("")
+	fmt.printFloat(runtimeReciprocal(2.0))
+}

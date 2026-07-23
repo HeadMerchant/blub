@@ -87,6 +87,52 @@ void emitEmbeddedNullTerminatedFile(
   );
 }
 
+void promoteStaticInlineDefinitions(
+  const fs::path& irPath,
+  const std::vector<std::string>& functionNames
+) {
+  std::ifstream input(irPath);
+  if (!input.is_open()) {
+    throw std::invalid_argument(
+      "Unable to read imported C LLVM IR from " + irPath.string()
+    );
+  }
+
+  std::string ir{
+    std::istreambuf_iterator<char>(input),
+    std::istreambuf_iterator<char>()
+  };
+  for (const auto& functionName : functionNames) {
+    auto symbol = fmt::format("@{}(", functionName);
+    auto symbolIndex = ir.find(symbol);
+    while (symbolIndex != std::string::npos) {
+      auto lineStart = ir.rfind('\n', symbolIndex);
+      lineStart = lineStart == std::string::npos ? 0 : lineStart + 1;
+      auto linkageIndex = ir.find("define internal ", lineStart);
+      if (linkageIndex != std::string::npos && linkageIndex < symbolIndex) {
+        ir.replace(
+          linkageIndex,
+          std::string("define internal ").size(),
+          "define dso_local "
+        );
+        break;
+      }
+      symbolIndex = ir.find(symbol, symbolIndex + symbol.size());
+    }
+  }
+
+  std::ofstream output(
+    irPath,
+    std::ofstream::out | std::ofstream::trunc
+  );
+  if (!output.is_open()) {
+    throw std::invalid_argument(
+      "Unable to write imported C LLVM IR to " + irPath.string()
+    );
+  }
+  output << ir;
+}
+
 // void rewritePtxSymbols(const fs::path& ptxPath) {
 //   auto replacements = CompilerContext::inst().cuda.ptxSymbolRenames;
 //   std::ranges::sort(replacements, [](const auto& a, const auto& b) {
@@ -312,7 +358,67 @@ int main(int argc, char** argv) {
           << CompilerContext::inst().blub.globalInitialization.str()
           << "ret void\n}";
   outFile.close();
-  auto objectCommand = fmt::format("clang -c {} -o main.o", outFilename);
+
+  auto& clangArgs = CompilerContext::inst().c.clangArgs;
+  auto& staticInlineFunctions =
+    CompilerContext::inst().c.staticInlineFunctions;
+  bool cIncludes = !clangArgs.empty();
+  std::string finalIr = outFilename;
+
+  if (cIncludes) {
+    auto keepAliveSource = buildDir / "cimport_keep_alive.c";
+    std::ofstream keepAliveFile(
+      keepAliveSource,
+      std::ofstream::out | std::ofstream::trunc
+    );
+    if (!keepAliveFile.is_open()) {
+      throw std::invalid_argument(
+        "Unable to write C import keep-alive source to " +
+        keepAliveSource.string()
+      );
+    }
+
+    for (size_t i = 0; i < staticInlineFunctions.size(); ++i) {
+      fmt::println(
+        keepAliveFile,
+        "__attribute__((used)) static void* blub_keep_alive_{} = (void*)&{};",
+        i,
+        staticInlineFunctions[i]
+      );
+    }
+    keepAliveFile.close();
+
+    auto cImportsIr = buildDir / "cimports.ll";
+    auto linkedIr = buildDir / "linked.bc";
+    auto cIrCommand = fmt::format(
+      "clang -S -emit-llvm -O0 -x c {} {} -o {}",
+      fmt::join(clangArgs, " "),
+      keepAliveSource.string(),
+      cImportsIr.string()
+    );
+    fmt::println("Compiling included C files to LLVM IR");
+    fmt::println("Clang args: {}", clangArgs);
+    if (auto rc = std::system(cIrCommand.c_str())) {
+      fmt::println(std::cerr, "Error compiling include files to LLVM IR");
+      abort();
+    }
+    promoteStaticInlineDefinitions(cImportsIr, staticInlineFunctions);
+
+    auto linkIrCommand = fmt::format(
+      "llvm-link {} {} -o {}",
+      outFilename,
+      cImportsIr.string(),
+      linkedIr.string()
+    );
+    fmt::println("Linking Blub and C LLVM IR");
+    if (auto rc = std::system(linkIrCommand.c_str())) {
+      fmt::println(std::cerr, "Error linking Blub and C LLVM IR");
+      abort();
+    }
+    finalIr = linkedIr.string();
+  }
+
+  auto objectCommand = fmt::format("clang -O2 -c {} -o main.o", finalIr);
   fmt::println("Generating object file: {}", objectCommand);
   if (auto rc = std::system(objectCommand.c_str())) {
     fmt::println(
@@ -324,32 +430,9 @@ int main(int argc, char** argv) {
 
   fmt::println("Generating executable");
 
-  auto& clangArgs = CompilerContext::inst().c.clangArgs;
-
-  // Create object from included C files
-  bool cIncludes = !clangArgs.empty();
-
-  std::string cIncludeObject;
-  if (cIncludes) {
-    cIncludeObject = "include.o";
-    fmt::println("Compiling included C files");
-    auto clangCommand = fmt::format(
-      "clang -x c {} -c /dev/null -o {}",
-      fmt::join(clangArgs, " "),
-      cIncludeObject
-    );
-    fmt::println("Clang args: {}", clangArgs);
-    auto rc = std::system(clangCommand.c_str());
-    if (rc != 0) {
-      fmt::println("Error compiling include files");
-      abort();
-    }
-  }
-
   auto& linkedLibararies = CompilerContext::inst().c.linkedLibraries;
   auto clangCommand = fmt::format(
-    "clang main.o {} {} -o {}",
-    cIncludeObject,
+    "clang main.o {} -o {}",
     fmt::join(linkedLibararies, " "),
     executable
   );

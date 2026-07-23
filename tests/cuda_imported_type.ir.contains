@@ -1,0 +1,3 @@
+%Nested = type {float}
+%Params = type {i32, %Nested}
+%Holder = type {%Params}

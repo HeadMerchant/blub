@@ -110,6 +110,7 @@ concept AstVisitor = requires(T t, NodeIndex nodeIndex, TokenPointer token) {
   { t.add(nodeIndex, nodeIndex) } -> std::same_as<typename T::ReturnType>;
   { t.subtract(nodeIndex, nodeIndex) } -> std::same_as<typename T::ReturnType>;
   { t.multiply(nodeIndex, nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.power(nodeIndex, nodeIndex) } -> std::same_as<typename T::ReturnType>;
   { t.divide(nodeIndex, nodeIndex) } -> std::same_as<typename T::ReturnType>;
   {
     t.leftDivide(nodeIndex, nodeIndex)
@@ -184,6 +185,9 @@ T::ReturnType binopVisit(
   }
   case TokenType::Mult: {
     return t.multiply(a, b);
+  }
+  case TokenType::Power: {
+    return t.power(a, b);
   }
   case TokenType::Div: {
     return t.divide(a, b);

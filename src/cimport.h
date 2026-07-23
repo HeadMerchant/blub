@@ -19,5 +19,6 @@ Environment* cBindings(
   std::string prefix,
   std::queue<std::string>& globals,
   TypeCache& definedTypes,
-  TypeEmitter emitType = {}
+  TypeEmitter emitType = {},
+  std::function<void(std::string_view)> emitStaticInline = {}
 );

@@ -14,7 +14,7 @@ print_u32 :: fn(x: u32) {
 	buf : [10]u8
 	if (x == 0) {
 		buf[9] = 48
-		print(buf[9.<])
+		print(buf[9..<])
 	}
 	i :u32 = 10
 	y := x
@@ -24,14 +24,14 @@ print_u32 :: fn(x: u32) {
 		y = y / 10
 		buf[i] = 48 + @numCast(digit, u8)
 	}
-	print(buf[i.<])
+	print(buf[i..<])
 }
 
 print_s32 :: fn(x: s32) {
 	buf : [11]u8
 	if (x == 0) {
 		buf[10] = 48
-		print(buf[10.<])
+		print(buf[10..<])
 	}
 	isNegative := x < 0
 	i : u32 = 11
@@ -46,7 +46,7 @@ print_s32 :: fn(x: s32) {
 		i = i - 1
 		buf[i] = 45
 	}
-	print(buf[i.<])
+	print(buf[i..<])
 }
 
 printBin :: fn(x: u32) {
@@ -60,7 +60,7 @@ printBin :: fn(x: u32) {
 		i = i + 1
 	}
 
-	print(buf[0.<])
+	print(buf[0..<])
 }
 
 printHex :: fn(x: u32) {
@@ -68,13 +68,13 @@ printHex :: fn(x: u32) {
 	i: u32 = 0
 	y := x
 	while (i < 8) {
-		# digit: u8 = 
+		# digit: u8 =
 		digit := y % 16
 		buf[7-i] = @numCast(digit + (if (digit < 10) 48 else 55))
 		y = y / 16
 		i = i + 1
 	}
-	println(buf[0.<])
+	println(buf[0..<])
 }
 
 printFloat :: fn(x: f32) {
@@ -83,7 +83,6 @@ printFloat :: fn(x: f32) {
 
       if (written > 0) {
           length := @numCast(written, usize)
-          print(buffer[0.<length])
+          print(buffer[0..<length])
       }
   }
-

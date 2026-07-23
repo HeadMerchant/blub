@@ -175,6 +175,15 @@ TEST_CASE("blub file tests") {
       );
 
       INFO(compileResult.output);
+      if (auto expectedErrorPath =
+            expectationPathFor(testPath, ".compile_error.contains")) {
+        bool compilationFailed =
+          !compileResult.exitedNormally || compileResult.exitCode != 0;
+        CHECK(compilationFailed);
+        auto expectedError = normalizeOutput(readFile(*expectedErrorPath));
+        CHECK(compileResult.output.find(expectedError) != std::string::npos);
+        continue;
+      }
       REQUIRE(compileResult.exitedNormally);
       REQUIRE_EQ(compileResult.exitCode, 0);
 

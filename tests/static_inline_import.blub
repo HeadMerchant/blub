@@ -1,0 +1,5 @@
+using @cImport("static_inline_fixture.h", "c_")
+
+main :: fn() {
+  static_inline_puts(static_inline_message())
+}

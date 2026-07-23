@@ -1,0 +1,5 @@
+define i32 @"runtimePower"
+mul i32
+define float @"runtimeReciprocal"
+fmul float
+fdiv float

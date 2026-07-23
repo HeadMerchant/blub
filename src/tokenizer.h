@@ -57,6 +57,7 @@ enum class TokenType {
   Plus = ARITH_START,
   Minus,
   Mult,
+  Power,
   Div,
   LeftDiv,
   Remainder,
@@ -318,10 +319,20 @@ struct Tokenizer {
       break;
     }
     case '.': {
-      // TODO: inclusive range
-      if (peek() == '<') {
+      if (peek() == '.') {
         advance();
-        addToken(TokenType::ExclusiveRange);
+        if (peek() == '<') {
+          advance();
+          addToken(TokenType::ExclusiveRange);
+        } else if (peek() == '=') {
+          advance();
+          addToken(TokenType::ExclusiveRange);
+        } else {
+          crash(
+            "Expected '<' or '=' for exclusive or inclusive range, but found",
+            peek()
+          );
+        }
       } else if (isdigit(peek())) {
         number(true);
       } else {
@@ -421,7 +432,12 @@ struct Tokenizer {
       break;
     }
     case '*': {
-      addToken(TokenType::Mult);
+      if (peek() == '*') {
+        advance();
+        addToken(TokenType::Power);
+      } else {
+        addToken(TokenType::Mult);
+      }
       break;
     }
     case '/': {
@@ -602,16 +618,18 @@ struct Tokenizer {
   void number(bool hasDecimal = false) {
     while (!isAtEnd()) {
       char c = peek();
-      if (!(isdigit(c) || c == '.')) break;
       if (c == '.') {
-        if (peek(1) == '<') {
-          addToken(TokenType::Integer);
-          return;
-        }
+        // TODO: float ranges?
         if (hasDecimal) {
           crash("Encountered second decimal point when parsing number");
         }
+        if (peek(1) == '.') {
+          addToken(TokenType::Integer);
+          return;
+        }
         hasDecimal = true;
+      } else if (!isdigit(c)) {
+        break;
       }
       advance();
     }
@@ -714,11 +732,13 @@ public:
     );
     u32 lineNumber = line - firstCharacterOnLine.begin();
     u32 lineStartIndex = (line - 1)[0];
+    auto lineContents =
+      sourceCode.substr(lineStartIndex, *line - lineStartIndex - 1);
+    // lineContents = lineContents.substr(lineContents.find('\n'));
     return {
       .line = lineNumber,
       .column = charIndex - lineStartIndex,
-      .lineContents =
-        sourceCode.substr(lineStartIndex, *line - lineStartIndex - 1),
+      .lineContents = lineContents,
       .lexeme = lexeme
     };
   }

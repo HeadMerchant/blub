@@ -632,11 +632,24 @@ public:
   NodeIndex statement() {
     acceptN(TokenType::StatementBreak);
 
-    bool isDeclaration =
-      check(TokenType::Identifier) && check(TokenType::Colon, {1});
-    NodeIndex node = isDeclaration ? declaration() : assignment();
+    NodeIndex node;
 
-    if (!isAtEnd()) {
+    if (auto storage = match(TokenType::BUILTIN_Shared)) {
+      auto name = consume(
+        TokenType::Identifier,
+        "Expected an identifier after '@shared'"
+      );
+      consume(TokenType::Colon, "Expected ':' after shared identifier");
+      auto type = expression();
+      node =
+        addNode(Encodings::Definition{.name = name, .type = type}, storage);
+    } else {
+      bool isDeclaration =
+        check(TokenType::Identifier) && check(TokenType::Colon, {1});
+      node = isDeclaration ? declaration() : assignment();
+    }
+
+    if (!(isAtEnd() || check(TokenType::RightCurlyBrace))) {
       consumeN(TokenType::StatementBreak, "Expected a breaking statement");
     }
     return node;
@@ -904,6 +917,21 @@ public:
     return expr;
   }
 
+  NodeIndex power() {
+    auto expr = call();
+    if (auto op = match(TokenType::Power)) {
+      acceptN(TokenType::StatementBreak);
+      expr = addNode(
+        Encodings::BinaryOp{
+          .left = expr,
+          .right = unary(),
+          .operation = op,
+        }
+      );
+    }
+    return expr;
+  }
+
   NodeIndex unary() {
     NodeIndex expr;
     std::stack<pair<TokenPointer, UnaryOps>> stack;
@@ -922,7 +950,7 @@ public:
       } else if ((token = match(TokenType::MultiPointer))) {
         op = UnaryOps::MultiPointerTo;
       } else {
-        expr = call();
+        expr = power();
         break;
       }
       stack.push({token, op});

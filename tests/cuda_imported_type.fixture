@@ -1,0 +1,11 @@
+Nested :: struct {
+	value: f32
+}
+
+Params :: struct {
+	count: u32
+	nested: Nested
+}
+
+noop :: kernel(params: Params) {
+}

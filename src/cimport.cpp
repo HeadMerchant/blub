@@ -341,7 +341,8 @@ Environment* cBindings(
   std::string prefix,
   std::queue<std::string>& globals,
   TypeCache& definedTypes,
-  TypeEmitter emitType
+  TypeEmitter emitType,
+  std::function<void(std::string_view)> emitStaticInline
 ) {
   auto fileName = cFile.string();
   static std::unordered_map<fs::path, Environment> importedFiles;
@@ -465,6 +466,13 @@ Environment* cBindings(
       );
     } else if (kind == "FunctionDecl") {
       log("Making function: {}", unprefixedValueName);
+      bool isInline = false;
+      std::string_view storageClass;
+      node["inline"].get(isInline);
+      node["storageClass"].get(storageClass);
+      if (isInline && storageClass == "static" && emitStaticInline) {
+        emitStaticInline(valueName);
+      }
       std::string_view qualType;
       bool error = node["type"]["qualType"].get(qualType);
       if (error) {

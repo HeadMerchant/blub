@@ -9,6 +9,7 @@
 #include "typechecker.h"
 #include "types.h"
 #include "value.h"
+#include <filesystem>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
@@ -60,6 +61,7 @@ struct CompilerContext {
   struct {
     vector<std::string> linkedLibraries;
     vector<std::string> clangArgs;
+    vector<std::string> staticInlineFunctions;
   } c;
   struct {
     std::ofstream* outputFileStream;
@@ -180,7 +182,7 @@ struct Compiler {
       isType ? linkageContext().typeNames : linkageContext().globalNames;
     // TODO: sussy
     if (!names.insert(linkageName).second) {
-    // if (!names.insert(std::string(linkageName)).second) {
+      // if (!names.insert(std::string(linkageName)).second) {
       crash(nodeIndex, "Duplicate LLVM linkage name '{}'", linkageName);
     }
   }
@@ -776,6 +778,12 @@ struct Compiler {
       targetType == TargetType::Cpu
         ? CompilerContext::inst().blub.emittedTypeDefinitions
         : CompilerContext::inst().cuda.emittedTypeDefinitions;
+
+    if (auto aligned = std::get_if<AlignedType>(&Pool().getType(type))) {
+      ensureTypeDefinition(aligned->baseType);
+      return;
+    }
+
     if (emittedTypes.contains(type)) {
       return;
     }
@@ -845,6 +853,49 @@ struct Compiler {
     auto oldName = name;
     name = node.name->lexeme;
     log("Using name: {}", name);
+    if (parser.getToken(nodeIndex)->type == TokenType::BUILTIN_Shared) {
+      if (targetType != TargetType::Gpu) {
+        crash(nodeIndex, "'@shared' storage is only available for CUDA code");
+      }
+      if (environment.envType() != EnvType::Global) {
+        crash(nodeIndex, "'@shared' declarations must be at module scope");
+      }
+      auto type = compile(node.type, Pool().type).unboxType();
+      if (!type || type == Pool().infer) {
+        crash(node.type, "'@shared' declarations require a concrete type");
+      }
+      ensureTypeDefinition(type);
+      auto storageName = qualifyLinkageName(node.name->lexeme);
+      claimLinkageName(registerNameToString(storageName), false);
+      StackValue storage(
+        storageName,
+        type,
+        ValueScope::Global,
+        AddressSpace::cudaShared()
+      );
+      if (!environment.define(
+            node.name->lexeme,
+            Reference(storage),
+            parser.locationOf(nodeIndex)
+          )) {
+        crash(
+          nodeIndex,
+          "Duplicate shared declaration '{}'",
+          node.name->lexeme
+        );
+      }
+      auto alignment = Pool().getSizing(type).alignment.byteAlignment();
+      globalsStack.push(
+        fmt::format(
+          "{} = internal addrspace(3) global {} undef, align {}",
+          storage,
+          LlvmName(type),
+          alignment
+        )
+      );
+      name = oldName;
+      return Reference::Void();
+    }
     StackValue* def = makeDefinition(node.name, node.type, nodeIndex);
     emitDefinition(*def);
     doAssignment(*def, Reference(ZeroInit{}));
@@ -1633,6 +1684,116 @@ struct Compiler {
     return arithmeticOperation(a, b, multOp);
   }
 
+  Reference powerIdentity(TypeIndex type) {
+    if (auto floatType = Pool().getFloat(type)) {
+      return Reference(FloatLiteral(1.0, floatType->precision));
+    }
+    if (type == Pool().floatLiteral) return Reference(FloatLiteral(1.0));
+    return Reference(IntLiteral(1, type));
+  }
+
+  Reference emitPowerArithmetic(
+    Reference left,
+    Reference right,
+    TypeIndex type,
+    bool divide = false
+  ) {
+    left = toRegister(coerceValue(left, type));
+    right = toRegister(coerceValue(right, type));
+    auto result = environment.makeTemporary(type);
+    auto instruction = divide ? "fdiv" : Pool().isFloat(type) ? "fmul" : "mul";
+    emitLine(
+      "{} = {} {} {}, {}",
+      result,
+      instruction,
+      LlvmName(type),
+      left,
+      right
+    );
+    return Reference(result);
+  }
+
+  ReturnType power(NodeIndex base, NodeIndex exponent) {
+    auto resultType = typeChecker.readType(nodeIndex).type;
+    if (Pool().isVoid(resultType)) {
+      // Compound assignments type-check as void; their arithmetic result has
+      // the type of the left-hand side.
+      resultType = typeChecker.check(base).type;
+    }
+    auto exponentValue = compile(exponent);
+    auto exponentLiteral = exponentValue.unbox<IntLiteral>();
+    if (!exponentLiteral) {
+      crash(
+        exponent,
+        "Exponentiation requires a compile-time integer exponent"
+      );
+    }
+
+    auto signedExponent = exponentLiteral->value;
+    bool negative = signedExponent < 0;
+    if (negative && !Pool().isFloat(resultType)) {
+      crash(
+        exponent,
+        "Negative exponents require a floating-point base, but the base is "
+        "'{}'",
+        TypeName(resultType)
+      );
+    }
+    u64 magnitude = negative ? static_cast<u64>(-(signedExponent + 1)) + 1
+                             : static_cast<u64>(signedExponent);
+
+    auto baseValue = compile(base, resultType);
+    if (auto integer = baseValue.unbox<IntLiteral>()) {
+      u64 factor = static_cast<u64>(integer->value);
+      u64 result = 1;
+      auto remaining = magnitude;
+      while (remaining != 0) {
+        if (remaining & 1) result *= factor;
+        remaining >>= 1;
+        if (remaining != 0) factor *= factor;
+      }
+      return Reference(IntLiteral(static_cast<int64_t>(result), resultType));
+    }
+    if (auto floating = baseValue.unbox<FloatLiteral>()) {
+      double factor = floating->value;
+      double result = 1.0;
+      auto remaining = magnitude;
+      while (remaining != 0) {
+        if (remaining & 1) result *= factor;
+        remaining >>= 1;
+        if (remaining != 0) factor *= factor;
+      }
+      if (negative) result = 1.0 / result;
+      return Reference(FloatLiteral(result, floating->precision));
+    }
+
+    baseValue = toRegister(coerceValue(baseValue, resultType));
+    optional<Reference> result;
+    auto factor = baseValue;
+    auto remaining = magnitude;
+    while (remaining != 0) {
+      if (remaining & 1) {
+        result =
+          result ? emitPowerArithmetic(*result, factor, resultType) : factor;
+      }
+      remaining >>= 1;
+      if (remaining != 0) {
+        factor = emitPowerArithmetic(factor, factor, resultType);
+      }
+    }
+
+    auto powered = result.value_or(powerIdentity(resultType));
+    if (negative) {
+      powered = emitPowerArithmetic(
+        powerIdentity(resultType),
+        powered,
+        resultType,
+        true
+      );
+    }
+    return powered;
+  }
+
   ReturnType divide(NodeIndex a, NodeIndex b) {
     static ArithmeticOperator op{"div", "divide", TokenType::Div, true};
     return arithmeticOperation(a, b, op);
@@ -2084,8 +2245,13 @@ struct Compiler {
         }
         auto lengthRef = RangeBound(length);
         guardIndexInBounds(index, lengthRef);
-        auto result = StackValue(environment.addTemporary(), elementType);
         auto listPointer = *list.lValue();
+        auto result = StackValue(
+          environment.addTemporary(),
+          elementType,
+          ValueScope::Local,
+          listPointer.addressSpace
+        );
         emitLine(
           "{} = getelementptr {}, {} {}, {} {}",
           result,
@@ -2957,11 +3123,9 @@ struct Compiler {
       );
     }
 
-    auto includeFile =
-      fs::absolute(
-        inputFilePath.parent_path() / parser.getToken(argumentNodes[0])->lexeme
-      )
-        .lexically_normal();
+    auto includeFile = fs::weakly_canonical(
+      inputFilePath.parent_path() / parser.getToken(argumentNodes[0])->lexeme
+    );
     auto fileName = includeFile.string();
     std::unordered_map<std::string_view, TypeIndex> definedTypes;
     for (auto [name, value] : args.named) {
@@ -2980,7 +3144,15 @@ struct Compiler {
       prefix,
       globalsStack,
       definedTypes,
-      [this](TypeIndex type) { ensureTypeDefinition(type); }
+      [this](TypeIndex type) { ensureTypeDefinition(type); },
+      [this](std::string_view name) {
+        auto& functions = CompilerContext::inst().c.staticInlineFunctions;
+        if (
+          std::find(functions.begin(), functions.end(), name) == functions.end()
+        ) {
+          functions.emplace_back(name);
+        }
+      }
     ));
   }
 
@@ -3715,6 +3887,14 @@ struct Compiler {
           );
         }
 
+        // A struct field can refer to a type originating in another target
+        // environment, notably a struct exported by @cudaImport. Its type
+        // metadata is shared with the host compiler, but its LLVM definition
+        // was previously emitted only to the CUDA module. Materialize the
+        // dependency in the current module before emitting the containing
+        // struct.
+        ensureTypeDefinition(type);
+
         // TODO: default values
         if (!Pool().getStruct(structIndex).defineField(fieldName, type)) {
           auto definitionIndex =
@@ -4427,6 +4607,13 @@ struct Compiler {
       }
     }
 
+    // PTX identifiers cannot contain the dots used by CPU module linkage
+    // names. Keep source-level kernel names unchanged while making imported
+    // CUDA module prefixes valid PTX identifiers.
+    if (targetType == TargetType::Gpu) {
+      std::replace(modulePrefix.begin(), modulePrefix.end(), '.', '$');
+    }
+
     if (compiledFiles.contains(fileName)) {
       return &compiledFiles[fileName];
     }
@@ -4671,7 +4858,11 @@ struct Compiler {
   }
 
   Reference copyCudaSymbol(RegisterName name) {
-    auto result = RegisterValue(Environment::nextGlobalIndex(), Pool().u8ptr, ValueScope::Global);
+    auto result = RegisterValue(
+      Environment::nextGlobalIndex(),
+      Pool().u8ptr,
+      ValueScope::Global
+    );
     stringstream global;
     fmt::print(global, "{} = global [", result);
     std::visit(

@@ -1,0 +1,10 @@
+gpu :: @cudaImport "cuda_imported_type.fixture"
+
+Holder :: struct {
+	params: gpu.Params
+}
+
+main :: fn() {
+	holder : Holder
+	holder.params.count = 7
+}
