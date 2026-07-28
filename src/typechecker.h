@@ -676,9 +676,9 @@ struct TypeChecker {
     for (auto required : params.requiredParameters) {
       auto definition = parser.getDefinition(required);
       check(definition.type, Pool().type);
-      paramTypes.push_back(materialize(
-        definition.type, definition.name->lexeme, functionScope
-      ));
+      paramTypes.push_back(
+        materialize(definition.type, definition.name->lexeme, functionScope)
+      );
     }
 
     for (auto _ : params.optionalParameters) {
@@ -1117,8 +1117,8 @@ struct TypeChecker {
     return {Pool().sliceOf(Pool()._u8)};
   }
 
-  ReturnType forLoop(TokenPointer var, NodeIndex iterator, NodeIndex body) {
-    auto iteratorType = check(iterator).type;
+  ReturnType forLoop(Encodings::ForLoop node) {
+    auto iteratorType = check(node.iterator).type;
     if (
       Pool().sliceElementType(iteratorType) ||
       iteratorType == Pool().rangeLiteral ||
@@ -1127,7 +1127,7 @@ struct TypeChecker {
       return {Pool()._void};
     }
     crash(
-      iterator,
+      node.iterator,
       "iterator for for loop must be either a range literal or a slice, but "
       "was of type '{}'",
       TypeName(iteratorType)

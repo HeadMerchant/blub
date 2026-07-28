@@ -359,7 +359,7 @@ struct Reference {
     );
   }
 
-  static Reference unboxBound(RangeBound& bound) {
+  static Reference unboxBound(RangeBound bound) {
     return std::visit(overloaded{[](auto x) { return Reference(x); }}, bound);
   }
 };

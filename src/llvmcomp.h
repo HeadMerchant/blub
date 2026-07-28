@@ -4182,17 +4182,113 @@ struct Compiler {
     return makeSlice(ref, lengthValue);
   }
 
-  ReturnType forLoop(TokenPointer var, NodeIndex iteratorNode, NodeIndex body) {
-    auto node = parser.getForLoop(nodeIndex);
-    // auto loopCondition = loopHeader + ".if";
-    // auto loopUpdate = loopHeader + ".else";
-    // auto loopBody = loopHeader + ".continue";
-    // auto endLabel = loopHeader + ".break";
-
-    auto iterator = compile(iteratorNode);
-
+  ReturnType forLoop(Encodings::ForLoop node) {
+    auto iterator = compile(node.iterator);
+    auto captureName = node.capture.name->lexeme;
+    auto captureType =
+      node.capture.type ? compile(node.capture.type).unboxType() : Pool().infer;
     if (auto range = iterator.unbox<Range>()) {
-      TODO("Range iterators");
+      auto startLabel = environment.currentLabel;
+      auto iteratorType = range->getType();
+      auto finalType = Pool().isAssignable(iteratorType, captureType);
+      if (!finalType) {
+        crash(
+          node.capture.type,
+          "Unable to iterate '{}' in range of type '{}'",
+          TypeName(captureType),
+          TypeName(iteratorType)
+        );
+      }
+      captureType = finalType;
+      auto lowerBound = Reference::unboxBound(range->lower);
+      lowerBound = toRegister(lowerBound);
+      auto upperBound =
+        Reference::unboxBound(range->upper.value_or(IntLiteral(0)));
+      upperBound = toRegister(upperBound);
+      auto iterationVariable = environment.makeTemporary(captureType);
+
+      auto scopeGuard = environment.pushScope();
+      if (!environment.define(
+            captureName,
+            Reference(iterationVariable),
+            parser.locationOf(node.iterator)
+          )) {
+
+        auto original = environment.definitionLocation(captureName);
+        fmt::println(std::cerr, "{} originally defined at:", captureName);
+        original->underline(std::cerr);
+        crash(
+          node.capture.name,
+          "Iteration variable name '{}' shadows a higher scope",
+          captureName
+        );
+      }
+
+      auto loopHeader = environment.nextLabel();
+      auto loopCondition = environment.nextLabel();
+      auto conditionVar = environment.makeTemporary(Pool()._bool);
+
+      auto loopBodyLabel = environment.nextLabel();
+      stringstream loopBody;
+      environment.currentLabel = loopBodyLabel;
+      compile(node.body, loopBody);
+
+      auto nextIterationVariable = environment.makeTemporary(captureType);
+      emitLine("br label %{}\n{}:", loopHeader, loopHeader);
+      auto loopEnd = environment.nextLabel();
+      // start -> lowerBound; loop body -> newVal
+      emitLine(
+        "{} = phi {} [{}, %{}], [{}, %{}]",
+        iterationVariable,
+        LlvmName(captureType),
+        lowerBound,
+        startLabel,
+        nextIterationVariable,
+        loopEnd
+      );
+      emitLine("br label %{}\n{}:", loopCondition, loopCondition);
+      if (Pool().isSignedInt(captureType)) {
+        emitLine(
+          "{} = icmp slt {} {}, {}",
+          conditionVar,
+          LlvmName(captureType),
+          iterationVariable,
+          upperBound
+        );
+      } else if (Pool().isUnsignedInt(captureType)) {
+        emitLine(
+          "{} = icmp ult {} {}, {}",
+          conditionVar,
+          LlvmName(captureType),
+          iterationVariable,
+          upperBound
+        );
+      } else {
+        crash(
+          nodeIndex,
+          "Internal error; iterating range with non-integer type {}",
+          TypeName(captureType)
+        );
+      }
+      auto postLoop = environment.nextLabel();
+      emitLine(
+        "br i1 {}, label %{}, label %{}",
+        conditionVar,
+        loopBodyLabel,
+        postLoop
+      );
+      emitLine("{}:", loopBodyLabel);
+      emitLine(loopBody);
+      emitLine("br label %{}\n{}:", loopEnd, loopEnd);
+      emitLine(
+        "{} = add {} {}, 1",
+        nextIterationVariable,
+        LlvmName(captureType),
+        iterationVariable
+      );
+      emitLine("br label %{}\n", loopCondition);
+      emitLine("{}:", postLoop);
+      environment.currentLabel = postLoop;
     } else if (
       auto type = iterator.getType();
       auto elementType = Pool().sliceElementType(type)
@@ -4243,7 +4339,7 @@ struct Compiler {
       auto loopCondition = environment.nextLabel();
       emitLine("{}:", loopCondition);
       // TODO: by ref vs by value
-      auto iterationName = node.capture->lexeme;
+      auto iterationName = captureName;
       auto iterationVariable = StackValue(
         environment.addTemporary(),
         elementType,
@@ -4267,8 +4363,8 @@ struct Compiler {
         fmt::println(std::cerr, "{} originally defined at:", iterationName);
         original->underline(std::cerr);
         crash(
-          node.capture,
-          "Parameter name {} shadows a higher scope",
+          node.capture.name,
+          "Iteration variable name '{}' shadows a higher scope",
           iterationName
         );
       }

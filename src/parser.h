@@ -24,7 +24,6 @@ enum class NodeType {
   MultiLineString,
   ArgumentList,
   ParameterList,
-  ForLoop,
   Assignment,
   Apply,
 };
@@ -157,7 +156,7 @@ struct Enum {
 };
 
 struct ForLoop {
-  TokenPointer capture;
+  Definition capture;
   NodeIndex iterator;
   NodeIndex body;
 };
@@ -596,26 +595,6 @@ public:
     return {.rawType = {rawType}, .entries = entries};
   }
 
-  NodeIndex addNode(Encodings::ForLoop node) {
-    return addNode(
-      ASTNode{
-        .left = node.iterator.value,
-        .right = node.body.value,
-        .token = toIndex(node.capture),
-        .nodeType = NodeType::ForLoop
-      }
-    );
-  }
-
-  Encodings::ForLoop getForLoop(NodeIndex node) {
-    auto encoded = getNode(node, NodeType::ForLoop);
-    return {
-      .capture = toPointer(encoded.token),
-      .iterator = {encoded.left},
-      .body = {encoded.right}
-    };
-  }
-
 public:
   bool nodeTokenPrecedes(NodeIndex a, NodeIndex b) {
     return getNode(a).token.value < getNode(b).token.value;
@@ -888,7 +867,6 @@ public:
           Encodings::BinaryOp{.left = expr, .right = unary(), .operation = op};
         expr = addNode(node);
       } else if (auto token = match(TokenType::Impl)) {
-        // TODO impl for
         consume(TokenType::LeftCurlyBrace, "'impl' block must start with '{'");
         vector<NodeIndex> declarations;
         while (!match(TokenType::RightCurlyBrace)) {
@@ -1339,20 +1317,25 @@ public:
         "'for' loop must provide capture/iterator information within "
         "parentheses"
       );
-      auto capture =
-        consume(TokenType::Identifier, "Expected iteration variable name");
-      consume(
-        TokenType::Colon,
-        "Iteration variable and iterator must be separated by a ':'"
-      );
-      auto iterator = expression();
+      auto iteration = declaration();
+      {
+        auto type = nodeType(iteration);
+        if (type == NodeType::Definition) {
+          crash(
+            iteration,
+            "Iterator required for 'for' loop (append '=' and an expression)"
+          );
+        } else if (type != NodeType::Declaration) {
+          crash(iteration, "Expected a declaration in 'for' loop capture");
+        }
+      }
       consume(TokenType::RightParen, "Expected closing ')'");
       auto body = expression();
       return addNode(
-        Encodings::ForLoop{
-          .capture = capture,
-          .iterator = iterator,
-          .body = body
+        Encodings::BinaryOp{
+          .left = iteration,
+          .right = body,
+          .operation = token,
         }
       );
     }

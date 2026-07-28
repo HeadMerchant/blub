@@ -129,9 +129,7 @@ concept AstVisitor = requires(T t, NodeIndex nodeIndex, TokenPointer token) {
   } -> std::same_as<typename T::ReturnType>;
   { t.nullPointer() } -> std::same_as<typename T::ReturnType>;
   { t.builtinName(nodeIndex) } -> std::same_as<typename T::ReturnType>;
-  {
-    t.forLoop(token, nodeIndex, nodeIndex)
-  } -> std::same_as<typename T::ReturnType>;
+  { t.forLoop(Encodings::ForLoop{}) } -> std::same_as<typename T::ReturnType>;
 };
 
 static std::unordered_map<TokenType, std::string_view> cudaBuiltins{
@@ -245,6 +243,16 @@ T::ReturnType binopVisit(
   }
   case TokenType::Impl: {
     return t.impl(a, b);
+  }
+  case TokenType::For: {
+    auto iteration = parser.getDeclaration(a);
+    return t.forLoop(
+      Encodings::ForLoop{
+        .capture = parser.getDefinition(iteration.definition),
+        .iterator = iteration.value,
+        .body = b
+      }
+    );
   }
   default:
     parser.crash(a, "Unknown binary operation");
@@ -499,10 +507,7 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
   case NodeType::MultiLineString: {
     return t.multiLineString(nodeIndex);
   }
-  case NodeType::ForLoop: {
-    auto node = parser.getForLoop(nodeIndex);
-    return t.forLoop(node.capture, node.iterator, node.body);
-  }
+
   case NodeType::Apply: {
     auto node = parser.getNode(nodeIndex);
     return t.apply({node.left}, {node.right});
