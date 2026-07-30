@@ -1,0 +1,17 @@
+fmt :: import "fmt.blub"
+
+main :: fn() {
+  values := [1, 2, 3, 4, 5]s32
+  total := 0
+  for (value := values[0..<]) {
+    total = total + value
+    value = 1
+  }
+  fmt.print_s32(total)
+  fmt.println("")
+  total = 0
+  for (value := values[]) {
+    total += value
+  }
+  fmt.print_s32(total)
+}

@@ -121,10 +121,7 @@ void promoteStaticInlineDefinitions(
     }
   }
 
-  std::ofstream output(
-    irPath,
-    std::ofstream::out | std::ofstream::trunc
-  );
+  std::ofstream output(irPath, std::ofstream::out | std::ofstream::trunc);
   if (!output.is_open()) {
     throw std::invalid_argument(
       "Unable to write imported C LLVM IR to " + irPath.string()
@@ -142,7 +139,8 @@ void promoteStaticInlineDefinitions(
 
 //   std::ifstream input(ptxPath);
 //   if (!input.is_open()) {
-//     throw std::invalid_argument("Unable to open PTX file " + ptxPath.string());
+//     throw std::invalid_argument("Unable to open PTX file " +
+//     ptxPath.string());
 //   }
 //   std::string ptx{
 //     std::istreambuf_iterator<char>(input),
@@ -160,7 +158,8 @@ void promoteStaticInlineDefinitions(
 
 //   std::ofstream output(ptxPath, std::ios::trunc);
 //   if (!output.is_open()) {
-//     throw std::invalid_argument("Unable to rewrite PTX file " + ptxPath.string());
+//     throw std::invalid_argument("Unable to rewrite PTX file " +
+//     ptxPath.string());
 //   }
 //   output << ptx;
 // }
@@ -360,8 +359,7 @@ int main(int argc, char** argv) {
   outFile.close();
 
   auto& clangArgs = CompilerContext::inst().c.clangArgs;
-  auto& staticInlineFunctions =
-    CompilerContext::inst().c.staticInlineFunctions;
+  auto& staticInlineFunctions = CompilerContext::inst().c.staticInlineFunctions;
   bool cIncludes = !clangArgs.empty();
   std::string finalIr = outFilename;
 
@@ -418,7 +416,7 @@ int main(int argc, char** argv) {
     finalIr = linkedIr.string();
   }
 
-  auto objectCommand = fmt::format("clang -O2 -c {} -o main.o", finalIr);
+  auto objectCommand = fmt::format("clang -c {} -o main.o", finalIr);
   fmt::println("Generating object file: {}", objectCommand);
   if (auto rc = std::system(objectCommand.c_str())) {
     fmt::println(

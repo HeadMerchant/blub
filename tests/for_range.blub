@@ -1,0 +1,9 @@
+fmt :: import "fmt.blub"
+
+main :: fn() {
+  total := 0
+  for (i := 0..<5) {
+    total = total + i
+  }
+  fmt.print_s32(total)
+}

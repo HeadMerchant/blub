@@ -2300,6 +2300,7 @@ struct Compiler {
     emitLine("{}:", crashBlockId);
     crashInstruction();
     emitLine("{}:", continueBlockId);
+    environment.currentLabel = continueBlockId;
   }
 
   void crashInstruction() {
@@ -4187,7 +4188,14 @@ struct Compiler {
     auto captureName = node.capture.name->lexeme;
     auto captureType =
       node.capture.type ? compile(node.capture.type).unboxType() : Pool().infer;
+
     if (auto range = iterator.unbox<Range>()) {
+      if (!range->hasUpper()) {
+        crash(
+          node.iterator,
+          "A range used for iteration must have an upper bound"
+        );
+      }
       auto startLabel = environment.currentLabel;
       auto iteratorType = range->getType();
       auto finalType = Pool().isAssignable(iteratorType, captureType);
@@ -4286,46 +4294,22 @@ struct Compiler {
         LlvmName(captureType),
         iterationVariable
       );
-      emitLine("br label %{}\n", loopCondition);
+      emitLine("br label %{}\n", loopHeader);
       emitLine("{}:", postLoop);
       environment.currentLabel = postLoop;
     } else if (
       auto type = iterator.getType();
       auto elementType = Pool().sliceElementType(type)
     ) {
-      auto loopHeader = environment.nextLabel();
-      emitLine("br label %{}\n{}:", loopHeader, loopHeader);
       auto sliceRegister = toRegister(iterator);
-      auto slicePointer = RegisterValue{
-        .name = environment.addTemporary(),
-        .type = Pool().multiPointerTo(elementType),
-        .scope = ValueScope::Local,
-        .addressSpace = {
-          valueAddressSpaceForType(Pool().multiPointerTo(elementType))
-        },
-      };
-      auto sliceLength = environment.makeTemporary(Pool()._usize);
+      auto [slicePointer, sliceLength] =
+        getSliceElements(std::get<RegisterValue>(sliceRegister.value));
       auto endPointer = RegisterValue{
         .name = environment.addTemporary(),
         .type = Pool().multiPointerTo(elementType),
         .scope = ValueScope::Local,
         .addressSpace = slicePointer.addressSpace,
       };
-
-      emitLine(
-        "{} = extractElement {} {}, {} 0",
-        slicePointer,
-        LlvmName(type),
-        sliceRegister,
-        LlvmName(slicePointer.type)
-      );
-      emitLine(
-        "{} = extractElement {} {}, {} 1",
-        sliceLength,
-        LlvmName(type),
-        sliceRegister,
-        LlvmName(sliceLength.type)
-      );
       emitLine(
         "{} = getelementptr {}, {} {}, {} {}",
         endPointer,
@@ -4337,35 +4321,51 @@ struct Compiler {
       );
 
       auto loopCondition = environment.nextLabel();
-      emitLine("{}:", loopCondition);
-      // TODO: by ref vs by value
-      auto iterationName = captureName;
+      auto startLabel = environment.currentLabel;
+      emitLine("br label %{}\n{}:", loopCondition, loopCondition);
+
       auto iterationVariable = StackValue(
         environment.addTemporary(),
         elementType,
         ValueScope::Local,
         slicePointer.addressSpace
       );
-      auto nextIterationVar = RegisterValue{
-        .name = environment.addTemporary(),
-        .type = Pool().multiPointerTo(elementType),
-        .scope = ValueScope::Local,
-        .addressSpace = slicePointer.addressSpace,
-      };
+      auto captureType = node.capture.type
+                           ? compile(node.capture.type).unboxType()
+                           : Pool().infer;
+      auto finalType = Pool().isAssignable(elementType, captureType);
+      if (!finalType) {
+        crash(
+          node.capture.type,
+          "Unable to capture slice element of type '{}' as '{}'",
+          TypeName(elementType),
+          TypeName(captureType)
+        );
+      }
+      if (finalType != elementType) {
+        crash(
+          node.capture.type,
+          "Slice iteration variables must have element type '{}', but were "
+          "declared as '{}'",
+          TypeName(elementType),
+          TypeName(finalType)
+        );
+      }
+
       auto defGuard = environment.pushScope();
       if (!environment.define(
-            iterationName,
+            captureName,
             Reference(iterationVariable),
             parser.locationOf(node.iterator)
           )) {
 
-        auto original = environment.definitionLocation(iterationName);
-        fmt::println(std::cerr, "{} originally defined at:", iterationName);
+        auto original = environment.definitionLocation(captureName);
+        fmt::println(std::cerr, "{} originally defined at:", captureName);
         original->underline(std::cerr);
         crash(
           node.capture.name,
           "Iteration variable name '{}' shadows a higher scope",
-          iterationName
+          captureName
         );
       }
 
@@ -4373,26 +4373,32 @@ struct Compiler {
 
       auto loopBody = environment.nextLabel();
 
-      // TODO: loop value??
       stringstream body;
+      environment.currentLabel = loopBody;
       compile(node.body, body);
 
+      auto nextIterationVar = RegisterValue{
+        .name = environment.addTemporary(),
+        .type = Pool().multiPointerTo(elementType),
+        .scope = ValueScope::Local,
+        .addressSpace = slicePointer.addressSpace,
+      };
       auto loopUpdate = environment.nextLabel();
       auto endLabel = environment.nextLabel();
 
       emitLine(
         "{} = phi {} [{}, %{}], [{}, %{}]",
         iterationVariable,
-        iterationVariable.addressSpace,
+        LlvmName(Pool().multiPointerTo(elementType)),
         slicePointer,
-        loopHeader,
+        startLabel,
         nextIterationVar,
         loopUpdate
       );
       emitLine(
         "{} = icmp eq {} {}, {}",
         loopBound,
-        iterationVariable.addressSpace,
+        LlvmName(Pool().multiPointerTo(elementType)),
         iterationVariable,
         endPointer
       );
@@ -4410,6 +4416,7 @@ struct Compiler {
         loopCondition,
         endLabel
       );
+      environment.currentLabel = endLabel;
 
       return Reference::Void();
     } else {
@@ -4473,6 +4480,7 @@ struct Compiler {
     emitLine("{}:", crashBlockId);
     crashInstruction();
     emitLine("{}:", continueBlockId);
+    environment.currentLabel = continueBlockId;
   }
 
   void guardIndexInBounds(Reference& index, RangeBound& baseLength) {
@@ -4498,6 +4506,7 @@ struct Compiler {
     emitLine("{}:", crashBlockId);
     crashInstruction();
     emitLine("{}:", continueBlockId);
+    environment.currentLabel = continueBlockId;
   }
 
   RegisterValue guardNonnegativeLength(Reference& lower, RangeBound& upper) {
@@ -4523,6 +4532,7 @@ struct Compiler {
     emitLine("{}:", crashBlockId);
     crashInstruction();
     emitLine("{}:", continueBlockId);
+    environment.currentLabel = continueBlockId;
 
     return length;
   }
