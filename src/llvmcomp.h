@@ -14,6 +14,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <tsl/ordered_set.h>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -26,6 +27,7 @@ struct FunctionStub {
   FunctionType functionType;
   TypeIndex selfType;
   FunctionConvention convention = FunctionConvention::CpuAbi;
+  std::vector<std::pair<string_view, Reference>> genericArguments;
 };
 
 struct SwitchCase {
@@ -57,10 +59,11 @@ struct CompilerContext {
     std::stringstream globalInitialization;
     unordered_set<TypeIndex> emittedTypeDefinitions;
     LinkageContext linkage;
+    tsl::ordered_set<fs::path> includedBinaryFiles;
   } blub;
   struct {
     vector<std::string> linkedLibraries;
-    vector<std::string> clangArgs;
+    tsl::ordered_set<ClangArg> clangArgs;
     vector<std::string> staticInlineFunctions;
   } c;
   struct {
@@ -72,7 +75,6 @@ struct CompilerContext {
     unordered_set<std::string> emittedImports;
     unordered_set<TypeIndex> emittedTypeDefinitions;
     LinkageContext linkage;
-    // vector<pair<std::string, std::string>> ptxSymbolRenames;
   } cuda;
 
   static CompilerContext& inst() {
@@ -130,6 +132,7 @@ struct Compiler {
   TargetType targetType;
   std::string modulePrefix;
   std::vector<FunctionStub> functionStubs;
+  std::vector<std::pair<string_view, Reference>> activeGenericArguments;
 
   using ReturnType = Reference;
   Environment environment;
@@ -220,6 +223,106 @@ struct Compiler {
 
   ReturnType compile(NodeIndex index, TypeIndex targetType = Pool().infer) {
     return compile(index, *outputFile, targetType);
+  }
+
+  ReturnType generic(Encodings::ParameterList parameters, NodeIndex value) {
+    if (!parameters.optionalParameters.empty()) {
+      crash(nodeIndex, "Generic parameters cannot have default values");
+    }
+    GenericValue result{
+      .translationUnit = nullptr,
+      .definitionEnvironment = &environment,
+      .astNode = value,
+      .cache = std::make_shared<std::unordered_map<TupleIndex, Reference*>>(),
+      .name = name,
+    };
+    for (auto parameterIndex : parameters.requiredParameters) {
+      auto parameter = parser.getDefinition(parameterIndex);
+      if (!parameter.type) {
+        crash(parameterIndex, "Generic parameters must have a type");
+      }
+      auto type = typeChecker.check(parameter.type).type;
+      if (type != Pool().type) {
+        crash(
+          parameterIndex,
+          "Generic parameter '{}' must be declared as type",
+          parameter.name->lexeme
+        );
+      }
+      result.parameterNames.push_back(parameter.name->lexeme);
+    }
+    return Reference(std::move(result));
+  }
+
+  ReturnType instantiateGeneric(
+    GenericValue& generic,
+    Encodings::ArgumentList arguments
+  ) {
+    if (generic.definitionEnvironment != &environment) {
+      crash(
+        nodeIndex,
+        "Instantiating generics from imported modules is not supported yet"
+      );
+    }
+    if (!arguments.named.empty()) {
+      crash(nodeIndex, "Named generic arguments are not supported");
+    }
+    if (arguments.positional.size() != generic.parameterNames.size()) {
+      crash(
+        nodeIndex,
+        "Expected {} generic arguments, but {} were provided",
+        generic.parameterNames.size(),
+        arguments.positional.size()
+      );
+    }
+
+    std::vector<TypeIndex> types;
+    std::vector<std::pair<string_view, Reference>> bindings;
+    types.reserve(arguments.positional.size());
+    bindings.reserve(arguments.positional.size());
+    for (u32 i = 0; i < arguments.positional.size(); i++) {
+      auto argument = compile(arguments.positional[i], Pool().type);
+      auto type = argument.unboxType();
+      if (!type) {
+        crash(
+          arguments.positional[i],
+          "Generic argument '{}' must be a compile-time type",
+          generic.parameterNames[i]
+        );
+      }
+      types.push_back(type);
+      bindings.push_back({generic.parameterNames[i], argument});
+    }
+    auto [tupleType, tupleIndex] = Pool().tupleOf(std::move(types));
+    if (
+      auto found = generic.cache->find(tupleIndex);
+      found != generic.cache->end()
+    ) {
+      return Reference(*found->second);
+    }
+
+    auto specializationNameString =
+      fmt::format("{}.generic.{}", generic.name, tupleIndex.value);
+    auto specializationName =
+      StringPool::inst().copy(std::string_view(specializationNameString));
+    auto scope = environment.pushScope();
+    for (auto [parameter, argument] : bindings) {
+      if (!environment
+             .define(parameter, argument, parser.locationOf(generic.astNode))) {
+        crash(generic.astNode, "Duplicate generic parameter '{}'", parameter);
+      }
+    }
+    auto oldArguments = activeGenericArguments;
+    activeGenericArguments = bindings;
+    auto frame = stackItems;
+    frame.name = specializationName;
+    auto guard = push(frame);
+    typeChecker.invalidate();
+    auto result = compile(generic.astNode);
+    activeGenericArguments = std::move(oldArguments);
+    auto cached = new Reference(result);
+    generic.cache->emplace(tupleIndex, cached);
+    return result;
   }
 
   template <typename... Args>
@@ -2074,6 +2177,16 @@ struct Compiler {
   ReturnType index(NodeIndex object, NodeIndex index) {
     auto list = compile(object);
     auto listType = list.getType();
+    if (auto boxedGeneric = list.unbox<GenericValue>()) {
+      return instantiateGeneric(*boxedGeneric, parser.getArgumentList(index));
+    }
+    if (parser.nodeType(index) == NodeType::ArgumentList) {
+      auto arguments = parser.getArgumentList(index);
+      if (arguments.positional.size() != 1 || !arguments.named.empty()) {
+        crash(index, "Indexing requires exactly one positional argument");
+      }
+      index = arguments.positional[0];
+    }
     // TODO: Generic instantiation
     // if (auto boxedGeneric = std::get_if<GenericValue>(&list.value)) {
     //   auto arguments = parser.getArgumentList(index);
@@ -2904,7 +3017,8 @@ struct Compiler {
          .definitionNode = nodeIndex,
          .functionType = functionType,
          .selfType = environment.selfType(),
-         .convention = convention}
+         .convention = convention,
+         .genericArguments = activeGenericArguments}
       );
     } else {
       std::stringstream declaration;
@@ -3070,26 +3184,6 @@ struct Compiler {
     return fs::weakly_canonical(localPath);
   }
 
-  void ensureClangInclude(const std::string& fileName) {
-    auto& clangArgs = CompilerContext::inst().c.clangArgs;
-    for (size_t i = 0; i + 1 < clangArgs.size(); ++i) {
-      if (clangArgs[i] == "-include" && clangArgs[i + 1] == fileName) {
-        return;
-      }
-    }
-    auto includeIt =
-      std::find(clangArgs.begin(), clangArgs.end(), std::string("-include"));
-    if (includeIt == clangArgs.end()) {
-      clangArgs.push_back("-include");
-      clangArgs.push_back(fileName);
-      return;
-    }
-
-    auto insertIndex = static_cast<size_t>(includeIt - clangArgs.begin());
-    clangArgs.insert(clangArgs.begin() + insertIndex, fileName);
-    clangArgs.insert(clangArgs.begin() + insertIndex, "-include");
-  }
-
   ReturnType bitCast(Encodings::ArgumentList args) {
     auto targetType = typeChecker.check(nodeIndex, expectedType).type;
     auto inType = typeChecker.check(args.positional[0]).type;
@@ -3137,11 +3231,10 @@ struct Compiler {
         TODO("Error for passing non-type into types");
       }
     }
-    ensureClangInclude(fileName);
 
-    auto prefix = std::string(parser.getToken(argumentNodes[1])->lexeme);
-    return Reference(cBindings(
-      std::move(includeFile),
+    auto prefix = parser.getToken(argumentNodes[1])->lexeme;
+    auto result = Reference(cBindings(
+      includeFile,
       prefix,
       globalsStack,
       definedTypes,
@@ -3155,6 +3248,10 @@ struct Compiler {
         }
       }
     ));
+    CompilerContext::inst().c.clangArgs.insert(
+      {ClangArg::IncludeFile(std::move(includeFile))}
+    );
+    return result;
   }
 
   ReturnType crashBuiltin() {
@@ -3186,17 +3283,14 @@ struct Compiler {
   ReturnType cDefine(Encodings::ArgumentList args) {
     auto& clangArgs = CompilerContext::inst().c.clangArgs;
     for (auto arg : args.positional) {
-      clangArgs.push_back(fmt::format("-D{}", parser.getToken(arg)->lexeme));
+      clangArgs.insert({ClangArg::Define(parser.getToken(arg)->lexeme)});
     }
 
     for (auto [name, value] : args.named) {
-      clangArgs.push_back(
-        fmt::format(
-          "-D{}={}",
-          parser.getToken(name)->lexeme,
-          parser.getToken(value)->lexeme
-        )
-      );
+      clangArgs.insert({ClangArg::ValueDefine(
+        StringPool::inst().copy(parser.getToken(name)->lexeme),
+        StringPool::inst().copy(parser.getToken(value)->lexeme)
+      )});
     }
     return Reference::Void();
   }
@@ -3205,7 +3299,8 @@ struct Compiler {
     if (args.positional.size() != 1) {
       parser.crash(
         nodeIndex,
-        "Builtin @cInclude must take in 1 string as a positional argument, but "
+        "Builtin @cInclude must take in 1 string as a positional argument, "
+        "but "
         "{} were "
         "given",
         args.positional.size()
@@ -3226,9 +3321,8 @@ struct Compiler {
       );
     }
 
-    CompilerContext::inst().c.clangArgs.push_back("-include");
-    CompilerContext::inst().c.clangArgs.push_back(
-      concatPath(fileName->lexeme).string()
+    CompilerContext::inst().c.clangArgs.insert(
+      {ClangArg::IncludeFile(concatPath(fileName->lexeme))}
     );
     return Reference::Void();
   }
@@ -3241,8 +3335,8 @@ struct Compiler {
     ) {
       auto fileName =
         parser.getToken(parser.getNode(args.positional[0]).token)->lexeme;
-      CompilerContext::inst().c.clangArgs.push_back(
-        "-I" + concatPath(fileName).string()
+      CompilerContext::inst().c.clangArgs.insert(
+        {{ClangArg::IncludeDir(concatPath(fileName))}}
       );
     } else {
       crash(
@@ -3292,16 +3386,8 @@ struct Compiler {
     return Reference::Void();
   }
 
-  ReturnType type(Encodings::ArgumentList args) {
-    if (args.positional.size() != 1 || !args.named.empty()) {
-      crash(
-        nodeIndex,
-        "Builtin '@type' must take one expression argument, but {} "
-        "were provided",
-        args.positional.size()
-      );
-    }
-    return Reference(typeChecker.check(args.positional[0]).type);
+  ReturnType type(NodeIndex node) {
+    return Reference(typeChecker.check(node).type);
   }
 
   ReturnType import(TokenPointer fileName) {
@@ -3747,7 +3833,8 @@ struct Compiler {
         if (paramTypes.empty()) {
           crash(
             nodeIndex,
-            "Function '{}.{}' must have its first argument be of type '^{}' or "
+            "Function '{}.{}' must have its first argument be of type '^{}' "
+            "or "
             "'{} to be called as a method, but it takes 0 arguments'",
             TypeName(type),
             fieldName,
@@ -3777,7 +3864,8 @@ struct Compiler {
       } else {
         crash(
           nodeIndex,
-          "{}.{} can't be called as a method because it's a {}, but must be a "
+          "{}.{} can't be called as a method because it's a {}, but must be "
+          "a "
           "function",
           TypeName(type),
           fieldName,
@@ -3803,10 +3891,11 @@ struct Compiler {
     return name;
   }
 
-  std::unordered_map<u32, TypeIndex> typeCache;
+  std::unordered_map<std::string, TypeIndex> typeCache;
 
   ReturnType structExpr(Encodings::Struct node) {
-    auto it = typeCache.find(nodeIndex.value);
+    auto cacheKey = fmt::format("{}:{}", nodeIndex.value, name);
+    auto it = typeCache.find(cacheKey);
     if (it != typeCache.end()) {
       return Reference(it->second);
     }
@@ -3848,7 +3937,7 @@ struct Compiler {
         }
       }
       auto typeIndex = Pool().addType(std::move(unionDef));
-      typeCache[nodeIndex.value] = typeIndex;
+      typeCache[cacheKey] = typeIndex;
       return Reference(typeIndex);
     }
 
@@ -3921,7 +4010,7 @@ struct Compiler {
         ? CompilerContext::inst().blub.emittedTypeDefinitions
         : CompilerContext::inst().cuda.emittedTypeDefinitions;
     emittedTypes.insert(typeIndex);
-    typeCache[nodeIndex.value] = typeIndex;
+    typeCache[cacheKey] = typeIndex;
     return Reference(typeIndex);
   }
 
@@ -3943,15 +4032,6 @@ struct Compiler {
     std::string_view fieldName = node.fieldName->lexeme;
 
     if (auto type = object.unboxType()) {
-      auto sizing = Pool().getSizing(type);
-      if (fieldName == "size") {
-        return Reference(IntLiteral(sizing.byteSize));
-      } else if (fieldName == "alignment") {
-        return Reference(IntLiteral(sizing.alignment.byteAlignment()));
-      } else if (fieldName == "bitSize") {
-        return Reference(IntLiteral(sizing.bitSize));
-      }
-
       if (auto enumDefinition = Pool().getEnum(type)) {
         if (auto value = enumDefinition->get(fieldName)) {
           return Reference(IntLiteral(*value, type));
@@ -4706,7 +4786,8 @@ struct Compiler {
       } else {
         throw std::invalid_argument(
           fmt::format(
-            "Imported Blub file '{}' is outside the project and library roots",
+            "Imported Blub file '{}' is outside the project and library "
+            "roots",
             fileName.string()
           )
         );
@@ -4782,6 +4863,17 @@ struct Compiler {
     auto envGuard = environment.pushScope();
     environment.scopes.back().envType = EnvType::Function;
     environment.scopes.back().self = stub.selfType;
+    for (auto [name, value] : stub.genericArguments) {
+      if (!environment
+             .define(name, value, parser.locationOf(stub.definitionNode))) {
+        crash(
+          stub.definitionNode,
+          "Generic parameter '{}' shadows an existing definition",
+          name
+        );
+      }
+    }
+    if (!stub.genericArguments.empty()) typeChecker.invalidate();
     log("Codegening function {} with self type:", stub.name);
     if (stub.selfType) {
       log("{}", TypeName(stub.selfType));
@@ -4961,6 +5053,73 @@ struct Compiler {
         "Expected value with an enum type as argument to builtin '@name'"
       );
     }
+  }
+
+  Reference sizeOf(NodeIndex arg) {
+    auto type = compile(arg).unboxType();
+    if (!type) {
+      crash(
+        nodeIndex,
+        "Input for builtin @sizeOf must be a comptime-known type"
+      );
+    }
+    auto sizing = Pool().getSizing(type);
+    return Reference(IntLiteral(sizing.byteSize));
+  }
+
+  Reference alignOf(NodeIndex arg) {
+    auto type = compile(arg).unboxType();
+    if (!type) {
+      crash(
+        nodeIndex,
+        "Input for builtin @alignOf must be a comptime-known type"
+      );
+    }
+    auto sizing = Pool().getSizing(type);
+    return Reference(IntLiteral(sizing.alignment.byteAlignment()));
+  }
+
+  Reference bitSize(NodeIndex arg) {
+    auto type = compile(arg).unboxType();
+    if (!type) {
+      crash(
+        nodeIndex,
+        "Input for builtin @bitSize must be a comptime-known type"
+      );
+    }
+    auto sizing = Pool().getSizing(type);
+    return Reference(IntLiteral(sizing.bitSize));
+  }
+
+  Reference ptrCast(NodeIndex arg) {
+    typeChecker.check(nodeIndex, expectedType);
+    auto loaded = std::get<RegisterValue>(toRegister(compile(arg)).value);
+    loaded.type = expectedType;
+    return Reference(loaded);
+  }
+
+  // TODO
+  Reference bInclude(TokenPointer fileName) {
+    auto filePath =
+      fs::weakly_canonical(inputFilePath.parent_path() / fileName->lexeme);
+    auto& binFiles = CompilerContext::inst().blub.includedBinaryFiles;
+    auto result = binFiles.insert(filePath);
+    auto dataIndex = std::distance(binFiles.begin(), result.first);
+    auto global = Reference(StackValue(
+      environment.nextGlobalIndex(),
+      Pool().u8slice,
+      ValueScope::Global
+    ));
+    auto fileSize = std::filesystem::file_size(filePath);
+    emitLine(
+      "{} = global {}, {{ptr @.bInclude.{}, {} {}}}",
+      global,
+      SliceName,
+      dataIndex,
+      LlvmName(Pool()._usize),
+      fileSize
+    );
+    return global;
   }
 
   Reference copyCudaSymbol(RegisterName name) {

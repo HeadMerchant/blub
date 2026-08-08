@@ -142,10 +142,11 @@ string_view copyStr(fmt::format_string<Args...> fmt, Args&&... args) {
   auto& inst = StringPool::inst();
   auto remainder = inst.capacity - inst.offset;
   auto startBytes = inst.bytes + inst.offset;
-  auto written = fmt::format_to_n(startBytes, remainder, fmt, std::forward<Args>(args)...);
+  auto written =
+    fmt::format_to_n(startBytes, remainder, fmt, std::forward<Args>(args)...);
   if (written.size > remainder) {
-      inst.debug();
-      throw std::invalid_argument("OOM in string view pool");
+    inst.debug();
+    throw std::invalid_argument("OOM in string view pool");
   }
   auto copied = string_view(startBytes, written.size);
   inst.offset += written.size;
@@ -250,4 +251,10 @@ auto enumerate(R&& r, std::size_t start = 0) {
          std::views::transform([&r](auto i) {
            return std::make_tuple(i, r[i]);
          });
+}
+
+template <typename... Args>
+[[noreturn]] void crash(fmt::format_string<Args...> fmt, Args&&... args) {
+  fmt::println(fmt, std::forward<Args>(args)...);
+  abort();
 }

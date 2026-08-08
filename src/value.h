@@ -7,6 +7,7 @@
 #include "types.h"
 #include <cstdint>
 #include <optional>
+#include <memory>
 #include <stdexcept>
 #include <string_view>
 #include <tsl/ordered_map.h>
@@ -29,13 +30,14 @@ enum class StorageType { REGISTER, STACK };
 enum class CompTimeStatus { ComptimeOnly, Runtime, ComptimeKnown };
 
 struct TranslationUnit;
+struct Compiler;
 class GenericValue {
 public:
   TranslationUnit* translationUnit;
   Environment* definitionEnvironment;
   NodeIndex astNode;
   std::vector<std::string_view> parameterNames;
-  std::unordered_map<TupleIndex, Reference*> cache;
+  std::shared_ptr<std::unordered_map<TupleIndex, Reference*>> cache;
   std::string_view name;
 };
 

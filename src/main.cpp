@@ -62,10 +62,11 @@ std::string escapeLlvmString(std::string_view input) {
   return escaped;
 }
 
-void emitEmbeddedNullTerminatedFile(
+void emitEmbeddedFile(
   std::ofstream& outFile,
   const fs::path& filePath,
-  const RegisterValue& global
+  RegisterName globalName,
+  bool nullTerminated = false
 ) {
   std::ifstream input(filePath, std::ios::binary);
   if (!input.is_open()) {
@@ -79,10 +80,12 @@ void emitEmbeddedNullTerminatedFile(
     std::istreambuf_iterator<char>()
   };
   auto escaped = escapeLlvmString(contents);
-  outFile << fmt::format(
-    "@{} = global [{} x i8] c\"{}\\00\" align 1\n",
-    global.name,
-    contents.size() + 1,
+  fmt::println(
+    outFile,
+    "@{} = global [{} x i8] c\"{}{}\" align 1\n",
+    globalName,
+    contents.size() + nullTerminated,
+    nullTerminated ? "\\00" : "",
     escaped
   );
 }
@@ -346,10 +349,11 @@ int main(int argc, char** argv) {
     outKernel.flush();
     outKernel.close();
     compileCuda(buildDirName, cudaArch, fs::path(cudaApiDir));
-    emitEmbeddedNullTerminatedFile(
+    emitEmbeddedFile(
       outFile,
       fs::path(buildDir) / "out.ptx",
-      *contextInst.cuda.embeddedPtxGlobal
+      contextInst.cuda.embeddedPtxGlobal->name,
+      true
     );
   }
 
@@ -453,7 +457,6 @@ void compileCuda(
   std::string linkedKernelIr = fmt::format("{}/main.linked.cu.ll", buildDir);
   std::string outPtx = fmt::format("{}/out.ptx", buildDir);
   std::string finalCubin = fmt::format("{}/kernel.cubin", buildDir);
-  std::string cudaObjFile = fmt::format("{}/kernel_cubin.o", buildDir);
   fs::path libdevice = findLibdevice(cudaApiDir);
 
   auto linkCommand = fmt::format(

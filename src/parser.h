@@ -51,6 +51,12 @@ enum class UnaryOps {
     Type,
     Include,
     */
+  SizeOf,
+  AlignOf,
+  BitSize,
+  Type,
+  PtrCast,
+  BInclude,
 };
 
 struct NodeIndex {
@@ -173,7 +179,9 @@ struct ParameterList {
 }; // namespace Encodings
 
 class Parser {
+
 public:
+  static std::unordered_map<TokenType, UnaryOps> builtinUnary;
   Parser(Tokenizer& tokenizer)
       : tokenizer(tokenizer), tokens(tokenizer.tokens), log(LogLevel::Parsing) {
   }
@@ -187,13 +195,12 @@ public:
   const Token& peek(TokenIndex ahead = {0}) {
     auto index = current.value + ahead.value;
     if (index >= tokens.size()) {
-      fmt::println(
-        std::cerr,
+      crash(
+        &latestToken(),
         "Peeking too far ahead: {} > {}",
         index,
         tokens.size()
       );
-      abort();
     }
     return tokens[index];
   }
@@ -880,8 +887,9 @@ public:
           Encodings::BinaryOp{.left = expr, .right = block, .operation = token}
         );
       } else if (peek().canApply()) {
+        // Right associative
         auto token = current;
-        auto applicant = expression();
+        auto applicant = multiplication();
         expr = addNode(
           ASTNode{
             .left = expr.value,
@@ -902,7 +910,7 @@ public:
       expr = addNode(
         Encodings::BinaryOp{
           .left = expr,
-          .right = unary(),
+          .right = power(),
           .operation = op,
         }
       );
@@ -966,11 +974,7 @@ public:
             token
           );
         }
-        auto index = expression();
-        consume(
-          TokenType::RightSquareBracket,
-          "Expected a closing ']' after indexing or slicing operation"
-        );
+        auto index = argumentList(TokenType::RightSquareBracket);
         expr = addNode(
           Encodings::BinaryOp{.left = expr, .right = index, .operation = token}
         );
@@ -1311,6 +1315,10 @@ public:
       return function();
     }
 
+    if (check(TokenType::Generic)) {
+      return generic();
+    }
+
     if (auto token = match(TokenType::For)) {
       consume(
         TokenType::LeftParen,
@@ -1436,10 +1444,32 @@ public:
       );
     }
 
+    if (auto op = builtinUnary.find(peek().type); op != builtinUnary.end()) {
+      auto token = advance();
+      return addNode(
+        Encodings::UnaryOp{.operand = expression(), .operation = op->second},
+        token
+      );
+    }
+
+    if (auto token = match(TokenType::BUILTIN_Binclude)) {
+      auto file = consume(
+        TokenType::String,
+        "@bInclude must be followed by a file path string"
+      );
+      return addNode(
+        Encodings::UnaryOp{
+          .operand = {toIndex(file).value},
+          .operation = UnaryOps::BInclude
+        },
+        token
+      );
+    }
+
     if (auto token = match(TokenType::BUILTIN_CudaPtx)) {
       return addNode(
         Encodings::UnaryOp({
-          .operand = {expression().value},
+          .operand = expression(),
           .operation = UnaryOps::CudaPtx,
         }),
         token

@@ -2,16 +2,15 @@
 #include "common.h"
 #include "fmt/base.h"
 #include "fmt/format.h"
+#include "llvmcomp.h"
 #include "types.h"
 #include "value.h"
 #include <cctype>
 #include <charconv>
-#include <cstdlib>
 #include <filesystem>
 #include <optional>
 #include <queue>
 #include <simdjson.h>
-#include <stdexcept>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -58,10 +57,9 @@ TypeIndex parseType(
     return cTypes[qualType];
   }
 
-  for (auto recordPrefix : {"struct ", "union ", "enum "}) {
+  for (string_view recordPrefix : {"struct ", "union ", "enum "}) {
     if (qualType.starts_with(recordPrefix)) {
-      auto unqualified =
-        qualType.substr(std::char_traits<char>::length(recordPrefix));
+      auto unqualified = qualType.substr(recordPrefix.size());
       if (cTypes.contains(unqualified)) {
         return cTypes[unqualified];
       }
@@ -81,9 +79,7 @@ TypeIndex parseType(
   }
   auto baseTypeString = qualType.substr(0, endIndex);
   if (!cTypes.contains(baseTypeString)) {
-    throw std::invalid_argument(
-      fmt::format("Undefined C type: {} in type {}", baseTypeString, qualType)
-    );
+    crash("Undefined C type: {} in type {}", baseTypeString, qualType);
   }
   log("base type: {}", baseTypeString);
   TypeIndex type = cTypes[baseTypeString];
@@ -139,9 +135,7 @@ TypeIndex parseType(
 
         auto parenIndex = modifiers.find(")");
         if (parenIndex == std::string::npos) {
-          throw std::invalid_argument(
-            fmt::format("Malformed C type '{}'", modifiers)
-          );
+          crash("Malformed C type '{}'", modifiers);
         }
 
         auto paramType = modifiers.substr(0, parenIndex);
@@ -205,9 +199,7 @@ TypeIndex parseRecord(
 
     ondemand::array structFields;
     if (node["inner"].get_array().get(structFields)) {
-      throw std::invalid_argument(
-        fmt::format("Error parsing fields for C struct '{}'", unprefixedName)
-      );
+      crash("Error parsing fields for C struct '{}'", unprefixedName);
     }
 
     OptionalType anonType = TypeIndex::null();
@@ -222,7 +214,11 @@ TypeIndex parseRecord(
           anonymousFieldIndex
         );
         anonType = parseRecord(
-          structField.value(), anonymousName, "", globals, emitType
+          structField.value(),
+          anonymousName,
+          "",
+          globals,
+          emitType
         );
       } else if (fieldKind == "FieldDecl") {
         std::string_view fieldName;
@@ -270,9 +266,7 @@ TypeIndex parseRecord(
     std::vector<pair<TypeIndex, Identifier>> namedVariants;
     ondemand::array variants;
     if (node["inner"].get_array().get(variants)) {
-      throw std::invalid_argument(
-        fmt::format("Error parsing variants for C union '{}'", cName)
-      );
+      crash("Error parsing variants for C union '{}'", cName);
     }
 
     OptionalType anonType = TypeIndex::null();
@@ -285,9 +279,7 @@ TypeIndex parseRecord(
           cName.empty() ? "c" : cName,
           anonymousVariants.size()
         );
-        anonType = parseRecord(
-          variant, anonymousName, "", globals, emitType
-        );
+        anonType = parseRecord(variant, anonymousName, "", globals, emitType);
       } else if (variantKind != "FieldDecl") {
         log("Skipping inner node for union {} of kind {}", cName, variantKind);
       } else {
@@ -337,8 +329,8 @@ TypeIndex parseRecord(
 }
 
 Environment* cBindings(
-  fs::path cFile,
-  std::string prefix,
+  fs::path& cFile,
+  string_view prefix,
   std::queue<std::string>& globals,
   TypeCache& definedTypes,
   TypeEmitter emitType,
@@ -362,22 +354,69 @@ Environment* cBindings(
   // TODO: handle crash
   auto astDumpFile = ".blub/ast.json";
   auto command = fmt::format(
-    "clang -Xclang -ast-dump=json '{}' > '{}'",
+    "clang -Xclang -ast-dump=json -Xclang -ast-dump-filter={} {} '{}' > '{}'",
+    prefix,
+    fmt::join(CompilerContext::inst().c.clangArgs, " "),
     cFile.string(),
     astDumpFile
   );
-  system(command.c_str());
-  ondemand::parser parser;
-  auto json = padded_string::load(astDumpFile);
-  ondemand::document ast = parser.iterate(json);
 
-  for (auto node : ast["inner"]) {
-    std::string_view valueName, kind;
+  log("Dumping AST with command:\n{}", command);
+
+  if (auto rc = system(command.c_str())) {
+    crash("Error dumping AST for bindings for C file {}", cFile.string());
+  }
+  ondemand::parser parser;
+  padded_string json;
+  if (auto error = padded_string::load(astDumpFile).get(json)) {
+    crash(
+      "Unable to read C AST dump for '{}': {}",
+      cFile.string(),
+      error_message(error)
+    );
+  }
+  ondemand::document_stream ast;
+  if (auto error = parser.iterate_many(json, json.size()).get(ast)) {
+    crash(
+      "Unable to parse filtered C AST dump for '{}': {}",
+      cFile.string(),
+      error_message(error)
+    );
+  }
+
+  // -ast-dump-filter emits a whitespace-separated sequence of declaration
+  // objects, rather than one TranslationUnitDecl with an `inner` array.
+  for (auto document : ast) {
+    if (auto error = document.error()) {
+      crash(
+        "Unable to read filtered C AST declaration for '{}': {}",
+        cFile.string(),
+        error_message(error)
+      );
+    }
+    ondemand::value node;
+    if (auto error = document.get_value().get(node)) {
+      crash(
+        "Unable to parse filtered C AST declaration for '{}': {}",
+        cFile.string(),
+        error_message(error)
+      );
+    }
+    string_view valueName, kind;
     if (node["kind"].get(kind) != SUCCESS || node["name"].get(valueName))
       continue;
-    if (!valueName.starts_with(prefix)) continue;
+    if (!valueName.starts_with(prefix)) {
+      log(
+        "skipping value '{}' due to not starting with prefix '{}'",
+        valueName,
+        prefix
+      );
+      continue;
+    } else {
+      log("Defining C value '{}'", valueName);
+    }
     valueName = StringPool::inst().copy(valueName);
-    std::string_view unprefixedValueName = valueName.substr(prefix.size());
+    string_view unprefixedValueName = valueName.substr(prefix.size());
 
     Reference blubInterface;
     if (cTypes.contains(valueName)) {
@@ -390,7 +429,10 @@ Environment* cBindings(
         TypeName(Pool()._s32)
       );
       auto [typeIndex, enumIndex] =
-        Pool().addEnum(Pool()._s32, std::string(unprefixedValueName));
+        Pool().addEnum(
+          Pool()._s32,
+          StringPool::inst().copy(unprefixedValueName)
+        );
       std::vector<std::string_view> enumVals;
       if (auto inner = node["inner"]; inner.error() == SUCCESS) {
         for (auto element : inner.get_array()) {
@@ -443,19 +485,17 @@ Environment* cBindings(
             for (auto [name, _] : definition.values) {
               log("Variant: {}", name);
             }
-            throw std::invalid_argument(
-              fmt::format(
-                "Duplicate enum value '{}' for enum '{}'",
-                valueName,
-                TypeName(typeIndex)
-              )
+            crash(
+              "Duplicate enum value '{}' for enum '{}'",
+              valueName,
+              TypeName(typeIndex)
             );
           }
 
           currentValue++;
         }
       } else {
-        throw std::invalid_argument("Empty enum");
+        crash("Empty enum");
       }
 
       cTypes[valueName] = typeIndex;
@@ -476,25 +516,18 @@ Environment* cBindings(
       std::string_view qualType;
       bool error = node["type"]["qualType"].get(qualType);
       if (error) {
-        throw std::invalid_argument(
-          fmt::format(
-            "Unable to get qualified type for C function '{}'",
-            valueName
-          )
-        );
+        crash("Unable to get qualified type for C function '{}'", valueName);
       }
 
       // TODO: factor out to Types module?
       auto declareName = StringPool::inst().copy(valueName);
       TypeIndex type = parseType(qualType, globals);
       if (!Pool().functionType(type).has_value()) {
-        fmt::println(
-          std::cerr,
-          "Unable to get function type for C type '{}'",
-          qualType
+        crash(
+          "Unable to get function type for C type '{}'\nBlub name: '{}'",
+          qualType,
+          TypeName(type)
         );
-        fmt::println(std::cerr, "Blub name: '{}'", TypeName(type));
-        abort();
       }
       auto functionType = Pool().functionType(type).value();
       log(
@@ -506,21 +539,29 @@ Environment* cBindings(
       functionType.forwardDeclare(declareName, globals, "");
       blubInterface.value = Function(functionType, declareName);
     } else if (kind == "RecordDecl") {
-      blubInterface.value = parseRecord(
-        node.value(), valueName, unprefixedValueName, globals, emitType
-      );
+      blubInterface.value =
+        parseRecord(node, valueName, unprefixedValueName, globals, emitType);
     } else {
       log(
         "Skipping clang ast node of kind '{}'; name: '{}'",
         kind,
         unprefixedValueName
       );
+      continue;
     }
 
-    environment.define(unprefixedValueName, blubInterface, {});
+    if (!environment.define(unprefixedValueName, blubInterface, {})) {
+      // Clang commonly emits a RecordDecl followed by a same-named typedef.
+      // Both map to the same unprefixed Blub binding, so retain the first one.
+      log("Skipping duplicate C binding '{}'", unprefixedValueName);
+    } else {
+      log("Defining C type '{}'", unprefixedValueName);
+    }
   }
 
-  importedFiles[cFile] = environment;
+  if (environment.defs.size() == 0) {
+    crash("No bindings generated for imported C file {}", fileName);
+  }
   return &environment;
 }
 

@@ -532,6 +532,8 @@ struct TypeChecker {
   ReturnType bitwiseOp(NodeIndex a, NodeIndex b) {
     auto left = check(a, expected).type;
     auto right = check(b, expected).type;
+    left = Pool().rawType(left);
+    right = Pool().rawType(right);
     auto resultType = Pool().coerce(left, right);
     if (resultType && Pool().isInt(resultType)) {
       return {resultType};
@@ -602,26 +604,7 @@ struct TypeChecker {
 
   static Logger log;
 
-  ReturnType index(NodeIndex object, NodeIndex index) {
-    auto objectType = check(object);
-    if (auto sizedArray = Pool().sizedArray(objectType.type)) {
-      return checkArrayIndex(
-        index,
-        sizedArray->dereferencedType,
-        objectType.lValue
-      );
-    } else if (auto sliceElement = Pool().sliceElementType(objectType.type)) {
-      return checkArrayIndex(index, sliceElement, true);
-    } else if (auto dereffed = Pool().multiPointerElement(objectType.type)) {
-      return {dereffed, true};
-    } else {
-      crash(
-        nodeIndex,
-        "TODO: generic indexing; Can't index {}",
-        TypeName(objectType.type)
-      );
-    }
-  }
+  ReturnType index(NodeIndex object, NodeIndex index);
 
   ReturnType call(NodeIndex function, Encodings::ArgumentList args) {
     auto callerType = check(function).type;
@@ -661,6 +644,24 @@ struct TypeChecker {
 
   ReturnType impl(NodeIndex targetType, NodeIndex block) {
     return {Pool().type};
+  }
+
+  ReturnType generic(Encodings::ParameterList params, NodeIndex value) {
+    for (auto parameter : params.requiredParameters) {
+      auto definition = parser.getDefinition(parameter);
+      if (!definition.type) {
+        crash(parameter, "Generic parameters must have a type");
+      }
+      check(definition.type, Pool().type);
+    }
+    if (!params.optionalParameters.empty()) {
+      crash(nodeIndex, "Generic parameters cannot have default values");
+    }
+    return {Pool().generic};
+  }
+
+  void invalidate() {
+    std::fill(astTypes.begin(), astTypes.end(), ReturnType{});
   }
 
   ReturnType functionLiteral(
@@ -788,7 +789,7 @@ struct TypeChecker {
     return {Pool()._void};
   }
 
-  ReturnType type(Encodings::ArgumentList args) {
+  ReturnType type(NodeIndex node) {
     return {Pool().type};
   }
 
@@ -834,7 +835,7 @@ struct TypeChecker {
     if (value.type == Pool().type) {
       return {Pool().type};
     } else if (value.lValue) {
-      return {Pool().pointerTo(value.type)};
+      return {Pool().multiPointerTo(value.type)};
     }
     crash(operand, "Can't get pointer to non-lvalue");
   }
@@ -1013,13 +1014,6 @@ struct TypeChecker {
 
     auto fieldName = node.fieldName->lexeme;
     if (targetType == Pool().type) {
-      if (
-        fieldName == "size" || fieldName == "alignment" ||
-        fieldName == "bitSize"
-      ) {
-        return {Pool().intLiteral};
-      }
-
       auto type = materialize(node.object);
       if (auto member = env.getStatic(type, fieldName)) {
         return {member->getType()};
@@ -1040,6 +1034,10 @@ struct TypeChecker {
           return {object->getType(), object->lValue() != nullptr};
         }
         env->debug();
+        fmt::println("No definition for name '{}'; Alternatives:", fieldName);
+        for (auto [name, _] : env->defs) {
+          fmt::println("\t{}", name);
+        }
         crash(node.fieldName, "No definition for name '{}'", fieldName);
       }
       crash(node.fieldName, "Internal error: missing environment");
@@ -1204,6 +1202,50 @@ struct TypeChecker {
     expected = TypeIndex::null();
     nodeIndex = {0};
     astTypes.resize(parser.nodes.size());
+  }
+
+  ReturnType sizeOf(NodeIndex type) {
+    return {Pool().intLiteral};
+  }
+
+  ReturnType alignOf(NodeIndex type) {
+    return {Pool().intLiteral};
+  }
+
+  ReturnType bitSize(NodeIndex type) {
+    return {Pool().intLiteral};
+  }
+
+  ReturnType ptrCast(NodeIndex arg) {
+    if (!expected) {
+      crash(nodeIndex, "Unable to @ptrCast without expected type");
+    }
+
+    auto argType = check(arg).type;
+    if (!Pool().dereference(argType) || !Pool().multiPointerElement(argType)) {
+      crash(
+        arg,
+        "Unable to @ptrCast from non-pointer type '{}' to expected type '{}'",
+        TypeName(argType),
+        TypeName(expected)
+      );
+    }
+
+    if (
+      !Pool().dereference(expected) || !Pool().multiPointerElement(expected)
+    ) {
+      crash(
+        nodeIndex,
+        "Unable to @ptrCast from type '{}' to non-pointer type '{}'",
+        TypeName(argType),
+        TypeName(expected)
+      );
+    }
+    return {expected};
+  }
+
+  ReturnType bInclude(TokenPointer fileName) {
+    return {Pool().u8slice};
   }
 };
 

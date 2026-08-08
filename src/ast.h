@@ -52,6 +52,9 @@ concept AstVisitor = requires(T t, NodeIndex nodeIndex, TokenPointer token) {
   { t.align(nodeIndex, nodeIndex) } -> std::same_as<typename T::ReturnType>;
   { t.impl(nodeIndex, nodeIndex) } -> std::same_as<typename T::ReturnType>;
   {
+    t.generic(Encodings::ParameterList{}, nodeIndex)
+  } -> std::same_as<typename T::ReturnType>;
+  {
     t.functionLiteral(Encodings::ParameterList{}, nodeIndex, nodeIndex)
   } -> std::same_as<typename T::ReturnType>;
   {
@@ -78,7 +81,7 @@ concept AstVisitor = requires(T t, NodeIndex nodeIndex, TokenPointer token) {
   {
     t.linkDir(Encodings::ArgumentList{})
   } -> std::same_as<typename T::ReturnType>;
-  { t.type(Encodings::ArgumentList{}) } -> std::same_as<typename T::ReturnType>;
+  { t.type(nodeIndex) } -> std::same_as<typename T::ReturnType>;
   { t.import(token) } -> std::same_as<typename T::ReturnType>;
   { t.dereference(nodeIndex) } -> std::same_as<typename T::ReturnType>;
   { t.reference(nodeIndex) } -> std::same_as<typename T::ReturnType>;
@@ -130,6 +133,11 @@ concept AstVisitor = requires(T t, NodeIndex nodeIndex, TokenPointer token) {
   { t.nullPointer() } -> std::same_as<typename T::ReturnType>;
   { t.builtinName(nodeIndex) } -> std::same_as<typename T::ReturnType>;
   { t.forLoop(Encodings::ForLoop{}) } -> std::same_as<typename T::ReturnType>;
+  { t.sizeOf(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.alignOf(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.bitSize(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.ptrCast(nodeIndex) } -> std::same_as<typename T::ReturnType>;
+  { t.bInclude(token) } -> std::same_as<typename T::ReturnType>;
 };
 
 static std::unordered_map<TokenType, std::string_view> cudaBuiltins{
@@ -253,6 +261,10 @@ T::ReturnType binopVisit(
         .body = b
       }
     );
+  }
+  case TokenType::Generic: {
+    auto parameters = parser.getParameterList(a);
+    return t.generic(parameters, b);
   }
   default:
     parser.crash(a, "Unknown binary operation");
@@ -425,9 +437,6 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
         case TokenType::BUILTIN_LinkDir: {
           return t.linkDir(argsList);
         }
-        case TokenType::BUILTIN_Type: {
-          return t.type(argsList);
-        }
         default: {
         }
         }
@@ -478,6 +487,24 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
     }
     case UnaryOps::CudaPtx: {
       return t.cudaPtx(node.operand);
+    }
+    case UnaryOps::SizeOf: {
+      return t.sizeOf(node.operand);
+    }
+    case UnaryOps::AlignOf: {
+      return t.alignOf(node.operand);
+    }
+    case UnaryOps::BitSize: {
+      return t.bitSize(node.operand);
+    }
+    case UnaryOps::Type: {
+      return t.type(node.operand);
+    }
+    case UnaryOps::PtrCast: {
+      return t.ptrCast(node.operand);
+    }
+    case UnaryOps::BInclude: {
+      return t.bInclude(parser.getToken(TokenIndex{node.operand.value}));
     }
     }
   }

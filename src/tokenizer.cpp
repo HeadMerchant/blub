@@ -30,8 +30,12 @@ std::unordered_map<std::string_view, TokenType> Tokenizer::builtinFunctions = {
   {"gridDimX",     TokenType::CudaGridDimX        },
   {"gridDimY",     TokenType::CudaGridDimY        },
   {"gridDimZ",     TokenType::CudaGridDimZ        },
-  // TODO
   {"crash",        TokenType::BUILTIN_Crash       },
+  {"sizeOf",       TokenType::BUILTIN_Sizeof      },
+  {"alignOf",      TokenType::BUILTIN_Alignof     },
+  {"bitSize",      TokenType::BUILTIN_Bitsize     },
+  {"ptrCast",      TokenType::BUILTIN_PtrCast     },
+  {"bInclude",     TokenType::BUILTIN_Binclude    },
 };
 
 std::unordered_map<std::string_view, TokenType> Tokenizer::keywords = {

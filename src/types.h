@@ -490,6 +490,8 @@ public:
   TypeIndex u8slice;
   TypeIndex u8multipointer;
 
+  TypeIndex voidPtr;
+
   TypePool() {
     underlyingTypes.reserve(256);
 
@@ -532,6 +534,8 @@ public:
     u8ptr = u8Pointers.pointer;
     u8slice = u8Pointers.slice;
     u8multipointer = u8Pointers.multiPointer;
+
+    voidPtr = pointerTypesFor(_void).pointer;
   }
 
   TypeIndex pointerTo(TypeIndex type) {
@@ -740,6 +744,12 @@ public:
   OptionalType isAssignable(TypeIndex valueIndex, TypeIndex targetIndex) {
     UnderlyingType valueType = getType(valueIndex);
     UnderlyingType targetType = getType(targetIndex);
+    if (targetIndex == voidPtr && isAny<Pointer>(valueType)) {
+      return targetIndex;
+    }
+    if (valueIndex == voidPtr && isAny<Pointer>(targetType)) {
+      return targetIndex;
+    }
 
     auto type = coerce(valueIndex, targetIndex);
     if (!type) return TypeIndex::null();

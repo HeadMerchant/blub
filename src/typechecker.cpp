@@ -27,3 +27,37 @@ Reference TypeChecker::compile(NodeIndex index, TypeIndex expected) {
 }
 
 Logger TypeChecker::log(LogLevel::TypeCheck);
+
+TypeChecker::ReturnType TypeChecker::index(NodeIndex object, NodeIndex index) {
+  auto objectType = check(object);
+  if (objectType.type == Pool().generic) {
+    auto generic = compiler.compile(object);
+    auto boxedGeneric = generic.unbox<GenericValue>();
+    if (!boxedGeneric) {
+      crash(object, "Internal error: generic value was not available");
+    }
+    auto arguments = parser.getArgumentList(index);
+    return {compiler.instantiateGeneric(*boxedGeneric, arguments).getType()};
+  }
+  if (parser.nodeType(index) == NodeType::ArgumentList) {
+    auto arguments = parser.getArgumentList(index);
+    if (arguments.positional.size() != 1 || !arguments.named.empty()) {
+      crash(index, "Indexing requires exactly one positional argument");
+    }
+    index = arguments.positional[0];
+  }
+  if (auto sizedArray = Pool().sizedArray(objectType.type)) {
+    return checkArrayIndex(
+      index,
+      sizedArray->dereferencedType,
+      objectType.lValue
+    );
+  }
+  if (auto sliceElement = Pool().sliceElementType(objectType.type)) {
+    return checkArrayIndex(index, sliceElement, true);
+  }
+  if (auto dereffed = Pool().multiPointerElement(objectType.type)) {
+    return {dereffed, true};
+  }
+  crash(nodeIndex, "Can't index {}", TypeName(objectType.type));
+}
