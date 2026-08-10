@@ -140,6 +140,7 @@ enum class TokenType {
   BUILTIN_Bitsize,
   BUILTIN_PtrCast,
   BUILTIN_Binclude,
+  BUILTIN_Raw,
 
   // CUDA
   CudaImport,

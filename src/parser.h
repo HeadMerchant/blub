@@ -57,6 +57,7 @@ enum class UnaryOps {
   Type,
   PtrCast,
   BInclude,
+  Raw,
 };
 
 struct NodeIndex {

@@ -4,4 +4,5 @@ std::unordered_map<TokenType, UnaryOps> Parser::builtinUnary = {
   {TokenType::BUILTIN_Alignof, UnaryOps::AlignOf},
   {TokenType::BUILTIN_Bitsize, UnaryOps::BitSize},
   {TokenType::BUILTIN_Type,    UnaryOps::Type   },
+  {TokenType::BUILTIN_Raw,     UnaryOps::Raw    },
 };

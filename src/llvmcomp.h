@@ -3,6 +3,7 @@
 #include "cimport.h"
 #include "common.h"
 #include "compilercontext.h"
+#include "fmt/format.h"
 #include "fmt/ostream.h"
 #include "parser.h"
 #include "tokenizer.h"
@@ -4728,6 +4729,7 @@ struct Compiler {
       log("Opened file: {}", filePath.string());
     }
 
+    // TODO: reevaluate this
     // File contents needs to be kept around after this TL because names are
     // string_views
     std::string& fileContents = *new std::string(
@@ -5103,21 +5105,31 @@ struct Compiler {
     auto filePath =
       fs::weakly_canonical(inputFilePath.parent_path() / fileName->lexeme);
     auto& binFiles = CompilerContext::inst().blub.includedBinaryFiles;
-    auto result = binFiles.insert(filePath);
-    auto dataIndex = std::distance(binFiles.begin(), result.first);
+    auto insertion = binFiles.insert(filePath);
+    auto dataIndex = std::distance(binFiles.begin(), insertion.first);
+    if (insertion.second) {
+      stringstream ss;
+      fmt::print(ss, "@.bInclude.{} = ", dataIndex);
+      emitEmbeddedFile(ss, filePath);
+      globalsStack.push(ss.str());
+    }
+    auto fileSize = std::filesystem::file_size(filePath);
+
     auto global = Reference(StackValue(
       environment.nextGlobalIndex(),
       Pool().u8slice,
       ValueScope::Global
     ));
-    auto fileSize = std::filesystem::file_size(filePath);
-    emitLine(
-      "{} = global {}, {{ptr @.bInclude.{}, {} {}}}",
-      global,
-      SliceName,
-      dataIndex,
-      LlvmName(Pool()._usize),
-      fileSize
+
+    globalsStack.push(
+      fmt::format(
+        "{} = global {} {{ptr @.bInclude.{}, {} {}}}",
+        global,
+        SliceName,
+        dataIndex,
+        LlvmName(Pool()._usize),
+        fileSize
+      )
     );
     return global;
   }
@@ -5198,6 +5210,19 @@ struct Compiler {
     importInfo.bytecodeGlobal = val.name;
 
     return {&importInfo.env, importInfo.bytecodeGlobal};
+  }
+
+  Reference rawValue(NodeIndex value) {
+    auto rawVal = toRegister(compile(value));
+    if (auto registerVal = rawVal.unbox<RegisterValue>()) {
+      registerVal->type = Pool().rawType(registerVal->type);
+    }
+    // crash(
+    //   value,
+    //   "Can't get @raw value for non-runtime value of type '{}'",
+    //   TypeName(rawVal.getType())
+    // );
+    return rawVal;
   }
 };
 

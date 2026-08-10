@@ -138,6 +138,7 @@ concept AstVisitor = requires(T t, NodeIndex nodeIndex, TokenPointer token) {
   { t.bitSize(nodeIndex) } -> std::same_as<typename T::ReturnType>;
   { t.ptrCast(nodeIndex) } -> std::same_as<typename T::ReturnType>;
   { t.bInclude(token) } -> std::same_as<typename T::ReturnType>;
+  { t.rawValue(nodeIndex) } -> std::same_as<typename T::ReturnType>;
 };
 
 static std::unordered_map<TokenType, std::string_view> cudaBuiltins{
@@ -506,6 +507,8 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
     case UnaryOps::BInclude: {
       return t.bInclude(parser.getToken(TokenIndex{node.operand.value}));
     }
+    case UnaryOps::Raw:
+      return t.rawValue(node.operand);
     }
   }
   case NodeType::If: {

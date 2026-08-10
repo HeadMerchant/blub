@@ -532,8 +532,8 @@ struct TypeChecker {
   ReturnType bitwiseOp(NodeIndex a, NodeIndex b) {
     auto left = check(a, expected).type;
     auto right = check(b, expected).type;
-    left = Pool().rawType(left);
-    right = Pool().rawType(right);
+    // left = Pool().rawType(left);
+    // right = Pool().rawType(right);
     auto resultType = Pool().coerce(left, right);
     if (resultType && Pool().isInt(resultType)) {
       return {resultType};
@@ -1015,7 +1015,17 @@ struct TypeChecker {
     auto fieldName = node.fieldName->lexeme;
     if (targetType == Pool().type) {
       auto type = materialize(node.object);
-      if (auto member = env.getStatic(type, fieldName)) {
+      if (auto enumDefinition = Pool().getEnum(type)) {
+        if (auto value = enumDefinition->get(fieldName)) {
+          return {type};
+        }
+        crash(
+          nodeIndex,
+          "Unknown variant '{}' in enum '{}'",
+          fieldName,
+          TypeName(type)
+        );
+      } else if (auto member = env.getStatic(type, fieldName)) {
         return {member->getType()};
       } else {
         crash(
@@ -1246,6 +1256,10 @@ struct TypeChecker {
 
   ReturnType bInclude(TokenPointer fileName) {
     return {Pool().u8slice};
+  }
+
+  ReturnType rawValue(NodeIndex value) {
+    return {Pool().rawType(check(value).type)};
   }
 };
 

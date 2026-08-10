@@ -48,47 +48,7 @@ fs::path findLibdevice(const fs::path& cudaApiDir) {
     "Unable to find libdevice bitcode under " + libdeviceDir.string()
   );
 }
-
-std::string escapeLlvmString(std::string_view input) {
-  std::string escaped;
-  escaped.reserve(input.size() * 2);
-  for (unsigned char c : input) {
-    if (c >= 32 && c <= 126 && c != '\\' && c != '"') {
-      escaped.push_back(static_cast<char>(c));
-      continue;
-    }
-    escaped += fmt::format("\\{:02X}", static_cast<unsigned int>(c));
-  }
-  return escaped;
-}
-
-void emitEmbeddedFile(
-  std::ofstream& outFile,
-  const fs::path& filePath,
-  RegisterName globalName,
-  bool nullTerminated = false
-) {
-  std::ifstream input(filePath, std::ios::binary);
-  if (!input.is_open()) {
-    throw std::invalid_argument(
-      "Unable to open embedded file " + filePath.string()
-    );
-  }
-
-  std::string contents{
-    std::istreambuf_iterator<char>(input),
-    std::istreambuf_iterator<char>()
-  };
-  auto escaped = escapeLlvmString(contents);
-  fmt::println(
-    outFile,
-    "@{} = global [{} x i8] c\"{}{}\" align 1\n",
-    globalName,
-    contents.size() + nullTerminated,
-    nullTerminated ? "\\00" : "",
-    escaped
-  );
-}
+} // namespace
 
 void promoteStaticInlineDefinitions(
   const fs::path& irPath,
@@ -132,42 +92,6 @@ void promoteStaticInlineDefinitions(
   }
   output << ir;
 }
-
-// void rewritePtxSymbols(const fs::path& ptxPath) {
-//   auto replacements = CompilerContext::inst().cuda.ptxSymbolRenames;
-//   std::ranges::sort(replacements, [](const auto& a, const auto& b) {
-//     return a.first.size() > b.first.size();
-//   });
-//   if (replacements.empty()) return;
-
-//   std::ifstream input(ptxPath);
-//   if (!input.is_open()) {
-//     throw std::invalid_argument("Unable to open PTX file " +
-//     ptxPath.string());
-//   }
-//   std::string ptx{
-//     std::istreambuf_iterator<char>(input),
-//     std::istreambuf_iterator<char>()
-//   };
-//   input.close();
-
-//   for (const auto& [llvmName, ptxName] : replacements) {
-//     size_t position = 0;
-//     while ((position = ptx.find(llvmName, position)) != std::string::npos) {
-//       ptx.replace(position, llvmName.size(), ptxName);
-//       position += ptxName.size();
-//     }
-//   }
-
-//   std::ofstream output(ptxPath, std::ios::trunc);
-//   if (!output.is_open()) {
-//     throw std::invalid_argument("Unable to rewrite PTX file " +
-//     ptxPath.string());
-//   }
-//   output << ptx;
-// }
-
-} // namespace
 
 int main(int argc, char** argv) {
   bool shouldRunTests = false;
@@ -349,12 +273,8 @@ int main(int argc, char** argv) {
     outKernel.flush();
     outKernel.close();
     compileCuda(buildDirName, cudaArch, fs::path(cudaApiDir));
-    emitEmbeddedFile(
-      outFile,
-      fs::path(buildDir) / "out.ptx",
-      contextInst.cuda.embeddedPtxGlobal->name,
-      true
-    );
+    fmt::print(outFile, "@{} = ", contextInst.cuda.embeddedPtxGlobal->name);
+    emitEmbeddedFile(outFile, fs::path(buildDir) / "out.ptx", true);
   }
 
   outFile << "define void @.ctor() {\n"

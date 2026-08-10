@@ -258,3 +258,8 @@ template <typename... Args>
   fmt::println(fmt, std::forward<Args>(args)...);
   abort();
 }
+void emitEmbeddedFile(
+  std::ostream& outFile,
+  const fs::path& filePath,
+  bool nullTerminated = false
+);

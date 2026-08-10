@@ -419,6 +419,11 @@ Environment* cBindings(
     string_view unprefixedValueName = valueName.substr(prefix.size());
 
     Reference blubInterface;
+    if (environment.find(unprefixedValueName)) {
+      log("Skipping duplicate C binding '{}'", unprefixedValueName);
+      continue;
+    }
+
     if (cTypes.contains(valueName)) {
       blubInterface.value = cTypes[valueName];
     } else if (kind == "EnumDecl") {
@@ -428,11 +433,10 @@ Environment* cBindings(
         unprefixedValueName,
         TypeName(Pool()._s32)
       );
-      auto [typeIndex, enumIndex] =
-        Pool().addEnum(
-          Pool()._s32,
-          StringPool::inst().copy(unprefixedValueName)
-        );
+      auto [typeIndex, enumIndex] = Pool().addEnum(
+        Pool()._s32,
+        StringPool::inst().copy(unprefixedValueName)
+      );
       std::vector<std::string_view> enumVals;
       if (auto inner = node["inner"]; inner.error() == SUCCESS) {
         for (auto element : inner.get_array()) {

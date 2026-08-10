@@ -36,6 +36,7 @@ std::unordered_map<std::string_view, TokenType> Tokenizer::builtinFunctions = {
   {"bitSize",      TokenType::BUILTIN_Bitsize     },
   {"ptrCast",      TokenType::BUILTIN_PtrCast     },
   {"bInclude",     TokenType::BUILTIN_Binclude    },
+  {"raw",          TokenType::BUILTIN_Raw         },
 };
 
 std::unordered_map<std::string_view, TokenType> Tokenizer::keywords = {
