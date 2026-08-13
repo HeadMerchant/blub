@@ -86,47 +86,6 @@ bool TypeIndex::isInfer() {
   return *this == Pool().infer;
 }
 
-void TypePool::registerStorage(
-  TypeIndex typeIndex,
-  RegisterAssignment& assignment
-) {
-  auto sizing = getSizing(typeIndex);
-  if (sizing.byteSize == 0) return;
-  if (sizing.byteSize > 16) {
-    assignment.push(RegisterType::Memory);
-    return;
-  }
-
-  auto type = getType(typeIndex);
-  std::visit(
-    overloaded{
-      [&]<IntRegister T>(T) {
-        assignment.push(RegisterType::Int, sizing.byteSize);
-      },
-      [&](Float x) { assignment.push(RegisterType::Float, sizing.byteSize); },
-      [&](Union) { assignment.push(RegisterType::Int, sizing.byteSize); },
-      [&]<AggregateType T>(T x) {
-        for (auto element : x.fields()) {
-          registerStorage(element, assignment);
-        }
-      },
-      [&]<RecursiveType T>(T x) { registerStorage(x.rawType(), assignment); },
-      [&](auto x) {
-        fmt::println(
-          "Error for trying to get storage type for type that can't be passed: "
-          "'{}'",
-          TypeName(typeIndex)
-        );
-        TODO(
-          "Error for trying to get storage type for type that can't be passed: "
-          "'{}'"
-        );
-      },
-    },
-    type
-  );
-}
-
 void TypeIndex::debug() {
   fmt::println("{}: {}", TypeName(*this), LlvmName(*this));
 }

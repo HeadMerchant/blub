@@ -1,7 +1,6 @@
 #pragma once
 #include "common.h"
 #include "fmt/base.h"
-#include "registers.h"
 #include <algorithm>
 #include <array>
 #include <concepts>
@@ -1094,19 +1093,7 @@ public:
     return sizing;
   }
 
-private:
-  void registerStorage(TypeIndex typeIndex, RegisterAssignment& assignment);
-
 public:
-  RegisterAssignment registerStorage(
-    TypeIndex typeIndex,
-    CallingConvention cc = CallingConvention::C
-  ) {
-    RegisterAssignment registers;
-    registerStorage(typeIndex, registers);
-    return registers;
-  }
-
   u32 alignTo(u32 size, u32 alignment) {
     return (size + alignment - 1) & ~(alignment - 1);
   }
@@ -1461,37 +1448,6 @@ struct LlvmName {
 template <> struct fmt::formatter<TypeName> : ostream_formatter {};
 template <> struct fmt::formatter<LlvmName> : ostream_formatter {};
 template <> struct fmt::formatter<Log2Alignment> : ostream_formatter {};
-
-TEST_CASE("Built-in type registers") {
-  SUBCASE("Float") {
-    auto typeIndex = Pool()._f32;
-    RegisterAssignment registers = Pool().registerStorage(typeIndex);
-    CHECK_EQ(registers.length, 4);
-  }
-  SUBCASE("Int registers") {
-    std::vector<TypeIndex> types = {
-      Pool().pointerTo(Pool()._f32),
-      Pool().multiPointerTo(Pool()._f32),
-      Pool()._u32,
-      Pool()._s16,
-      Pool().sliceOf(Pool()._isize),
-      Pool().sizedArrayOf(Pool()._bool, 17)
-    };
-
-    for (auto type : types) {
-      RegisterAssignment registers = Pool().registerStorage(type);
-      auto size = Pool().getSizing(type).byteSize;
-      if (size > 16) {
-        CHECK(registers.isMemory());
-        continue;
-      }
-      CHECK_EQ(registers.length, size);
-      for (auto i = 0; i < size; i++) {
-        CHECK_EQ(registers.pop(), RegisterType::Int);
-      }
-    }
-  }
-}
 
 struct AddressSpace {
   u32 addressSpace = 0;

@@ -119,9 +119,7 @@ struct Compiler {
   };
   struct {
     OptionalType type;
-    string_view aggregateTypename;
-    // Used bc llvm return types with floats are sussy
-    RegisterAssignment registers;
+    AbiType abi;
     FunctionConvention convention = FunctionConvention::CpuAbi;
   } returns;
 
@@ -537,31 +535,11 @@ struct Compiler {
       return;
     }
 
-    auto registers = returns.registers;
-    if (registers.isMemory()) {
-      emitLine("store {} {}, ptr %0\nret void", LlvmName(returnType), value);
-    } else if (registers.allInt() || !Pool().isAggregate(returnType)) {
-      emitLine("ret {} {}", LlvmName(returnType), value);
-    } else {
-      if (returns.aggregateTypename.empty()) {
-        crash(
-          nodeIndex,
-          "Expected an aggregate llvm type name in context for return value, "
-          "but was left empty"
-        );
-      }
-      auto storage = environment.addTemporary();
-      auto transmuted = environment.addTemporary();
-      emitLine("%{} = alloca {}", storage, LlvmName(returnType));
-      emitLine("store {} {}, ptr %{}", LlvmName(returnType), value, storage);
-      emitLine(
-        "%{} = load {}, ptr %{}",
-        transmuted,
-        returns.aggregateTypename,
-        storage
-      );
-      emitLine("ret {} %{}", returns.aggregateTypename, transmuted);
-    }
+    OutContext returnContext{
+      .outputFile = *outputFile,
+      .environment = environment,
+    };
+    emitSystemVReturn(returnContext, returns.abi, value);
   }
 
   ReturnType block(Encodings::Block node) {
@@ -2287,23 +2265,22 @@ struct Compiler {
 
       if (Pool().isInt(indexType)) {
         auto index = toRegister(indexVal);
+        if (Pool().isSignedInt(indexType)) {
+          guardLowerBound(index);
+        }
+        guardIndexInBounds(index, lengthBound);
         auto result = StackValue(
           environment.addTemporary(),
           elementType,
           ValueScope::Local,
           dataPointer.addressSpace
         );
-
-        if (Pool().isSignedInt(indexType)) {
-          guardLowerBound(index);
-        }
-        guardIndexInBounds(index, lengthBound);
         emitLine(
           "{} = getelementptr {}, {} {}, {} {}",
           result,
           LlvmName(elementType),
-          std::get<RegisterValue>(leftLiteral.value).addressSpace,
-          leftLiteral,
+          dataPointer.addressSpace,
+          dataPointerRef,
           LlvmName(indexType),
           index
         );
@@ -4978,8 +4955,7 @@ struct Compiler {
 
     returns = {
       .type = returnType,
-      .aggregateTypename = declarationResult.aggregateReturnTypeName,
-      .registers = Pool().registerStorage(returnType),
+      .abi = declarationResult.returnAbi,
       .convention = function.convention,
     };
     environment.scopes.back().returnType = returnType;

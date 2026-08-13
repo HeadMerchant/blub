@@ -1,0 +1,8 @@
+declare {i64, i64} @"abi_c_make_rect"(i32)
+declare i32 @"abi_c_sum_rect"(i64, i64)
+define {i64, i64} @"blub_make_rect"(i32)
+define i32 @"blub_sum_rect"(i64, i64)
+define {double, i32} @"blub_make_mixed"(i32)
+define void @"blub_make_large"(ptr sret(%abi_large) align 8, i32)
+declare zeroext i8 @"abi_c_increment_u8"(i8 zeroext)
+define zeroext i8 @"blub_increment_u8"(i8 zeroext)

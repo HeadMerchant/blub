@@ -1,0 +1,49 @@
+ci :: @cImport("cimport_abi_fixture.h", "abi_")
+
+blubMakeRect :: fn "blub_make_rect"(base: s32) -> ci.rect {
+    return (base, base + 1, base + 2, base + 3)
+}
+
+blubSumRect :: fn "blub_sum_rect"(value: ci.rect) -> s32 {
+    return value.x + value.y + value.width + value.height
+}
+
+blubMakeMixed :: fn "blub_make_mixed"(base: s32) -> ci.mixed {
+    return (7.0, base)
+}
+
+blubMakeLarge :: fn "blub_make_large"(base: s32) -> ci.large {
+    value: s64 = @numCast(base, s64)
+    return (value, value + 1, value + 2)
+}
+
+blubIncrementU8 :: fn "blub_increment_u8"(value: u8) -> u8 {
+    return value + 1
+}
+
+main :: fn() -> s32 {
+    fromC := ci.c_make_rect(10)
+    cRoundTrip := ci.c_sum_rect(fromC)
+    blubReturn := ci.c_call_blub_rect(20)
+    blubArgument := ci.c_call_blub_sum(30)
+    mixed := ci.c_call_blub_mixed(40)
+    large := ci.c_call_blub_large(50)
+    cU8 := ci.c_increment_u8(60)
+    blubU8 := ci.c_call_blub_u8(70)
+
+    expected := 46 + 86 + 126 + 47
+    largeExpected: s64 = 153
+    if (cRoundTrip + blubReturn + blubArgument + mixed != expected) {
+        return 1
+    }
+    if (large != largeExpected) {
+        return 2
+    }
+    if (cU8 != 61) {
+        return 3
+    }
+    if (blubU8 != 71) {
+        return 4
+    }
+    return 0
+}

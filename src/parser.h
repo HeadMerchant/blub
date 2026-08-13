@@ -1724,7 +1724,7 @@ public:
   NodeIndex enumLiteral() {
     auto token =
       consume(TokenType::Enum, "enum token required for enum literal");
-    OptionalNode rawType;
+    OptionalNode rawType = NodeIndex::null();
     if (check(TokenType::LeftParen)) {
       advance();
       rawType = expression();
