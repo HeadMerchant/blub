@@ -72,6 +72,9 @@ concept AstVisitor = requires(T t, NodeIndex nodeIndex, TokenPointer token) {
     t.cDefine(Encodings::ArgumentList{})
   } -> std::same_as<typename T::ReturnType>;
   {
+    t.cUndef(Encodings::ArgumentList{})
+  } -> std::same_as<typename T::ReturnType>;
+  {
     t.cInclude(Encodings::ArgumentList{})
   } -> std::same_as<typename T::ReturnType>;
   {
@@ -425,6 +428,9 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
         }
         case TokenType::BUILTIN_CDefine: {
           return t.cDefine(argsList);
+        }
+        case TokenType::BUILTIN_CUndef: {
+          return t.cUndef(argsList);
         }
         case TokenType::BUILTIN_CInclude: {
           return t.cInclude(argsList);

@@ -6,6 +6,7 @@ std::unordered_map<std::string_view, TokenType> Tokenizer::builtinFunctions = {
   {"bitCast",      TokenType::BUILTIN_BitCast     },
   {"registerType", TokenType::BUILTIN_RegisterType},
   {"cDefine",      TokenType::BUILTIN_CDefine     },
+  {"cUndef",       TokenType::BUILTIN_CUndef      },
   {"cInclude",     TokenType::BUILTIN_CInclude    },
   {"cIncludeDir",  TokenType::BUILTIN_CIncludeDir },
   {"link",         TokenType::BUILTIN_Link        },

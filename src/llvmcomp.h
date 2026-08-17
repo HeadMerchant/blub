@@ -3273,6 +3273,21 @@ struct Compiler {
     return Reference::Void();
   }
 
+  ReturnType cUndef(Encodings::ArgumentList args) {
+    auto& clangArgs = CompilerContext::inst().c.clangArgs;
+    for (auto arg : args.positional) {
+      clangArgs.insert({ClangArg::Undefine(parser.getToken(arg)->lexeme)});
+    }
+
+    for (auto [name, value] : args.named) {
+      crash(
+        parser.getToken(name),
+        "Unable to take named args for builtin @cUndef"
+      );
+    }
+    return Reference::Void();
+  }
+
   ReturnType cInclude(Encodings::ArgumentList args) {
     if (args.positional.size() != 1) {
       parser.crash(

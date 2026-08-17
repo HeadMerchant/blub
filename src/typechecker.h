@@ -773,6 +773,10 @@ struct TypeChecker {
     return {Pool()._void};
   }
 
+  ReturnType cUndef(Encodings::ArgumentList args) {
+    return {Pool()._void};
+  }
+
   ReturnType cInclude(Encodings::ArgumentList args) {
     return {Pool()._void};
   }

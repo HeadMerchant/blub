@@ -55,7 +55,7 @@ struct ClangArg {
         [&o](IncludeFile x) { fmt::print(o, "-include {}", x.path.string()); },
         [&o](IncludeDir x) { fmt::print(o, "-I{}", x.path.string()); },
         [&o](Define x) { fmt::print(o, "-D{}", x.symbol); },
-        [&o](Undefine x) { fmt::print(o, "-U {}", x.symbol); },
+        [&o](Undefine x) { fmt::print(o, "-U{}", x.symbol); },
         [&o](ValueDefine x) { fmt::print(o, "-D{}={}", x.symbol, x.value); }
       },
       arg.arg
