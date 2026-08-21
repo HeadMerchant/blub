@@ -11,6 +11,7 @@
 #include "types.h"
 #include "value.h"
 #include <filesystem>
+#include <mio/mmap.hpp>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
@@ -28,7 +29,7 @@ struct FunctionStub {
   FunctionType functionType;
   TypeIndex selfType;
   FunctionConvention convention = FunctionConvention::CpuAbi;
-  std::vector<std::pair<string_view, Reference>> genericArguments;
+  std::vector<std::pair<Identifier, Reference>> genericArguments;
 };
 
 struct SwitchCase {
@@ -51,13 +52,13 @@ struct CompilerContext {
   struct LinkageContext {
     fs::path sourceRoot;
     bool initialized = false;
-    unordered_set<string_view> typeNames;
-    unordered_set<string_view> globalNames;
+    unordered_set<LinkageName> typeNames;
+    unordered_set<LinkageName> globalNames;
   };
 
   struct {
     std::ofstream* outputFileStream;
-    std::stringstream globalInitialization;
+    IrCommandBuffer globalInitialization;
     unordered_set<TypeIndex> emittedTypeDefinitions;
     LinkageContext linkage;
     tsl::ordered_set<fs::path> includedBinaryFiles;
@@ -65,11 +66,11 @@ struct CompilerContext {
   struct {
     vector<std::string> linkedLibraries;
     tsl::ordered_set<ClangArg> clangArgs;
-    vector<std::string> staticInlineFunctions;
+    vector<Identifier> staticInlineFunctions;
   } c;
   struct {
     std::ofstream* outputFileStream;
-    std::stringstream globalInitialization;
+    IrCommandBuffer globalInitialization;
     vector<std::string> linkedFiles;
     // TODO: support multiple ptx globals
     optional<RegisterValue> embeddedPtxGlobal;
@@ -83,11 +84,11 @@ struct CompilerContext {
     return instance;
   }
 
-  static std::stringstream* globalStream(TargetType targetType) {
-    auto& outputFile = targetType == TargetType::Cpu
-                         ? CompilerContext::inst().blub.globalInitialization
-                         : CompilerContext::inst().cuda.globalInitialization;
-    return &outputFile;
+  static std::ostream* globalStream(TargetType targetType) {
+    auto& output = targetType == TargetType::Cpu
+                     ? CompilerContext::inst().blub.globalInitialization
+                     : CompilerContext::inst().cuda.globalInitialization;
+    return &output.output();
   }
 
   static std::ofstream* fileStream(TargetType targetType) {
@@ -98,12 +99,13 @@ struct CompilerContext {
   }
 };
 
-#define COMPILER_STACK       \
-  std::ostream* outputFile;  \
-  OptionalType expectedType; \
-  NodeIndex nodeIndex;       \
-  string_view name;          \
-  string_view linkageScope;
+#define COMPILER_STACK              \
+  std::ostream* outputFile;         \
+  OptionalType expectedType;        \
+  NodeIndex nodeIndex;              \
+  Identifier name;                  \
+  LinkageName linkageScope;         \
+  LinkageName explicitFunctionName;
 
 // Individual statement
 struct Compiler {
@@ -125,13 +127,12 @@ struct Compiler {
 
   fs::path inputFilePath;
   std::span<NodeIndex> program;
-  // TODO: should this move to std::stringstream w/ rdbuf?
-  std::queue<std::string> globalsStack;
+  IrCommandBuffer globals;
   static Logger log;
   TargetType targetType;
-  std::string modulePrefix;
+  LinkageName modulePrefix;
   std::vector<FunctionStub> functionStubs;
-  std::vector<std::pair<string_view, Reference>> activeGenericArguments;
+  std::vector<std::pair<Identifier, Reference>> activeGenericArguments;
 
   using ReturnType = Reference;
   Environment environment;
@@ -145,41 +146,18 @@ struct Compiler {
                                          : CompilerContext::inst().cuda.linkage;
   }
 
-  template <typename... Args>
-  string_view qualifyLinkageName(
-    fmt::format_string<Args...> fmt,
-    Args&&... args
-  ) {
-    string_view prefix =
-      linkageScope.empty() ? string_view(modulePrefix) : linkageScope;
-    if (prefix.empty()) {
-      return copyStr(fmt, std::forward<Args>(args)...);
-    }
-    if (targetType == TargetType::Gpu) {
-      prefix = copyStr("{}$", prefix);
-    } else {
-      prefix = copyStr("{}.", prefix);
-    }
-    auto copied = copyStr(fmt, std::forward<Args>(args)...);
-    assert(prefix.data() + prefix.length() == copied.data());
-    return {prefix.data(), prefix.length() + copied.length()};
+  LinkageName qualifyLinkageName(Identifier component) {
+    auto parent = linkageScope ? linkageScope : modulePrefix;
+    return LinkageNames::inst().append(parent, component);
   }
 
-  string_view qualifyLinkageName(string_view name) {
-    string_view prefix =
-      linkageScope.empty() ? string_view(modulePrefix) : linkageScope;
-    if (prefix.empty()) {
-      return copyStr("{}", name);
-    }
-    // TODO: should we allow '$' in identifiers????
-    if (targetType == TargetType::Gpu) {
-      return copyStr("{}${}", prefix, name);
-    } else {
-      return copyStr("{}.{}", prefix, name);
-    }
+  LinkageName anonymousLinkageName(Identifier category, u32 index) {
+    auto name = qualifyLinkageName(Identifier("anon"));
+    name = LinkageNames::inst().append(name, category);
+    return LinkageNames::inst().appendAnonymous(name, index);
   }
 
-  void claimLinkageName(string_view linkageName, bool isType) {
+  void claimLinkageName(LinkageName linkageName, bool isType) {
     auto& names =
       isType ? linkageContext().typeNames : linkageContext().globalNames;
     // TODO: sussy
@@ -211,7 +189,7 @@ struct Compiler {
     if (parser.getNode(index).nodeType == NodeType::Declaration) {
       auto declaration = parser.getDeclaration(index);
       stackItems.name =
-        parser.getDefinition(declaration.definition).name->lexeme;
+        parser.getDefinition(declaration.definition).name.identifier;
     }
 
     typeChecker.check(nodeIndex, targetType);
@@ -234,6 +212,7 @@ struct Compiler {
       .astNode = value,
       .cache = std::make_shared<std::unordered_map<TupleIndex, Reference*>>(),
       .name = name,
+      .linkageName = qualifyLinkageName(name),
     };
     for (auto parameterIndex : parameters.requiredParameters) {
       auto parameter = parser.getDefinition(parameterIndex);
@@ -245,10 +224,10 @@ struct Compiler {
         crash(
           parameterIndex,
           "Generic parameter '{}' must be declared as type",
-          parameter.name->lexeme
+          parser.tokenizer.lexeme(parameter.name)
         );
       }
-      result.parameterNames.push_back(parameter.name->lexeme);
+      result.parameterNames.push_back(parser.tokenizer.lexeme(parameter.name));
     }
     return Reference(std::move(result));
   }
@@ -276,7 +255,7 @@ struct Compiler {
     }
 
     std::vector<TypeIndex> types;
-    std::vector<std::pair<string_view, Reference>> bindings;
+    std::vector<std::pair<Identifier, Reference>> bindings;
     types.reserve(arguments.positional.size());
     bindings.reserve(arguments.positional.size());
     for (u32 i = 0; i < arguments.positional.size(); i++) {
@@ -290,7 +269,7 @@ struct Compiler {
         );
       }
       types.push_back(type);
-      bindings.push_back({generic.parameterNames[i], argument});
+      bindings.push_back({Identifier(generic.parameterNames[i]), argument});
     }
     auto [tupleType, tupleIndex] = Pool().tupleOf(std::move(types));
     if (
@@ -300,21 +279,27 @@ struct Compiler {
       return Reference(*found->second);
     }
 
-    auto specializationNameString =
-      fmt::format("{}.generic.{}", generic.name, tupleIndex.value);
-    auto specializationName =
-      StringPool::inst().copy(std::string_view(specializationNameString));
+    auto specializationName = LinkageNames::inst().append(
+      LinkageNames::inst().append(generic.linkageName, Identifier("generic")),
+      Identifier("specialization")
+    );
+    specializationName = LinkageNames::inst().appendAnonymous(
+      specializationName,
+      tupleIndex.value
+    );
     auto scope = environment.pushScope();
     for (auto [parameter, argument] : bindings) {
       if (!environment
-             .define(parameter, argument, parser.locationOf(generic.astNode))) {
+             .define(parameter, argument, parser.getToken(generic.astNode))) {
         crash(generic.astNode, "Duplicate generic parameter '{}'", parameter);
       }
     }
     auto oldArguments = activeGenericArguments;
     activeGenericArguments = bindings;
     auto frame = stackItems;
-    frame.name = specializationName;
+    frame.name = {};
+    frame.linkageScope = specializationName;
+    frame.explicitFunctionName = specializationName;
     auto guard = push(frame);
     typeChecker.invalidate();
     auto result = compile(generic.astNode);
@@ -369,7 +354,7 @@ struct Compiler {
   }
 
   FunctionConvention selectFunctionConvention(NodeIndex functionNode) {
-    bool isKernel = parser.getToken(functionNode)->type == TokenType::Kernel;
+    bool isKernel = parser.getToken(functionNode).type == TokenType::Kernel;
     if (targetType == TargetType::Gpu) {
       return isKernel ? FunctionConvention::GpuKernelAbi
                       : FunctionConvention::GpuAbi;
@@ -439,7 +424,7 @@ struct Compiler {
     for (auto [parameterIndex, paramNode] : enumerate(requiredParameters)) {
       TypeIndex paramType = parameterTypes[parameterIndex];
       auto parameterDefinition = parser.getDefinition(paramNode);
-      string_view paramName = parameterDefinition.name->lexeme;
+      Identifier paramName = parameterDefinition.name.identifier;
       if (
         std::find(paramNames.begin(), paramNames.end(), paramName) !=
         paramNames.end()
@@ -448,24 +433,24 @@ struct Compiler {
       }
       paramNames.push_back(paramName);
       // TODO: needed?
-      auto llvmParamName = copyStr("arg{}", parameterIndex);
-      auto stackValue = StackValue(paramName, paramType);
+      auto stackValue =
+        StackValue(RegisterName(LinkageName(paramName)), paramType);
       emitDefinition(stackValue);
       emitLine(
         "store {} %{}, {} {}",
         gpuParameterType(paramType),
-        llvmParamName,
+        paramName,
         stackValue.addressSpace,
         stackValue
       );
       if (!environment.define(
             paramName,
             Reference(stackValue),
-            parser.locationOf(paramNode)
+            parser.getToken(paramNode)
           )) {
         auto original = environment.definitionLocation(paramName);
         fmt::println(std::cerr, "{} originally defined at:", paramName);
-        original->underline(std::cerr);
+        parser.tokenizer.locationOf(*original).underline(std::cerr);
         crash(paramNode, "Parameter name {} shadows a higher scope", paramName);
       }
     }
@@ -731,7 +716,7 @@ struct Compiler {
   ReturnType declaration(Encodings::Declaration node) {
     // NOTE: don't support using non-identifiers
     auto definitionNode = parser.getDefinition(node.definition);
-    auto definitionName = definitionNode.name->lexeme;
+    auto definitionName = parser.tokenizer.lexeme(definitionNode.name);
 
     StackItems frame = stackItems;
     frame.name = definitionName;
@@ -742,7 +727,7 @@ struct Compiler {
       crash(nodeIndex, "Attempt to redefine name '{}'", definitionName);
     }
 
-    auto assignmentToken = parser.getToken(nodeIndex)->type;
+    auto assignmentToken = parser.getToken(nodeIndex).type;
     // Comptime
     if (assignmentToken == TokenType::Colon) {
       if (definitionNode.type) {
@@ -760,7 +745,7 @@ struct Compiler {
       }
 
       environment
-        .define(definitionName, value, parser.locationOf(node.definition));
+        .define(definitionName, value, parser.getToken(node.definition));
       log(
         "Defined {} with type {}",
         definitionName,
@@ -841,7 +826,7 @@ struct Compiler {
       ) {
         TODO("Error for GPU global in default address space");
       }
-      globalsStack.push(
+      globals.push(
         fmt::format(
           "{} = internal addrspace({}) global {} zeroinitializer align {}",
           assignee,
@@ -887,12 +872,12 @@ struct Compiler {
       hasFields = true;
     }
     definition << "}";
-    globalsStack.push(definition.str());
+    globals.push(definition.str());
     emittedTypes.insert(type);
   }
 
   StackValue* makeDefinition(
-    TokenPointer name,
+    Token name,
     NodeIndex typeNode,
     NodeIndex defNode
   ) {
@@ -901,19 +886,23 @@ struct Compiler {
       if (auto typeIndex = compile(typeNode).unboxType()) {
         type = typeIndex;
       } else {
-        crash(typeNode, "Type for identifier '{}' is not a type", name->lexeme);
+        crash(
+          typeNode,
+          "Type for identifier '{}' is not a type",
+          parser.tokenizer.lexeme(name)
+        );
       }
     }
     bool isGlobal = environment.envType() == EnvType::Global;
     RegisterName storageName;
     if (isGlobal) {
-      storageName = qualifyLinkageName(name->lexeme);
-      claimLinkageName(registerNameToString(storageName), false);
+      storageName = qualifyLinkageName(name.identifier);
+      claimLinkageName(std::get<LinkageName>(storageName), false);
     } else {
       storageName = environment.addTemporary();
     }
     Reference* definition = environment.define(
-      name->lexeme,
+      name.identifier,
       Reference(StackValue(
         storageName,
         type,
@@ -921,21 +910,25 @@ struct Compiler {
         isGlobal && targetType == TargetType::Gpu ? AddressSpace::cudaConstant()
                                                   : AddressSpace()
       )),
-      parser.locationOf(defNode)
+      parser.getToken(defNode)
     );
     if (definition) {
       return definition->lValue();
     }
 
-    crash(name, "Definition for identifier '{}' already exists", name->lexeme);
+    crash(
+      name,
+      "Definition for identifier '{}' already exists",
+      parser.tokenizer.lexeme(name)
+    );
   }
 
   ReturnType definition(Encodings::Definition node) {
     assert(node.type);
     auto oldName = name;
-    name = node.name->lexeme;
+    name = node.name.identifier;
     log("Using name: {}", name);
-    if (parser.getToken(nodeIndex)->type == TokenType::BUILTIN_Shared) {
+    if (parser.getToken(nodeIndex).type == TokenType::BUILTIN_Shared) {
       if (targetType != TargetType::Gpu) {
         crash(nodeIndex, "'@shared' storage is only available for CUDA code");
       }
@@ -947,8 +940,8 @@ struct Compiler {
         crash(node.type, "'@shared' declarations require a concrete type");
       }
       ensureTypeDefinition(type);
-      auto storageName = qualifyLinkageName(node.name->lexeme);
-      claimLinkageName(registerNameToString(storageName), false);
+      auto storageName = qualifyLinkageName(node.name.identifier);
+      claimLinkageName(storageName, false);
       StackValue storage(
         storageName,
         type,
@@ -956,18 +949,18 @@ struct Compiler {
         AddressSpace::cudaShared()
       );
       if (!environment.define(
-            node.name->lexeme,
+            node.name.identifier,
             Reference(storage),
-            parser.locationOf(nodeIndex)
+            parser.getToken(nodeIndex)
           )) {
         crash(
           nodeIndex,
           "Duplicate shared declaration '{}'",
-          node.name->lexeme
+          parser.tokenizer.lexeme(node.name)
         );
       }
       auto alignment = Pool().getSizing(type).alignment.byteAlignment();
-      globalsStack.push(
+      globals.push(
         fmt::format(
           "{} = internal addrspace(3) global {} undef, align {}",
           storage,
@@ -985,13 +978,13 @@ struct Compiler {
     return Reference::Void();
   }
 
-  ReturnType character(TokenPointer token) {
-    return Reference(IntLiteral(token->lexeme[0], Pool()._u8));
+  ReturnType character(Token token) {
+    return Reference(IntLiteral(parser.tokenizer.lexeme(token)[0], Pool()._u8));
   }
 
   std::pair<std::string, u32> escapeSourceString(
     std::string_view str,
-    TokenPointer token
+    Token token
   ) {
     std::string escaped;
     u32 byteLength = 0;
@@ -1092,10 +1085,11 @@ struct Compiler {
     return Reference(result);
   }
 
-  ReturnType string(TokenPointer token) {
+  ReturnType string(Token token) {
     auto global = environment.makeGlobal(Pool()._u8);
-    auto [stringValue, length] = escapeSourceString(token->lexeme, token);
-    globalsStack.push(
+    auto [stringValue, length] =
+      escapeSourceString(parser.tokenizer.lexeme(token), token);
+    globals.push(
       fmt::format(
         "{} = global [{} x i8] c\"{}\" align 1\n",
         global,
@@ -1108,13 +1102,14 @@ struct Compiler {
     return makeSliceValue(ref, lengthValue);
   }
 
-  ReturnType nullString(TokenPointer token) {
-    auto [stringValue, length] = escapeSourceString(token->lexeme, token);
+  ReturnType nullString(Token token) {
+    auto [stringValue, length] =
+      escapeSourceString(parser.tokenizer.lexeme(token), token);
     auto global = environment.makeGlobal(Pool()._u8);
     // auto global = environment.makeGlobal(Pool().sizedArrayOf(Pool()._u8,
     // length));
     static std::string nullByte = "\\00";
-    globalsStack.push(
+    globals.push(
       fmt::format(
         "{} = global [{} x i8] c\"{}{}\" align 1\n",
         global,
@@ -1128,8 +1123,8 @@ struct Compiler {
     );
   }
 
-  ReturnType decimal(TokenPointer token) {
-    float floatValue = std::stof(token->lexeme.data());
+  ReturnType decimal(Token token) {
+    float floatValue = std::stof(parser.tokenizer.lexeme(token).data());
     auto type = typeChecker.check(nodeIndex).type;
     if (auto floatType = Pool().unbox<Float>(type)) {
       return Reference(FloatLiteral(floatValue, floatType->precision));
@@ -1143,9 +1138,9 @@ struct Compiler {
     );
   }
 
-  ReturnType integer(TokenPointer token) {
+  ReturnType integer(Token token) {
     int64_t intVal;
-    auto lexeme = token->lexeme;
+    auto lexeme = parser.tokenizer.lexeme(token);
     if (
       std::from_chars(lexeme.data(), lexeme.data() + lexeme.size(), intVal)
         .ec == std::errc::result_out_of_range
@@ -1159,8 +1154,8 @@ struct Compiler {
     return Reference(IntLiteral(intVal, type));
   }
 
-  ReturnType hexInt(TokenPointer token) {
-    int64_t intVal = std::stoi(token->lexeme.data(), 0, 16);
+  ReturnType hexInt(Token token) {
+    int64_t intVal = std::stoi(parser.tokenizer.lexeme(token).data(), 0, 16);
     return Reference(IntLiteral(intVal));
   }
 
@@ -1168,8 +1163,8 @@ struct Compiler {
     return Reference(value);
   }
 
-  ReturnType identifier(TokenPointer token) {
-    auto name = token->lexeme;
+  ReturnType identifier(Token token) {
+    auto name = token.identifier;
     if (auto value = environment.find(name)) {
       return Reference(*value);
     }
@@ -1177,33 +1172,33 @@ struct Compiler {
     crash(nodeIndex, "Identifier \"{}\" not defined", name);
   }
 
-  ReturnType opaque(TokenPointer token) {
+  ReturnType opaque(Token token) {
     TypeIndex type = Pool().addOpaque(nameOr("Anonymous Opaque"));
     return Reference(type);
   }
 
-  ReturnType self(TokenPointer token) {
+  ReturnType self(Token token) {
     if (auto type = environment.selfType()) {
       return Reference(type);
     }
     crash(nodeIndex, "No type 'Self' in context");
   }
 
-  ReturnType undefined(TokenPointer token) {
+  ReturnType undefined(Token token) {
     auto type = typeChecker.check(nodeIndex);
     return Reference(Never{type.type});
   }
 
-  ReturnType cudaBuiltin(TokenPointer token, string_view callName) {
+  ReturnType cudaBuiltin(Token token, string_view callName) {
     if (targetType != TargetType::Gpu) {
       crash(
         nodeIndex,
         "Unable to use cuda builtin '@{}' in non-gpu target",
-        token->lexeme
+        parser.tokenizer.lexeme(token)
       );
     }
     auto result = environment.makeTemporary(Pool()._u32);
-    emitLine("{} = call i32 {}()", result, cudaBuiltins[token->type]);
+    emitLine("{} = call i32 {}()", result, cudaBuiltins[token.type]);
     return Reference(result);
   }
 
@@ -1811,7 +1806,7 @@ struct Compiler {
       );
     }
 
-    auto signedExponent = exponentLiteral->value;
+    int64_t signedExponent = static_cast<int64_t>(exponentLiteral->value);
     bool negative = signedExponent < 0;
     if (negative && !Pool().isFloat(resultType)) {
       crash(
@@ -2549,9 +2544,13 @@ struct Compiler {
     auto& namedArgs = result.named;
     for (auto [name, value] : namedArguments) {
       auto nameToken = parser.getToken(name);
-      auto field = fields.find(nameToken->lexeme);
+      auto field = fields.find(nameToken.identifier);
       if (field == fields.end()) {
-        crash(nameToken, "Unknown named argument '{}'", nameToken->lexeme);
+        crash(
+          nameToken,
+          "Unknown named argument '{}'",
+          parser.tokenizer.lexeme(nameToken)
+        );
       }
 
       u32 argIndex = std::distance(fields.begin(), field);
@@ -2564,7 +2563,11 @@ struct Compiler {
           original.column
         );
         original.underline(std::cerr);
-        crash(nameToken, "Duplicate named argument '{}'", nameToken->lexeme);
+        crash(
+          nameToken,
+          "Duplicate named argument '{}'",
+          parser.tokenizer.lexeme(nameToken)
+        );
       }
 
       auto expectedType = typeChecker.check(value, field->second).type;
@@ -2628,9 +2631,13 @@ struct Compiler {
 
     for (auto [name, value] : namedArguments) {
       auto nameToken = parser.getToken(name);
-      auto fieldPath = Pool().getFieldPath(type, nameToken->lexeme);
+      auto fieldPath = Pool().getFieldPath(type, nameToken.identifier);
       if (!fieldPath) {
-        crash(nameToken, "Unknown named argument '{}'", nameToken->lexeme);
+        crash(
+          nameToken,
+          "Unknown named argument '{}'",
+          parser.tokenizer.lexeme(nameToken)
+        );
       }
       auto expectedType = typeChecker.check(value, fieldPath.type).type;
       auto argument = coerceValue(compile(value), expectedType);
@@ -2664,7 +2671,7 @@ struct Compiler {
       auto [name, value] = namedArguments.front();
       auto nameToken = parser.getToken(name);
       for (auto [variantType, variantName] : unionType->namedVariants) {
-        if (variantName == nameToken->lexeme) {
+        if (variantName == nameToken.identifier) {
           typeChecker.check(value, variantType);
           return constructUnionValue(
             type,
@@ -2673,7 +2680,11 @@ struct Compiler {
           );
         }
       }
-      crash(nameToken, "Unknown union field '{}'", nameToken->lexeme);
+      crash(
+        nameToken,
+        "Unknown union field '{}'",
+        parser.tokenizer.lexeme(nameToken)
+      );
     }
 
     if (positionalArguments.size() != 1 || !unionType->namedVariants.empty()) {
@@ -2883,15 +2894,14 @@ struct Compiler {
     for (auto index : block.elements) {
       auto declaration = parser.getDeclaration(index);
       auto nameToken = parser.getDefinition(declaration.definition).name;
-      auto name = nameToken->lexeme;
+      auto name = nameToken.identifier;
       auto frame = stackItems;
       frame.name = name;
       if (auto* structType = Pool().getStruct(targetType)) {
-        frame.linkageScope =
-          StringPool::inst().copy(registerNameToString(structType->llvmName));
+        frame.linkageScope = std::get<LinkageName>(structType->llvmName);
       } else {
         frame.linkageScope =
-          qualifyLinkageName(parser.getToken(typeNode)->lexeme);
+          qualifyLinkageName(parser.getToken(typeNode).identifier);
       }
       auto guard = push(frame);
       auto value = compile(declaration.value);
@@ -2901,7 +2911,7 @@ struct Compiler {
         crash(nameToken, "Duplicate member in impl block '{}'", name);
       }
       if (
-        parser.getToken(index)->type != TokenType::Colon || !value.isComptime()
+        parser.getToken(index).type != TokenType::Colon || !value.isComptime()
       )
         crash(index, "TODO: non-comptime values");
     }
@@ -2921,12 +2931,15 @@ struct Compiler {
     NodeIndex returnIndex,
     NodeIndex body
   ) {
-    auto functionScope = name.empty() ? linkageScope : qualifyLinkageName(name);
+    auto functionScope =
+      explicitFunctionName
+        ? explicitFunctionName
+        : (name.empty() ? linkageScope : qualifyLinkageName(name));
     TypeIndex returnType = Pool()._void;
     if (returnIndex) {
       auto frame = stackItems;
       frame.linkageScope = functionScope;
-      frame.name = "return";
+      frame.name = Identifier("return");
       auto guard = push(frame);
       returnType = compile(returnIndex, Pool().type).unboxType();
       if (!returnType) {
@@ -2947,7 +2960,7 @@ struct Compiler {
 
       auto frame = stackItems;
       frame.linkageScope = functionScope;
-      frame.name = parameterDefinition.name->lexeme;
+      frame.name = parameterDefinition.name.identifier;
       auto guard = push(frame);
       auto parameterType = compile(parameterDefinition.type).unboxType();
       if (!parameterType) {
@@ -2963,21 +2976,24 @@ struct Compiler {
     auto functionType = FunctionType(tupleType, returnType);
 
     // auto token = parser.getTokenIndex()
-    auto token = parser.getToken(nodeIndex);
-    token++;
+    auto token =
+      parser.getToken(TokenIndex{parser.getTokenIndex(nodeIndex).value + 1});
     RegisterName llvmName;
-    if (token->type == TokenType::String) {
-      llvmName = token->lexeme;
+    if (token.type == TokenType::String) {
+      llvmName = LinkageName(parser.tokenizer.lexeme(token));
     } else if (forwardDeclare) {
-      llvmName = name;
+      llvmName = LinkageName(name);
+    } else if (explicitFunctionName) {
+      llvmName = explicitFunctionName;
+      claimLinkageName(explicitFunctionName, false);
     } else {
       if (!name.empty()) {
         llvmName = qualifyLinkageName(name);
       } else {
         auto suffix = environment.nextGlobalIndex();
-        llvmName = qualifyLinkageName(copyStr("anon.{}", suffix));
+        llvmName = anonymousLinkageName(Identifier("function"), suffix);
       }
-      claimLinkageName(registerNameToString(llvmName), false);
+      claimLinkageName(std::get<LinkageName>(llvmName), false);
     }
 
     auto convention = selectFunctionConvention(nodeIndex);
@@ -3009,7 +3025,7 @@ struct Compiler {
         },
         false
       );
-      globalsStack.push(declaration.str());
+      globals.push(declaration.str());
     }
 
     return Reference(
@@ -3017,7 +3033,7 @@ struct Compiler {
         .type = functionType,
         .globalName = llvmName,
         .convention = convention,
-        .isKernel = parser.getToken(nodeIndex)->type == TokenType::Kernel,
+        .isKernel = parser.getToken(nodeIndex).type == TokenType::Kernel,
       }
     );
   }
@@ -3197,24 +3213,25 @@ struct Compiler {
     }
 
     auto includeFile = fs::weakly_canonical(
-      inputFilePath.parent_path() / parser.getToken(argumentNodes[0])->lexeme
+      inputFilePath.parent_path() /
+      parser.tokenizer.lexeme(parser.getToken(argumentNodes[0]))
     );
     auto fileName = includeFile.string();
-    std::unordered_map<std::string_view, TypeIndex> definedTypes;
+    std::unordered_map<Identifier, TypeIndex> definedTypes;
     for (auto [name, value] : args.named) {
       auto valueType = compile(value, Pool().type);
       if (auto type = valueType.unboxType()) {
-        definedTypes[parser.getToken(name)->lexeme] = type;
+        definedTypes[parser.getToken(name).identifier] = type;
       } else {
         TODO("Error for passing non-type into types");
       }
     }
 
-    auto prefix = parser.getToken(argumentNodes[1])->lexeme;
+    auto prefix = parser.tokenizer.lexeme(parser.getToken(argumentNodes[1]));
     auto result = Reference(cBindings(
       includeFile,
       prefix,
-      globalsStack,
+      globals,
       definedTypes,
       [this](TypeIndex type) { ensureTypeDefinition(type); },
       [this](std::string_view name) {
@@ -3222,7 +3239,7 @@ struct Compiler {
         if (
           std::find(functions.begin(), functions.end(), name) == functions.end()
         ) {
-          functions.emplace_back(name);
+          functions.emplace_back(Identifier(name));
         }
       }
     ));
@@ -3261,13 +3278,15 @@ struct Compiler {
   ReturnType cDefine(Encodings::ArgumentList args) {
     auto& clangArgs = CompilerContext::inst().c.clangArgs;
     for (auto arg : args.positional) {
-      clangArgs.insert({ClangArg::Define(parser.getToken(arg)->lexeme)});
+      clangArgs.insert(
+        {ClangArg::Define(parser.tokenizer.lexeme(parser.getToken(arg)))}
+      );
     }
 
     for (auto [name, value] : args.named) {
       clangArgs.insert({ClangArg::ValueDefine(
-        StringPool::inst().copy(parser.getToken(name)->lexeme),
-        StringPool::inst().copy(parser.getToken(value)->lexeme)
+        Identifier(parser.tokenizer.lexeme(parser.getToken(name))),
+        Identifier(parser.tokenizer.lexeme(parser.getToken(value)))
       )});
     }
     return Reference::Void();
@@ -3276,7 +3295,9 @@ struct Compiler {
   ReturnType cUndef(Encodings::ArgumentList args) {
     auto& clangArgs = CompilerContext::inst().c.clangArgs;
     for (auto arg : args.positional) {
-      clangArgs.insert({ClangArg::Undefine(parser.getToken(arg)->lexeme)});
+      clangArgs.insert(
+        {ClangArg::Undefine(parser.tokenizer.lexeme(parser.getToken(arg)))}
+      );
     }
 
     for (auto [name, value] : args.named) {
@@ -3307,7 +3328,7 @@ struct Compiler {
       );
     }
     auto fileName = parser.getToken(args.positional[0]);
-    if (fileName->type != TokenType::String) {
+    if (fileName.type != TokenType::String) {
       parser.crash(
         args.positional[0],
         "Builtin @cInclude must take in 1 string literal"
@@ -3315,7 +3336,7 @@ struct Compiler {
     }
 
     CompilerContext::inst().c.clangArgs.insert(
-      {ClangArg::IncludeFile(concatPath(fileName->lexeme))}
+      {ClangArg::IncludeFile(concatPath(parser.tokenizer.lexeme(fileName)))}
     );
     return Reference::Void();
   }
@@ -3326,8 +3347,9 @@ struct Compiler {
       parser.nodeType(args.positional[0]) == NodeType::Literal &&
       args.named.empty()
     ) {
-      auto fileName =
-        parser.getToken(parser.getNode(args.positional[0]).token)->lexeme;
+      auto fileName = parser.tokenizer.lexeme(
+        parser.getToken(parser.getNode(args.positional[0]).token)
+      );
       CompilerContext::inst().c.clangArgs.insert(
         {{ClangArg::IncludeDir(concatPath(fileName))}}
       );
@@ -3343,11 +3365,12 @@ struct Compiler {
   ReturnType link(Encodings::ArgumentList args) {
     if (
       args.positional.size() == 1 &&
-      parser.getToken(args.positional[0])->type == TokenType::String &&
+      parser.getToken(args.positional[0]).type == TokenType::String &&
       args.named.empty()
     ) {
-      auto libName =
-        parser.getToken(parser.getNode(args.positional[0]).token)->lexeme;
+      auto libName = parser.tokenizer.lexeme(
+        parser.getToken(parser.getNode(args.positional[0]).token)
+      );
       CompilerContext::inst().c.linkedLibraries.push_back(
         fmt::format("-l{}", libName)
       );
@@ -3363,10 +3386,11 @@ struct Compiler {
   ReturnType linkDir(Encodings::ArgumentList args) {
     if (
       args.positional.size() == 1 &&
-      parser.getToken(args.positional[0])->type == TokenType::String &&
+      parser.getToken(args.positional[0]).type == TokenType::String &&
       args.named.empty()
     ) {
-      auto libName = parser.getToken(args.positional[0])->lexeme;
+      auto libName =
+        parser.tokenizer.lexeme(parser.getToken(args.positional[0]));
       CompilerContext::inst().c.linkedLibraries.push_back(
         fmt::format("-L{}", libName)
       );
@@ -3383,8 +3407,8 @@ struct Compiler {
     return Reference(typeChecker.check(node).type);
   }
 
-  ReturnType import(TokenPointer fileName) {
-    auto filePath = resolveBlubImportPath(fileName->lexeme);
+  ReturnType import(Token fileName) {
+    auto filePath = resolveBlubImportPath(parser.tokenizer.lexeme(fileName));
     log("Importing: {}", filePath.string());
     Environment* import = compile(filePath, targetType);
     if (!import->impls.witnesses.empty()) {
@@ -3676,7 +3700,7 @@ struct Compiler {
     return Reference::Void();
   }
 
-  ReturnType cudaImport(TokenPointer fileName) {
+  ReturnType cudaImport(Token fileName) {
     if (targetType != TargetType::Cpu) {
       crash(
         nodeIndex,
@@ -3684,7 +3708,7 @@ struct Compiler {
         "'import'?"
       );
     }
-    auto filePath = resolveBlubImportPath(fileName->lexeme);
+    auto filePath = resolveBlubImportPath(parser.tokenizer.lexeme(fileName));
     fmt::println("Importing: {}", filePath.string());
     return Reference(importCudaFile(filePath));
   }
@@ -3874,25 +3898,37 @@ struct Compiler {
     );
   }
 
-  string_view nameOr(string_view altName) {
+  Identifier nameOr(string_view altName) {
     if (name.empty()) {
       log("Using name {}; Stored name is {}", altName, name);
-      return altName;
+      return Identifier(altName);
     }
-    name = StringPool::inst().copy(name);
     log("Using name {}", name);
     return name;
   }
 
-  std::unordered_map<std::string, TypeIndex> typeCache;
+  struct AnonymousTypeKey {
+    NodeIndex node;
+    Identifier name;
+    bool operator==(const AnonymousTypeKey& other) const {
+      return node.value == other.node.value && name == other.name;
+    }
+  };
+  struct AnonymousTypeKeyHash {
+    usize operator()(const AnonymousTypeKey& key) const {
+      return (static_cast<usize>(key.node.value) << 32) ^ key.name.index;
+    }
+  };
+  std::unordered_map<AnonymousTypeKey, TypeIndex, AnonymousTypeKeyHash>
+    typeCache;
 
   ReturnType structExpr(Encodings::Struct node) {
-    auto cacheKey = fmt::format("{}:{}", nodeIndex.value, name);
+    auto cacheKey = AnonymousTypeKey{nodeIndex, name};
     auto it = typeCache.find(cacheKey);
     if (it != typeCache.end()) {
       return Reference(it->second);
     }
-    auto isUnion = parser.getToken(nodeIndex)->type == TokenType::Union;
+    auto isUnion = parser.getToken(nodeIndex).type == TokenType::Union;
     auto prettyName = nameOr(isUnion ? "Anonymous Union" : "Anonymous Struct");
     log("Making {} with name: {}", isUnion ? "union" : "struct", prettyName);
 
@@ -3903,7 +3939,7 @@ struct Compiler {
         switch (fieldNode.nodeType) {
         case NodeType::Definition: {
           auto definitionNode = parser.getDefinition(fieldIndex);
-          auto fieldName = definitionNode.name->lexeme;
+          auto fieldName = definitionNode.name.identifier;
           auto fieldFrame = stackItems;
           fieldFrame.name = fieldName;
           auto fieldGuard = push(fieldFrame);
@@ -3936,7 +3972,7 @@ struct Compiler {
 
     auto llvmName =
       name.empty()
-        ? qualifyLinkageName("anon.type.{}", environment.structIndex())
+        ? anonymousLinkageName(Identifier("type"), environment.structIndex())
         : qualifyLinkageName(name);
     claimLinkageName(llvmName, true);
     std::stringstream typeInstruction;
@@ -3957,7 +3993,7 @@ struct Compiler {
       case NodeType::Definition: {
         if (hasFields) typeInstruction << ", ";
         auto definitionNode = parser.getDefinition(fieldIndex);
-        auto fieldName = definitionNode.name->lexeme;
+        auto fieldName = definitionNode.name.identifier;
         auto fieldFrame = stackItems;
         fieldFrame.name = fieldName;
         auto fieldGuard = push(fieldFrame);
@@ -3985,7 +4021,7 @@ struct Compiler {
           fmt::println(std::cerr, "Originally defined at:");
           auto originalDef =
             parser.getDefinition(node.children[definitionIndex]).name;
-          parser.tokenizer.locationOf(originalDef->lexeme);
+          parser.tokenizer.locationOf(originalDef);
           crash(definitionNode.name, "Duplicate field '{}'", fieldName);
         }
         fmt::print(typeInstruction, "{}", LlvmName(type));
@@ -3997,7 +4033,7 @@ struct Compiler {
       }
     }
     typeInstruction << "}";
-    globalsStack.push(typeInstruction.str());
+    globals.push(typeInstruction.str());
     auto& emittedTypes =
       targetType == TargetType::Cpu
         ? CompilerContext::inst().blub.emittedTypeDefinitions
@@ -4022,7 +4058,7 @@ struct Compiler {
     }
     Reference object = node.object ? compile(node.object) : Reference(type);
 
-    std::string_view fieldName = node.fieldName->lexeme;
+    Identifier fieldName = node.fieldName.identifier;
 
     if (auto type = object.unboxType()) {
       if (auto enumDefinition = Pool().getEnum(type)) {
@@ -4196,7 +4232,7 @@ struct Compiler {
     u32 valueCount = 0;
     Enum& enumDefinition = Pool().getEnum(enumIndex);
     for (auto [nameToken, valueNode] : node.entries) {
-      auto name = parser.getToken(nameToken)->lexeme;
+      auto name = parser.getToken(nameToken).identifier;
 
       if (valueNode) {
         auto entryValue = compile(valueNode);
@@ -4223,7 +4259,7 @@ struct Compiler {
       }
       valueCount++;
     }
-    globalsStack.push(Environment::dumpEntryNames(enumDefinition).str());
+    globals.push(Environment::dumpEntryNames(enumDefinition).str());
     return Reference(typeIndex);
   }
 
@@ -4235,7 +4271,8 @@ struct Compiler {
     u32 totalLength = 0;
     for (auto i = 0; i < numLines; i++) {
       auto& line = parser.tokens[startToken + i * 2];
-      auto [stringValue, length] = escapeSourceString(line.lexeme, &line);
+      auto [stringValue, length] =
+        escapeSourceString(parser.tokenizer.lexeme(line), line);
       totalLength += length;
       escapedLines.push_back(std::move(stringValue));
     }
@@ -4250,7 +4287,7 @@ struct Compiler {
       totalLength,
       fmt::join(escapedLines, "\\0A")
     );
-    globalsStack.push(instruction.str());
+    globals.push(instruction.str());
     auto lengthValue = Reference(IntLiteral(totalLength));
     Reference ref(global);
     return makeSlice(ref, lengthValue);
@@ -4258,7 +4295,7 @@ struct Compiler {
 
   ReturnType forLoop(Encodings::ForLoop node) {
     auto iterator = compile(node.iterator);
-    auto captureName = node.capture.name->lexeme;
+    auto captureName = node.capture.name.identifier;
     auto captureType =
       node.capture.type ? compile(node.capture.type).unboxType() : Pool().infer;
 
@@ -4292,12 +4329,12 @@ struct Compiler {
       if (!environment.define(
             captureName,
             Reference(iterationVariable),
-            parser.locationOf(node.iterator)
+            parser.getToken(node.iterator)
           )) {
 
         auto original = environment.definitionLocation(captureName);
         fmt::println(std::cerr, "{} originally defined at:", captureName);
-        original->underline(std::cerr);
+        parser.tokenizer.locationOf(original).underline(std::cerr);
         crash(
           node.capture.name,
           "Iteration variable name '{}' shadows a higher scope",
@@ -4429,12 +4466,12 @@ struct Compiler {
       if (!environment.define(
             captureName,
             Reference(iterationVariable),
-            parser.locationOf(node.iterator)
+            parser.getToken(node.iterator)
           )) {
 
         auto original = environment.definitionLocation(captureName);
         fmt::println(std::cerr, "{} originally defined at:", captureName);
-        original->underline(std::cerr);
+        parser.tokenizer.locationOf(original).underline(std::cerr);
         crash(
           node.capture.name,
           "Iteration variable name '{}' shadows a higher scope",
@@ -4616,12 +4653,12 @@ struct Compiler {
 
   template <typename... Args>
   [[noreturn]] void Todo(
-    TokenPointer token,
+    Token token,
     fmt::format_string<Args...> fmt,
     Args&&... args
   ) {
     auto& out = std::cerr;
-    auto location = parser.tokenizer.locationOf(token->lexeme);
+    auto location = parser.tokenizer.locationOf(token);
     fmt::println(
       out,
       "TODO: file {} at line {}:{}",
@@ -4645,7 +4682,7 @@ struct Compiler {
     fmt::println(
       std::cerr,
       "Crashing on substring {} for node {}",
-      token->lexeme,
+      parser.tokenizer.lexeme(token),
       (u32)parser.getNode(node).nodeType
     );
     Todo(token, fmt, std::forward<Args>(args)...);
@@ -4653,12 +4690,12 @@ struct Compiler {
 
   template <typename... Args>
   [[noreturn]] void crash(
-    TokenPointer token,
+    Token token,
     fmt::format_string<Args...> fmt,
     Args&&... args
   ) {
     auto& out = std::cerr;
-    auto location = parser.tokenizer.locationOf(token->lexeme);
+    auto location = parser.tokenizer.locationOf(token);
     fmt::println(
       out,
       "Compiler error in file {} at line {}:{}",
@@ -4721,9 +4758,6 @@ struct Compiler {
       log("Opened file: {}", filePath.string());
     }
 
-    // TODO: reevaluate this
-    // File contents needs to be kept around after this TL because names are
-    // string_views
     std::string& fileContents = *new std::string(
       std::istreambuf_iterator<char>(inputFile),
       std::istreambuf_iterator<char>()
@@ -4743,12 +4777,11 @@ struct Compiler {
     return relative;
   }
 
-  static std::string moduleNameFromPath(fs::path relativePath) {
+  static LinkageName moduleNameFromPath(fs::path relativePath) {
     relativePath.replace_extension();
-    std::string result;
+    LinkageName result;
     for (const auto& part : relativePath) {
-      if (!result.empty()) result += '.';
-      result += part.string();
+      result = LinkageNames::inst().append(result, Identifier(part.string()));
     }
     return result;
   }
@@ -4767,7 +4800,7 @@ struct Compiler {
     auto& linkage = targetType == TargetType::Cpu
                       ? CompilerContext::inst().blub.linkage
                       : CompilerContext::inst().cuda.linkage;
-    std::string modulePrefix;
+    LinkageName modulePrefix;
     if (!linkage.initialized) {
       linkage.sourceRoot = fileName.parent_path();
       linkage.initialized = true;
@@ -4788,13 +4821,6 @@ struct Compiler {
       }
     }
 
-    // PTX identifiers cannot contain the dots used by CPU module linkage
-    // names. Keep source-level kernel names unchanged while making imported
-    // CUDA module prefixes valid PTX identifiers.
-    if (targetType == TargetType::Gpu) {
-      std::replace(modulePrefix.begin(), modulePrefix.end(), '.', '$');
-    }
-
     if (compiledFiles.contains(fileName)) {
       return &compiledFiles[fileName];
     }
@@ -4807,7 +4833,7 @@ struct Compiler {
 
     Compiler translationUnit(parser, program, targetType);
     translationUnit.inputFilePath = fileName;
-    translationUnit.modulePrefix = std::move(modulePrefix);
+    translationUnit.modulePrefix = modulePrefix;
     auto [env, success] =
       compiledFiles.emplace(std::move(fileName), translationUnit.run());
     // TODO: remove
@@ -4831,20 +4857,14 @@ struct Compiler {
     for (auto node : program) {
       log("Trying to compile node: {}", node.value);
       compile(node);
-      while (!globalsStack.empty()) {
-        *finalFile << globalsStack.front() << "\n";
-        globalsStack.pop();
-      }
+      globals.drain(*finalFile);
     }
 
     while (!functionStubs.empty()) {
       auto stub = functionStubs.back();
       functionStubs.pop_back();
       codegenFunction(stub);
-      while (!globalsStack.empty()) {
-        *finalFile << globalsStack.front() << "\n";
-        globalsStack.pop();
-      }
+      globals.drain(*finalFile);
     }
 
     dumpStatements();
@@ -4859,7 +4879,7 @@ struct Compiler {
     environment.scopes.back().self = stub.selfType;
     for (auto [name, value] : stub.genericArguments) {
       if (!environment
-             .define(name, value, parser.locationOf(stub.definitionNode))) {
+             .define(name, value, parser.getToken(stub.definitionNode))) {
         crash(
           stub.definitionNode,
           "Generic parameter '{}' shadows an existing definition",
@@ -4880,7 +4900,7 @@ struct Compiler {
        .expectedType = Pool().infer,
        .nodeIndex = stub.definitionNode,
        .name = {},
-       .linkageScope = StringPool::inst().copy(registerNameToString(stub.name))}
+       .linkageScope = std::get<LinkageName>(stub.name)}
     );
     Function function{
       .type = stub.functionType,
@@ -4930,7 +4950,7 @@ struct Compiler {
       for (NodeIndex paramNode : parameters.requiredParameters) {
         TypeIndex paramType = parameterTypes[parameterIndex];
         auto parameterDefinition = parser.getDefinition(paramNode);
-        string_view paramName = parameterDefinition.name->lexeme;
+        Identifier paramName = parameterDefinition.name.identifier;
 
         if (
           std::find(paramNames.begin(), paramNames.end(), paramName) !=
@@ -4941,12 +4961,14 @@ struct Compiler {
         paramNames.push_back(paramName);
         if (!environment.define(
               paramName,
-              Reference(StackValue(paramName, paramType)),
-              parser.locationOf(paramNode)
+              Reference(
+                StackValue(RegisterName(LinkageName(paramName)), paramType)
+              ),
+              parser.getToken(paramNode)
             )) {
           auto original = environment.definitionLocation(paramName);
           fmt::println(std::cerr, "{} originally defined at:", paramName);
-          original->underline(std::cerr);
+          parser.tokenizer.locationOf(original).underline(std::cerr);
           crash(
             paramNode,
             "Parameter name {} shadows a higher scope",
@@ -4990,19 +5012,21 @@ struct Compiler {
 
     instruction << "}\n\n";
     environment.scopes.back().envType = EnvType::Global;
-    globalsStack.push(instruction.str());
+    globals.push(instruction.str());
   }
 
   Compiler(Parser& parser, ChildSpan program, TargetType targetType)
       : outputFile(CompilerContext::globalStream(targetType)), parser(parser),
         typeChecker(*this, environment, parser), program(program),
         targetType(targetType) {
+    LinkageNames::setOutputSeparator(targetType == TargetType::Gpu ? '$' : '.');
     stackItems = {
       .outputFile = outputFile,
       .expectedType = Pool().infer,
       .nodeIndex = NodeIndex::null(),
       .name = {},
       .linkageScope = {},
+      .explicitFunctionName = {},
     };
   }
 
@@ -5092,9 +5116,10 @@ struct Compiler {
   }
 
   // TODO
-  Reference bInclude(TokenPointer fileName) {
-    auto filePath =
-      fs::weakly_canonical(inputFilePath.parent_path() / fileName->lexeme);
+  Reference bInclude(Token fileName) {
+    auto filePath = fs::weakly_canonical(
+      inputFilePath.parent_path() / parser.tokenizer.lexeme(fileName)
+    );
     auto& binFiles = CompilerContext::inst().blub.includedBinaryFiles;
     auto insertion = binFiles.insert(filePath);
     auto dataIndex = std::distance(binFiles.begin(), insertion.first);
@@ -5102,7 +5127,7 @@ struct Compiler {
       stringstream ss;
       fmt::print(ss, "@.bInclude.{} = ", dataIndex);
       emitEmbeddedFile(ss, filePath);
-      globalsStack.push(ss.str());
+      globals.push(ss.str());
     }
     auto fileSize = std::filesystem::file_size(filePath);
 
@@ -5112,7 +5137,7 @@ struct Compiler {
       ValueScope::Global
     ));
 
-    globalsStack.push(
+    globals.push(
       fmt::format(
         "{} = global {} {{ptr @.bInclude.{}, {} {}}}",
         global,
@@ -5145,18 +5170,16 @@ struct Compiler {
             stringed
           );
         },
-        [&global](Identifier x) {
-          fmt::println(
-            global,
-            "{} x i8] c\"{}\\00\" align 1",
-            x.length() + 1,
-            x
-          );
-        }
+        [&global](LinkageName x) {
+          auto& names = LinkageNames::inst();
+          fmt::print(global, "{} x i8] c\"", names.length(x, '$') + 1);
+          names.write(global, x, '$');
+          fmt::println(global, "\\00\" align 1");
+        },
       },
       name
     );
-    globalsStack.push(global.str());
+    globals.push(global.str());
     return Reference(result);
   }
 

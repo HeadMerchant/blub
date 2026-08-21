@@ -43,10 +43,7 @@ static TypeCache cTypes = {
   {"__m128",      Pool()._void },
 };
 
-TypeIndex parseType(
-  std::string_view qualType,
-  std::queue<std::string>& globals
-) {
+TypeIndex parseType(std::string_view qualType, IrCommandBuffer& globals) {
   Logger log(LogLevel::CImport);
   // TODO(mut)
   if (qualType.starts_with("const ")) {
@@ -66,7 +63,10 @@ TypeIndex parseType(
     }
   }
 
-  qualType = StringPool::inst().copy(qualType);
+  // simdjson's view is transient; retain the spelling through Identifier
+  // before using it as a cache key or slicing it below.
+  auto qualifiedIdentifier = Identifier(qualType);
+  qualType = static_cast<string_view>(qualifiedIdentifier);
 
   // Tokenize base type
   u32 endIndex = 0;
@@ -183,18 +183,22 @@ TypeIndex parseRecord(
   ondemand::value& node,
   Identifier cName,
   Identifier unprefixedName,
-  std::queue<std::string>& globals,
-  const TypeEmitter& emitType
+  IrCommandBuffer& globals,
+  const TypeEmitter& emitType,
+  LinkageName linkageName = {}
 ) {
   Logger log(LogLevel::CImport);
+  if (!linkageName && !cName.empty()) {
+    linkageName = LinkageName(cName);
+  }
   std::string_view tagUsed;
   node["tagUsed"].get(tagUsed);
   TypeIndex resultTypeIndex;
   if (tagUsed == "struct") {
     auto [typeIndex, structIndex] = Pool().makeStruct(
       unprefixedName,
-      cName.empty() ? RegisterName(Environment::structIndex())
-                    : RegisterName(cName)
+      linkageName ? RegisterName(linkageName)
+                  : RegisterName(Environment::structIndex())
     );
 
     ondemand::array structFields;
@@ -208,17 +212,20 @@ TypeIndex parseRecord(
       std::string_view fieldKind;
       structField["kind"].get(fieldKind);
       if (fieldKind == "RecordDecl") {
-        auto anonymousName = copyStr(
-          "{}.anon.{}",
-          cName.empty() ? string_view("c") : cName,
+        auto anonymousLinkageName = LinkageNames::inst().appendAnonymous(
+          LinkageNames::inst().append(
+            linkageName ? linkageName : LinkageName("c"),
+            Identifier("anon")
+          ),
           anonymousFieldIndex
         );
         anonType = parseRecord(
           structField.value(),
-          anonymousName,
-          "",
+          {},
+          {},
           globals,
-          emitType
+          emitType,
+          anonymousLinkageName
         );
       } else if (fieldKind == "FieldDecl") {
         std::string_view fieldName;
@@ -234,16 +241,15 @@ TypeIndex parseRecord(
           fieldType = parseType(fieldTypeName, globals);
         }
 
-        if (!hasName) {
-          fieldName = copyStr(
-            "{}{}",
-            TypePool::anonymousFieldPrefix,
-            anonymousFieldIndex++
-          );
-        } else {
-          fieldName = StringPool::inst().copy(fieldName);
-        }
-        Pool().getStruct(structIndex).defineField(fieldName, fieldType);
+        auto stableFieldName = hasName ? Identifier(fieldName)
+                                       : Identifier(
+                                           fmt::format(
+                                             "{}{}",
+                                             TypePool::anonymousFieldPrefix,
+                                             anonymousFieldIndex++
+                                           )
+                                         );
+        Pool().getStruct(structIndex).defineField(stableFieldName, fieldType);
       } else {
         log("Skipping inner node for struct of kind {}", fieldKind);
       }
@@ -274,12 +280,15 @@ TypeIndex parseRecord(
       std::string_view variantKind;
       variant["kind"].get(variantKind);
       if (variantKind == "RecordDecl") {
-        auto anonymousName = copyStr(
-          "{}.anon.{}",
-          cName.empty() ? "c" : cName,
+        auto anonymousLinkageName = LinkageNames::inst().appendAnonymous(
+          LinkageNames::inst().append(
+            linkageName ? linkageName : LinkageName("c"),
+            Identifier("anon")
+          ),
           anonymousVariants.size()
         );
-        anonType = parseRecord(variant, anonymousName, "", globals, emitType);
+        anonType =
+          parseRecord(variant, {}, {}, globals, emitType, anonymousLinkageName);
       } else if (variantKind != "FieldDecl") {
         log("Skipping inner node for union {} of kind {}", cName, variantKind);
       } else {
@@ -303,8 +312,7 @@ TypeIndex parseRecord(
         }
 
         if (variant["name"].get(variantName) == SUCCESS) {
-          variantName = StringPool::inst().copy(variantName);
-          namedVariants.push_back({variantType, variantName});
+          namedVariants.push_back({variantType, Identifier(variantName)});
         } else {
           anonymousVariants.push_back(variantType);
         }
@@ -331,7 +339,7 @@ TypeIndex parseRecord(
 Environment* cBindings(
   fs::path& cFile,
   string_view prefix,
-  std::queue<std::string>& globals,
+  IrCommandBuffer& globals,
   TypeCache& definedTypes,
   TypeEmitter emitType,
   std::function<void(std::string_view)> emitStaticInline
@@ -415,8 +423,9 @@ Environment* cBindings(
     } else {
       log("Defining C value '{}'", valueName);
     }
-    valueName = StringPool::inst().copy(valueName);
-    string_view unprefixedValueName = valueName.substr(prefix.size());
+    auto valueIdentifier = Identifier(valueName);
+    valueName = static_cast<string_view>(valueIdentifier);
+    auto unprefixedValueName = Identifier(valueName.substr(prefix.size()));
 
     Reference blubInterface;
     if (environment.find(unprefixedValueName)) {
@@ -433,10 +442,8 @@ Environment* cBindings(
         unprefixedValueName,
         TypeName(Pool()._s32)
       );
-      auto [typeIndex, enumIndex] = Pool().addEnum(
-        Pool()._s32,
-        StringPool::inst().copy(unprefixedValueName)
-      );
+      auto [typeIndex, enumIndex] =
+        Pool().addEnum(Pool()._s32, unprefixedValueName);
       std::vector<std::string_view> enumVals;
       if (auto inner = node["inner"]; inner.error() == SUCCESS) {
         for (auto element : inner.get_array()) {
@@ -462,7 +469,7 @@ Environment* cBindings(
             continue;
           }
           valueName = valueName.substr(1 + prefixLength);
-          valueName = StringPool::inst().copy(valueName);
+          auto memberName = Identifier(valueName);
           if (element["inner"].has_value()) {
             ondemand::array array;
             bool error = element["inner"].get_array().get(array);
@@ -478,12 +485,12 @@ Environment* cBindings(
               );
             }
           }
-          if (!Pool().getEnum(enumIndex).define(valueName, currentValue)) {
+          if (!Pool().getEnum(enumIndex).define(memberName, currentValue)) {
             auto definition = Pool().getEnum(enumIndex);
             fmt::println(
               std::cerr,
               "Duplicate enum value '{}' for enum '{}'",
-              valueName,
+              memberName,
               TypeName(typeIndex)
             );
             for (auto [name, _] : definition.values) {
@@ -491,7 +498,7 @@ Environment* cBindings(
             }
             crash(
               "Duplicate enum value '{}' for enum '{}'",
-              valueName,
+              memberName,
               TypeName(typeIndex)
             );
           }
@@ -524,7 +531,7 @@ Environment* cBindings(
       }
 
       // TODO: factor out to Types module?
-      auto declareName = StringPool::inst().copy(valueName);
+      auto declareName = Identifier(valueName);
       TypeIndex type = parseType(qualType, globals);
       if (!Pool().functionType(type).has_value()) {
         crash(
@@ -572,7 +579,7 @@ Environment* cBindings(
 TEST_CASE("cimport handles unions and anonymous promoted fields") {
   fs::path fixture =
     fs::path(BLUB_SOURCE_DIR) / "tests/cimport_union_fixture.h";
-  std::queue<std::string> globals;
+  IrCommandBuffer globals;
   TypeCache definedTypes;
 
   auto* env = cBindings(fixture, "ci_", globals, definedTypes);

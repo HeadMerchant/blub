@@ -758,7 +758,8 @@ void emitSystemVReturn(
 }
 
 TEST_CASE("System V aggregate classification") {
-  auto [rect, rectIndex] = Pool().makeStruct("abi_rect", "abi_rect");
+  auto [rect, rectIndex] =
+    Pool().makeStruct("abi_rect", LinkageName("abi_rect"));
   Pool().getStruct(rectIndex).fields = {
     {"x", Pool()._s32},
     {"y", Pool()._s32},
@@ -777,7 +778,8 @@ TEST_CASE("System V aggregate classification") {
   REQUIRE_EQ(bytesAbi.components.size(), 1);
   CHECK_EQ(bytesAbi.components[0].llvmType, "i24");
 
-  auto [quat, quatIndex] = Pool().makeStruct("abi_quat", "abi_quat");
+  auto [quat, quatIndex] =
+    Pool().makeStruct("abi_quat", LinkageName("abi_quat"));
   Pool().getStruct(quatIndex).fields = {
     {"x", Pool()._f32},
     {"y", Pool()._f32},
@@ -803,7 +805,8 @@ TEST_CASE("System V aggregate classification") {
 }
 
 TEST_CASE("System V declaration matches Clang aggregate coercions") {
-  auto [rect, rectIndex] = Pool().makeStruct("decl_rect", "decl_rect");
+  auto [rect, rectIndex] =
+    Pool().makeStruct("decl_rect", LinkageName("decl_rect"));
   Pool().getStruct(rectIndex).fields = {
     {"x", Pool()._s32},
     {"y", Pool()._s32},
@@ -813,7 +816,7 @@ TEST_CASE("System V declaration matches Clang aggregate coercions") {
   auto params = Pool().tupleOf({rect, Pool()._u8}).second;
   Function function{
     .type = FunctionType{.parameters = params, .returnType = rect},
-    .globalName = "rect_roundtrip",
+    .globalName = LinkageName("rect_roundtrip"),
   };
   std::stringstream declaration;
   auto result = declareParamRegisters(declaration, function);

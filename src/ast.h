@@ -4,7 +4,7 @@
 #include <concepts>
 template <typename T>
 
-concept AstVisitor = requires(T t, NodeIndex nodeIndex, TokenPointer token) {
+concept AstVisitor = requires(T t, NodeIndex nodeIndex, Token token) {
   typename T::ReturnType;
   { t.setVisitedNode(nodeIndex) };
   { t.block(Encodings::Block{}) } -> std::same_as<typename T::ReturnType>;
@@ -283,7 +283,7 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
   case NodeType::Block: {
     auto block = parser.getBlock(nodeIndex);
     auto token = parser.getToken(nodeIndex);
-    switch (token->type) {
+    switch (token.type) {
     case TokenType::LeftCurlyBrace: {
       return t.block(block);
     }
@@ -326,68 +326,69 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
   case NodeType::Literal: {
     auto node = parser.getLiteral(nodeIndex);
     auto token = node.token;
-    if (token->type == TokenType::Char) {
+    if (token.type == TokenType::Char) {
       return t.character(token);
     }
-    if (token->type == TokenType::String) {
+    if (token.type == TokenType::String) {
       return t.string(token);
     }
-    if (token->type == TokenType::NullTerminatedString) {
+    if (token.type == TokenType::NullTerminatedString) {
       return t.nullString(token);
     }
-    if (token->type == TokenType::Decimal) {
+    if (token.type == TokenType::Decimal) {
       return t.decimal(token);
     }
-    if (token->type == TokenType::Integer) {
+    if (token.type == TokenType::Integer) {
       return t.integer(token);
     }
-    if (token->type == TokenType::HexInt) {
+    if (token.type == TokenType::HexInt) {
       return t.hexInt(token);
     }
-    if (token->type == TokenType::True) {
+    if (token.type == TokenType::True) {
       return t.boolean(true);
     }
-    if (token->type == TokenType::False) {
+    if (token.type == TokenType::False) {
       return t.boolean(false);
     }
-    if (token->type == TokenType::Identifier) {
+    if (token.type == TokenType::Identifier) {
       return t.identifier(token);
     }
-    if (token->type == TokenType::Opaque) {
+    if (token.type == TokenType::Opaque) {
       return t.opaque(token);
     }
-    if (token->type == TokenType::Self) {
+    if (token.type == TokenType::Self) {
       return t.self(token);
     }
-    if (token->type == TokenType::Undef) {
+    if (token.type == TokenType::Undef) {
       return t.undefined(token);
     }
-    if (token->type == TokenType::Null) {
+    if (token.type == TokenType::Null) {
       return t.nullPointer();
     }
-    if (token->type == TokenType::BUILTIN_Crash) {
+    if (token.type == TokenType::BUILTIN_Crash) {
       return t.crashBuiltin();
     }
-    auto cudaFunction = cudaBuiltins.find(token->type);
+    auto cudaFunction = cudaBuiltins.find(token.type);
     if (cudaFunction != cudaBuiltins.end()) {
       return t.cudaBuiltin(token, cudaFunction->second);
     }
 
-    parser.crash(nodeIndex, "Unknown literal {}", token->lexeme);
+    parser
+      .crash(nodeIndex, "Unknown literal {}", parser.tokenizer.lexeme(token));
   }
 
   case NodeType::Assignment: {
     auto node = parser.getNode(nodeIndex);
-    TokenPointer token = parser.getToken(node.token);
+    Token token = parser.getToken(node.token);
     NodeIndex left{node.left};
     NodeIndex right{node.right};
-    if (auto opType = Token::binopFromCompoundAssignment(token->type)) {
+    if (auto opType = Token::binopFromCompoundAssignment(token.type)) {
       return t.binopAssign(left, right, *opType);
-    } else if (token->type != TokenType::Assign) {
+    } else if (token.type != TokenType::Assign) {
       parser.crash(
         token,
         "Unknown compound assignment operator '{}'",
-        token->lexeme
+        parser.tokenizer.lexeme(token)
       );
     } else {
       return t.assign(left, right);
@@ -397,7 +398,7 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
   case NodeType::BinaryOp: {
     auto node = parser.getBinaryOp(nodeIndex);
 
-    auto opType = node.operation->type;
+    auto opType = node.operation.type;
 
     NodeIndex a = node.left;
     NodeIndex b = node.right;
@@ -416,7 +417,7 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
       auto builtinToken = parser.getToken(parser.getNode(nodeIndex).token);
       if (node.operation == UnaryOps::CompilerBuiltin) {
         auto argsList = parser.getArgumentList(node.operand);
-        switch (builtinToken->type) {
+        switch (builtinToken.type) {
         case TokenType::BUILTIN_NumCast: {
           return t.numCast(argsList);
         }
@@ -448,10 +449,14 @@ T::ReturnType astVisit(NodeIndex nodeIndex, Parser& parser, T& t) {
         }
         }
       }
-      parser.crash(nodeIndex, "Malformed builtin '@{}'", builtinToken->lexeme);
+      parser.crash(
+        nodeIndex,
+        "Malformed builtin '@{}'",
+        parser.tokenizer.lexeme(builtinToken)
+      );
     }
     case UnaryOps::Import: {
-      return t.import(parser.toPointer({node.operand.value}));
+      return t.import(parser.getToken(TokenIndex{node.operand.value}));
     }
     case UnaryOps::Dereference: {
       return t.dereference(node.operand);

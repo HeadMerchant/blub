@@ -6,19 +6,16 @@
 #include <functional>
 #include <unordered_map>
 
-using TypeCache = std::unordered_map<std::string_view, TypeIndex>;
+using TypeCache = std::unordered_map<Identifier, TypeIndex>;
 using TypeEmitter = std::function<void(TypeIndex)>;
 
 // TODO: proper lexing+parsing: see
 // https://github.com/nothings/stb/blob/master/stb_c_lexer.h
-TypeIndex parseType(
-  std::string_view qualType,
-  std::queue<std::string>& globals
-);
+TypeIndex parseType(std::string_view qualType, IrCommandBuffer& globals);
 Environment* cBindings(
   fs::path& cFile,
   string_view prefix,
-  std::queue<std::string>& globals,
+  IrCommandBuffer& globals,
   TypeCache& definedTypes,
   TypeEmitter emitType = {},
   std::function<void(std::string_view)> emitStaticInline = {}
@@ -34,16 +31,16 @@ struct ClangArg {
     bool operator==(const IncludeDir&) const = default;
   };
   struct Define {
-    string_view symbol;
+    Identifier symbol;
     bool operator==(const Define&) const = default;
   };
   struct Undefine {
-    string_view symbol;
+    Identifier symbol;
     bool operator==(const Undefine&) const = default;
   };
   struct ValueDefine {
-    string_view symbol;
-    string_view value;
+    Identifier symbol;
+    Identifier value;
     bool operator==(const ValueDefine&) const = default;
   };
 
@@ -77,14 +74,14 @@ template <> struct hash<ClangArg> {
           return hash<fs::path>()(a.path) ^ 0x02;
         },
         [](const ClangArg::Define& a) {
-          return hash<string_view>()(a.symbol) ^ 0x03;
+          return hash<Identifier>()(a.symbol) ^ 0x03;
         },
         [](const ClangArg::Undefine& a) {
-          return hash<string_view>()(a.symbol) ^ 0x04;
+          return hash<Identifier>()(a.symbol) ^ 0x04;
         },
         [](const ClangArg::ValueDefine& a) {
-          auto seed = hash<string_view>()(a.symbol);
-          seed ^= hash<string_view>()(a.value) ^ 0x06;
+          auto seed = hash<Identifier>()(a.symbol);
+          seed ^= hash<Identifier>()(a.value) ^ 0x06;
           return seed;
         },
       },

@@ -6,8 +6,8 @@
 #include "tokenizer.h"
 #include "types.h"
 #include <cstdint>
-#include <optional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
 #include <tsl/ordered_map.h>
@@ -16,8 +16,6 @@
 #include <vector>
 
 class Environment;
-
-string_view registerNameToString(RegisterName name);
 
 class LLVMFunction {
 public:
@@ -36,23 +34,24 @@ public:
   TranslationUnit* translationUnit;
   Environment* definitionEnvironment;
   NodeIndex astNode;
-  std::vector<std::string_view> parameterNames;
+  std::vector<Identifier> parameterNames;
   std::shared_ptr<std::unordered_map<TupleIndex, Reference*>> cache;
-  std::string_view name;
+  Identifier name;
+  LinkageName linkageName;
 };
 
 struct IntLiteral {
-  int64_t value;
+  u64 value;
   TypeIndex type;
 
-  IntLiteral(int64_t value) : value(value), type(Pool().intLiteral) {};
-  IntLiteral(int64_t value, TypeIndex type) : value(value), type(type) {};
+  IntLiteral(u64 value) : value(value), type(Pool().intLiteral) {};
+  IntLiteral(u64 value, TypeIndex type) : value(value), type(type) {};
 };
 
-template <> struct fmt::formatter<IntLiteral> : fmt::formatter<int64_t> {
+template <> struct fmt::formatter<IntLiteral> : fmt::formatter<u64> {
   template <typename FormatContext>
   auto format(const IntLiteral& obj, FormatContext& ctx) const {
-    return fmt::formatter<int64_t>::format(obj.value, ctx);
+    return fmt::formatter<u64>::format(obj.value, ctx);
   }
 };
 struct FloatLiteral {
@@ -264,7 +263,7 @@ struct Reference {
     return false;
   }
 
-  int64_t* getInt() {
+  u64* getInt() {
     if (auto x = unbox<IntLiteral>()) return &x->value;
     return nullptr;
   }
@@ -373,8 +372,8 @@ class Environment {
 public:
   static Logger log;
   static u32 globalIndex;
-  ordered_map<string_view, Reference> defs;
-  vector<Tokenizer::TokenLocation> defLocations;
+  ordered_map<Identifier, Reference> defs;
+  vector<Token> defLocations;
   std::vector<Environment*> imports;
   std::string prefix;
   std::vector<Environment*> usings;
@@ -414,17 +413,13 @@ public:
     return prefix;
   }
 
-  static unordered_map<string_view, Reference> defaults;
+  static unordered_map<Identifier, Reference> defaults;
 
-  bool isDefined(std::string_view name) {
+  bool isDefined(Identifier name) {
     return defs.contains(name);
   }
 
-  Reference* define(
-    std::string_view name,
-    Reference value,
-    Tokenizer::TokenLocation location
-  ) {
+  Reference* define(Identifier name, Reference value, Token location) {
     if (log.canLog()) log("Defining {}: {}", name, TypeName(value.getType()));
     auto [ref, succeeded] = defs.emplace(name, value);
     if (succeeded) {
@@ -434,7 +429,7 @@ public:
     return nullptr;
   }
 
-  Tokenizer::TokenLocation* definitionLocation(string_view name) {
+  Token* definitionLocation(Identifier name) {
     auto def = defs.find(name);
     if (def != defs.end()) {
       return &defLocations[std::distance(defs.begin(), def)];
@@ -443,7 +438,7 @@ public:
   }
 
 private:
-  Reference* findLocal(string_view name) {
+  Reference* findLocal(Identifier name) {
     auto value = defs.find(name);
     if (value != defs.end()) {
       return &value.value();
@@ -452,7 +447,7 @@ private:
   }
 
 public:
-  Reference* find(string_view name) {
+  Reference* find(Identifier name) {
     if (auto found = findLocal(name)) {
       return found;
     }

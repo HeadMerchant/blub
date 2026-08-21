@@ -19,13 +19,6 @@ std::tuple<u8, u8, u8, u8> unpackInt(u32 value) {
   };
 }
 
-// static char* StringPool::bytes = malloc(64 * 4096);
-
-StringPool& StringPool::inst() {
-  static StringPool pool(64 * 4096);
-  return pool;
-}
-
 void emitEmbeddedFile(
   std::ostream& outFile,
   const fs::path& filePath,
@@ -38,12 +31,11 @@ void emitEmbeddedFile(
     );
   }
 
-  std::string contents{
-    std::istreambuf_iterator<char>(input),
-    std::istreambuf_iterator<char>()
-  };
-  fmt::print(outFile, "global [{} x i8] c\"", contents.size() + nullTerminated);
-  for (unsigned char c : contents) {
+  auto size = fs::file_size(filePath);
+  fmt::print(outFile, "global [{} x i8] c\"", size + nullTerminated);
+  char byte;
+  while (input.get(byte)) {
+    auto c = static_cast<unsigned char>(byte);
     if (c >= 32 && c <= 126 && c != '\\' && c != '"') {
       outFile << c;
     } else {
@@ -51,4 +43,34 @@ void emitEmbeddedFile(
     }
   }
   fmt::println(outFile, "{}\" align 1\n", nullTerminated ? "\\00" : "");
+}
+
+void IrCommandBuffer::drain(std::ostream& output) {
+  for (const auto& command : commands) {
+    std::visit(
+      overloaded{
+        [&](TextSpan span) {
+          output.write(arena.data() + span.offset, span.length);
+        },
+        [&](const EmbeddedFile& file) {
+          emitEmbeddedFile(output, file.path, file.nullTerminate);
+        },
+      },
+      command
+    );
+  }
+  commands.clear();
+  arena.clear();
+}
+
+TEST_CASE("IR command buffer preserves FIFO text spans") {
+  IrCommandBuffer commands;
+  commands.push("first");
+  fmt::print(commands.output(), "{}", "second");
+  commands.push("third");
+
+  std::stringstream rendered;
+  commands.drain(rendered);
+  CHECK(rendered.str() == "first\nsecondthird\n");
+  CHECK(commands.empty());
 }

@@ -42,10 +42,10 @@ struct TypeChecker {
   Reference compile(NodeIndex index, TypeIndex expected = Pool().infer);
   TypeIndex materialize(
     NodeIndex nodeIndex,
-    string_view name = "",
-    string_view linkageScope = ""
+    Identifier name = {},
+    LinkageName linkageScope = {}
   );
-  string_view currentFunctionLinkageScope();
+  LinkageName currentFunctionLinkageScope();
 
   ReturnType block(Encodings::Block node) {
     return {Pool()._void};
@@ -197,9 +197,10 @@ struct TypeChecker {
 
   ReturnType declaration(Encodings::Declaration node) {
     auto def = parser.getDefinition(node.definition);
-    auto type =
-      def.type ? materialize(def.type, def.name->lexeme) : Pool().infer;
-    auto assignmentToken = parser.getToken(nodeIndex)->type;
+    auto type = def.type
+                  ? materialize(def.type, parser.tokenizer.lexeme(def.name))
+                  : Pool().infer;
+    auto assignmentToken = parser.getToken(nodeIndex).type;
     auto assigneeType = check(node.value, type).type;
     if (assignmentToken == TokenType::Colon && type == Pool().infer) {
       return {Pool()._void};
@@ -216,7 +217,7 @@ struct TypeChecker {
     }
     log(
       "Declaring '{}: {}'",
-      def.name->lexeme,
+      parser.tokenizer.lexeme(def.name),
       TypeName(check(node.value).type)
     );
     return {Pool()._void};
@@ -227,27 +228,27 @@ struct TypeChecker {
     return {Pool()._void};
   }
 
-  ReturnType character(TokenPointer token) {
+  ReturnType character(Token token) {
     return {Pool()._u8};
   }
 
-  ReturnType string(TokenPointer token) {
+  ReturnType string(Token token) {
     return {Pool().sliceOf(Pool()._u8)};
   }
 
-  ReturnType nullString(TokenPointer token) {
+  ReturnType nullString(Token token) {
     return {Pool().pointerTo(Pool()._u8)};
   }
 
-  ReturnType decimal(TokenPointer token) {
+  ReturnType decimal(Token token) {
     return {Pool().floatLiteral};
   }
 
-  ReturnType integer(TokenPointer token) {
+  ReturnType integer(Token token) {
     return {Pool().intLiteral};
   }
 
-  ReturnType hexInt(TokenPointer token) {
+  ReturnType hexInt(Token token) {
     return {Pool().intLiteral};
   }
 
@@ -255,28 +256,28 @@ struct TypeChecker {
     return {Pool()._bool};
   }
 
-  ReturnType identifier(TokenPointer token) {
-    if (auto value = env.find(token->lexeme)) {
+  ReturnType identifier(Token token) {
+    if (auto value = env.find(parser.tokenizer.lexeme(token))) {
       auto lValue = value->lValue() != nullptr;
-      log("'{}' is l value?: {}", token->lexeme, lValue);
+      log("'{}' is l value?: {}", parser.tokenizer.lexeme(token), lValue);
       return {value->getType(), lValue};
     }
-    crash(token, "Undefined symbol '{}'", token->lexeme);
+    crash(token, "Undefined symbol '{}'", parser.tokenizer.lexeme(token));
   }
 
-  ReturnType opaque(TokenPointer token) {
+  ReturnType opaque(Token token) {
     return {Pool().type};
   }
 
-  ReturnType self(TokenPointer token) {
+  ReturnType self(Token token) {
     return {Pool().type};
   }
 
-  ReturnType undefined(TokenPointer token) {
+  ReturnType undefined(Token token) {
     return {Pool().infer};
   }
 
-  ReturnType cudaBuiltin(TokenPointer token, string_view call) {
+  ReturnType cudaBuiltin(Token token, string_view call) {
     return {Pool()._u32};
   }
 
@@ -677,9 +678,11 @@ struct TypeChecker {
     for (auto required : params.requiredParameters) {
       auto definition = parser.getDefinition(required);
       check(definition.type, Pool().type);
-      paramTypes.push_back(
-        materialize(definition.type, definition.name->lexeme, functionScope)
-      );
+      paramTypes.push_back(materialize(
+        definition.type,
+        parser.tokenizer.lexeme(definition.name),
+        functionScope
+      ));
     }
 
     for (auto _ : params.optionalParameters) {
@@ -797,7 +800,7 @@ struct TypeChecker {
     return {Pool().type};
   }
 
-  ReturnType import(TokenPointer fileName) {
+  ReturnType import(Token fileName) {
     return {Pool().environment};
   }
 
@@ -925,12 +928,12 @@ struct TypeChecker {
     return {Pool()._void};
   }
 
-  ReturnType cudaImport(TokenPointer fileName) {
-    auto filePath =
-      fs::absolute(
-        parser.tokenizer.inputFilePath.parent_path() / fileName->lexeme
-      )
-        .lexically_normal();
+  ReturnType cudaImport(Token fileName) {
+    auto filePath = fs::absolute(
+                      parser.tokenizer.inputFilePath.parent_path() /
+                      parser.tokenizer.lexeme(fileName)
+    )
+                      .lexically_normal();
     return {Pool().cudaEnvType};
   }
 
@@ -956,12 +959,12 @@ struct TypeChecker {
 
   template <typename... Args>
   [[noreturn]] void crash(
-    TokenPointer token,
+    Token token,
     fmt::format_string<Args...> fmt,
     Args&&... args
   ) {
     auto& out = std::cerr;
-    auto location = parser.tokenizer.locationOf(token->lexeme);
+    auto location = parser.tokenizer.locationOf(token);
     fmt::println(
       out,
       "Type checker error in file {} at line {}:{}",
@@ -1016,7 +1019,7 @@ struct TypeChecker {
     auto [type, lValue] = check(node.object);
     targetType = type;
 
-    auto fieldName = node.fieldName->lexeme;
+    auto fieldName = parser.tokenizer.lexeme(node.fieldName);
     if (targetType == Pool().type) {
       auto type = materialize(node.object);
       if (auto enumDefinition = Pool().getEnum(type)) {
@@ -1258,7 +1261,7 @@ struct TypeChecker {
     return {expected};
   }
 
-  ReturnType bInclude(TokenPointer fileName) {
+  ReturnType bInclude(Token fileName) {
     return {Pool().u8slice};
   }
 

@@ -5,9 +5,11 @@
 #include <bit>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <optional>
+#include <ostream>
 #include <ranges>
 #include <string>
 #include <string_view>
@@ -22,7 +24,132 @@ using u16 = uint16_t;
 using u32 = uint32_t;
 using u64 = uint64_t;
 using s8 = int8_t;
-using RegisterName = std::variant<std::string_view, u32>;
+using usize = size_t;
+using std::bit_cast;
+using std::optional;
+using std::pair;
+using std::span;
+using std::string_view;
+using std::stringstream;
+using std::tuple;
+using std::unordered_map;
+using std::unordered_set;
+using std::vector;
+using std::views::transform;
+namespace fs = std::filesystem;
+
+// IR is accumulated as spans in a single arena.  This keeps declaration and
+// function emission ordered without copying completed text between queues and
+// string streams.  The stream adapter lets the existing formatter-based
+// instruction emitter write directly to the arena.
+class IrCommandBuffer {
+public:
+  struct TextSpan {
+    usize offset;
+    usize length;
+  };
+  struct EmbeddedFile {
+    fs::path path;
+    bool nullTerminate;
+  };
+  using Command = std::variant<TextSpan, EmbeddedFile>;
+
+private:
+  std::string arena;
+  std::vector<Command> commands;
+
+  void append(const char* text, usize length) {
+    if (!length) return;
+    auto offset = arena.size();
+    arena.append(text, length);
+    commands.emplace_back(TextSpan{offset, length});
+  }
+
+  class StreamBuf : public std::streambuf {
+    IrCommandBuffer& buffer;
+
+  public:
+    explicit StreamBuf(IrCommandBuffer& buffer) : buffer(buffer) {}
+
+  protected:
+    std::streamsize xsputn(const char* text, std::streamsize length) override {
+      buffer.append(text, static_cast<usize>(length));
+      return length;
+    }
+    int overflow(int ch) override {
+      if (ch != EOF) buffer.append(reinterpret_cast<const char*>(&ch), 1);
+      return ch;
+    }
+  } streamBuf;
+  std::ostream stream{&streamBuf};
+
+public:
+  IrCommandBuffer() : streamBuf(*this) {}
+  IrCommandBuffer(const IrCommandBuffer&) = delete;
+  IrCommandBuffer& operator=(const IrCommandBuffer&) = delete;
+
+  std::ostream& output() {
+    return stream;
+  }
+  // Kept as the queue-compatible boundary used by global declarations.  The
+  // old queue drain inserted one trailing newline per entry.
+  void push(std::string_view text) {
+    append(text.data(), text.size());
+    append("\n", 1);
+  }
+  void embed(fs::path path, bool nullTerminate = false) {
+    commands.emplace_back(EmbeddedFile{std::move(path), nullTerminate});
+  }
+  bool empty() const {
+    return commands.empty();
+  }
+  void drain(std::ostream& output);
+};
+
+struct Identifier {
+  u32 index = 0;
+
+  Identifier() = default;
+  Identifier(u32 index) : index(index) {}
+  Identifier(string_view value);
+  Identifier(const char* value) : Identifier(string_view(value)) {}
+  operator string_view() const;
+  usize size() const;
+  usize length() const {
+    return size();
+  }
+  bool empty() const {
+    return size() == 0;
+  }
+  bool operator==(const Identifier&) const = default;
+
+  friend bool operator==(Identifier left, string_view right) {
+    return static_cast<string_view>(left) == right;
+  }
+  friend bool operator==(string_view left, Identifier right) {
+    return left == static_cast<string_view>(right);
+  }
+};
+
+inline std::ostream& operator<<(std::ostream& output, Identifier identifier) {
+  return output << static_cast<string_view>(identifier);
+}
+
+namespace std {
+template <> struct hash<Identifier> {
+  size_t operator()(Identifier identifier) const {
+    return identifier.index;
+  }
+};
+} // namespace std
+
+template <> struct fmt::formatter<Identifier> : fmt::formatter<string_view> {
+  template <typename FormatContext>
+  auto format(Identifier identifier, FormatContext& context) const {
+    auto value = static_cast<std::string_view>(identifier);
+    return fmt::format_to(context.out(), "{}", value);
+  }
+};
 
 class Environment;
 
@@ -89,69 +216,8 @@ template <typename... Ts> struct fmt::formatter<std::variant<Ts...>> {
   }
 };
 
-using std::optional;
-using std::pair;
-using std::stringstream;
-using std::tuple;
-using std::vector;
-using Identifier = std::string_view;
-using std::bit_cast;
-using std::span;
-using std::string_view;
-using std::unordered_map;
-using std::unordered_set;
-using std::views::transform;
-namespace fs = std::filesystem;
-
-struct StringPool {
-  char* bytes;
-  u32 offset;
-  u32 capacity;
-
-  std::string_view copy(std::string_view view) {
-    u32 newOffset = offset + view.length();
-    // fmt::println("Using {}/{} bytes for strings", newOffset, capacity);
-
-    memcpy(bytes + offset, view.data(), view.length());
-    std::string_view newView{bytes + offset, view.length()};
-    // fmt::println("Copied '{}'", newView);
-
-    offset = newOffset;
-
-    return newView;
-  }
-
-  std::string_view copy(const char*) = delete;
-  std::string_view copy(std::string) = delete;
-
-  StringPool(u32 capacity) {
-    bytes = (char*)malloc(capacity);
-    this->capacity = capacity;
-  }
-
-  void debug() {
-    std::string_view view(bytes, offset);
-    std::cout << view << std::endl;
-  }
-
-  static StringPool& inst();
-};
-
-template <typename... Args>
-string_view copyStr(fmt::format_string<Args...> fmt, Args&&... args) {
-  auto& inst = StringPool::inst();
-  auto remainder = inst.capacity - inst.offset;
-  auto startBytes = inst.bytes + inst.offset;
-  auto written =
-    fmt::format_to_n(startBytes, remainder, fmt, std::forward<Args>(args)...);
-  if (written.size > remainder) {
-    inst.debug();
-    throw std::invalid_argument("OOM in string view pool");
-  }
-  auto copied = string_view(startBytes, written.size);
-  inst.offset += written.size;
-  return copied;
-}
+#include "linkagenames.h"
+using RegisterName = std::variant<LinkageName, u32>;
 
 enum class LogLevel {
   Parsing = 1,
@@ -170,12 +236,6 @@ inline int operator&(LogLevel a, LogLevel b) {
 }
 
 struct Logger {
-  // static inline struct {
-  //   unsigned int parsing : 1;
-  //   unsigned int tokenize : 1;
-  //   unsigned int cImport : 1;
-  //   unsigned int compile : 1;
-  // } setLevels;
   static inline LogLevel globalLevels = static_cast<LogLevel>(0);
   LogLevel logLevel;
 

@@ -1,4 +1,21 @@
 #include "tokenizer.h"
+#include <unordered_map>
+
+IdentifierInternPool& Tokenizer::identifierPool() {
+  static IdentifierInternPool pool;
+  return pool;
+}
+
+Identifier::Identifier(std::string_view value)
+    : index(Tokenizer::identifierPool().intern(value).index) {}
+
+Identifier::operator std::string_view() const {
+  return Tokenizer::identifierPool().get(*this);
+}
+
+usize Identifier::size() const {
+  return static_cast<std::string_view>(*this).size();
+}
 
 std::unordered_map<std::string_view, TokenType> Tokenizer::builtinFunctions = {
   {"type",         TokenType::BUILTIN_Type        },
@@ -40,6 +57,7 @@ std::unordered_map<std::string_view, TokenType> Tokenizer::builtinFunctions = {
   {"raw",          TokenType::BUILTIN_Raw         },
 };
 
+// TODO: can this get combined with identifier interning set?
 std::unordered_map<std::string_view, TokenType> Tokenizer::keywords = {
   {"fn",        TokenType::Function },
   {"kernel",    TokenType::Kernel   },

@@ -108,10 +108,10 @@ struct FieldPath {
 
 struct Struct {
   FieldMap fields;
-  string_view name;
+  Identifier name;
   RegisterName llvmName;
 
-  Struct(string_view name, RegisterName llvmName)
+  Struct(Identifier name, RegisterName llvmName)
       : name(name), llvmName(llvmName) {}
 
   FieldIndex getField(std::string_view fieldName) {
@@ -184,7 +184,7 @@ struct FunctionType {
 
   void forwardDeclare(
     RegisterName name,
-    std::queue<std::string>& globals,
+    IrCommandBuffer& globals,
     string_view extraDeclarationInfo
   );
 };
@@ -263,12 +263,12 @@ struct Sizing {
 
 struct Enum {
   std::unordered_map<Identifier, uint64_t> values;
-  string_view name;
+  Identifier name;
   TypeIndex rawType;
   TypeIndex enumType;
   u32 namesArrayGlobal;
 
-  Enum(string_view name, TypeIndex rawType)
+  Enum(Identifier name, TypeIndex rawType)
       : values(), name(name), rawType(rawType) {}
 
   bool define(Identifier valueName, uint64_t value) {
@@ -582,7 +582,7 @@ public:
   OptionalType dereference(TypeIndex type);
 
   std::pair<TypeIndex, StructIndex> makeStruct(
-    string_view name,
+    Identifier name,
     RegisterName llvmName
   ) {
     StructIndex structIndex{(u32)structPool.size()};
@@ -908,7 +908,7 @@ public:
     return {addType(enumIndex), enumIndex};
   }
 
-  std::pair<TypeIndex, EnumIndex> addEnum(TypeIndex rawType, string_view name) {
+  std::pair<TypeIndex, EnumIndex> addEnum(TypeIndex rawType, Identifier name) {
     return addEnum(Enum(name, rawType));
   }
 
@@ -961,10 +961,7 @@ public:
     return std::holds_alternative<Infer>(getType(type));
   }
 
-  void defineLLVMStruct(
-    StructIndex structDefinition,
-    std::queue<std::string>& globals
-  );
+  void defineLLVMStruct(StructIndex structDefinition, IrCommandBuffer& globals);
 
   Sizing getSizing(TypeIndex type) {
     auto sizing = std::visit(

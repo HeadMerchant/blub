@@ -1,7 +1,7 @@
+#include "types.h"
 #include "abi.h"
 #include "common.h"
 #include "fmt/format.h"
-#include "types.h"
 #include <ranges>
 
 Logger TypePool::logger(LogLevel::TypeCheck);
@@ -46,7 +46,7 @@ template <> struct fmt::formatter<TypeIndex> : ostream_formatter {};
 // TODO: remove
 void TypePool::defineLLVMStruct(
   StructIndex structIndex,
-  std::queue<std::string>& globals
+  IrCommandBuffer& globals
 ) {
   Struct& structDefinition = getStruct(structIndex);
   globals.push(
@@ -71,7 +71,7 @@ void TypePool::debugTypes() {
 
 void FunctionType::forwardDeclare(
   RegisterName name,
-  std::queue<std::string>& globals,
+  IrCommandBuffer& globals,
   string_view extraDeclarationInfo
 ) {
   std::stringstream instruction;

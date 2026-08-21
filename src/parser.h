@@ -86,7 +86,6 @@ struct ASTNode {
   NodeType nodeType;
 };
 
-using TokenPointer = const Token*;
 using DataSpan = std::span<u32>;
 using ChildSpan = std::span<NodeIndex>;
 using TokenSpan = std::span<TokenIndex>;
@@ -105,21 +104,21 @@ struct UnaryOp {
 
 struct DotAccessor {
   OptionalNode object;
-  TokenPointer fieldName;
+  Token fieldName;
 };
 
 struct BinaryOp {
   NodeIndex left;
   NodeIndex right;
-  TokenPointer operation;
+  Token operation;
 };
 
 struct Literal {
-  TokenPointer token;
+  Token token;
 };
 
 struct Identifier {
-  TokenPointer token;
+  Token token;
 };
 
 struct FunctionLiteral {
@@ -133,7 +132,7 @@ struct Block {
 };
 
 struct Definition {
-  TokenPointer name;
+  Token name;
   OptionalNode type;
 };
 
@@ -193,11 +192,11 @@ public:
   TokenIndex current = {0};
   Logger log;
 
-  const Token& peek(TokenIndex ahead = {0}) {
+  Token peek(TokenIndex ahead = {0}) const {
     auto index = current.value + ahead.value;
     if (index >= tokens.size()) {
       crash(
-        &latestToken(),
+        latestToken(),
         "Peeking too far ahead: {} > {}",
         index,
         tokens.size()
@@ -206,13 +205,12 @@ public:
     return tokens[index];
   }
 
-  const TokenPointer advance() {
+  Token advance() {
     if (isAtEnd()) {
       crash(previous(), "Failed parsing by reaching end of file");
     }
     current.value++;
-    TokenPointer token = previous();
-    return token;
+    return previous();
   }
 
   void accept(TokenType type) {
@@ -227,7 +225,7 @@ public:
       advance();
   }
 
-  TokenPointer acceptUntil(TokenType filler, TokenType expected) {
+  Token acceptUntil(TokenType filler, TokenType expected) {
     u32 ahead = 0;
     while (!isAtEnd()) {
       auto c = peek({ahead});
@@ -237,7 +235,7 @@ public:
         current.value += ahead;
         return advance();
       } else {
-        return nullptr;
+        return {};
       }
     }
     crash(
@@ -269,44 +267,44 @@ public:
            peek(ahead).type == TokenType::EndOfFile;
   }
 
-  const TokenPointer previous(u32 behind = 1) {
-    return tokens.data() + current.value - behind;
+  Token previous(u32 behind = 1) const {
+    return tokens[current.value - behind];
   }
 
-  TokenPointer getToken(TokenIndex token) const {
-    return &tokens[token.value];
+  Token getToken(TokenIndex token) const {
+    return tokens[token.value];
   }
 
   TokenIndex getTokenIndex(NodeIndex node) const {
     return getNode(node).token;
   }
 
-  TokenPointer getToken(NodeIndex node) const {
-    return toPointer(getNode(node).token);
+  Token getToken(NodeIndex node) const {
+    return getToken(getNode(node).token);
   }
 
-  TokenPointer match(TokenType type) {
+  Token match(TokenType type) {
     if (check(type)) {
       return advance();
     }
-    return nullptr;
+    return {};
   }
 
-  TokenPointer match(std::vector<TokenType>& types) {
+  Token match(std::vector<TokenType>& types) {
     for (auto type : types) {
       if (check(type)) {
         return advance();
       }
     }
-    return nullptr;
+    return {};
   }
 
-  TokenPointer consume(TokenType type, std::string message) {
+  Token consume(TokenType type, std::string message) {
     if (check(type)) return advance();
     crash(advance(), "{}", message);
   }
 
-  TokenPointer consume(span<TokenType> type, std::string message) {
+  Token consume(span<TokenType> type, std::string message) {
     if (check(type)) return advance();
     crash(advance(), "{}", message);
   }
@@ -317,7 +315,7 @@ public:
       advance();
   }
 
-  const Token& latestToken() {
+  Token latestToken() const {
     auto last = tokens.size() - 1;
     return tokens[last > current.value ? current.value : last];
   }
@@ -379,12 +377,16 @@ public:
     return addData(std::bit_cast<DataSpan>(newData));
   }
 
-  TokenIndex toIndex(TokenPointer token) {
-    return {(u32)(token - tokens.data())};
-  }
-
-  TokenPointer toPointer(TokenIndex index) const {
-    return &tokens[index.value];
+  TokenIndex toIndex(Token token) const {
+    for (u32 i = 0; i < tokens.size(); i++) {
+      if (
+        tokens[i].location == token.location && tokens[i].type == token.type &&
+        tokens[i].identifier == token.identifier
+      ) {
+        return {i};
+      }
+    }
+    TODO("Token does not belong to this parser");
   }
 
   NodeIndex addNode(Encodings::Declaration node, TokenIndex token) {
@@ -403,7 +405,7 @@ public:
     return {.definition = {encoded.left}, .value = {encoded.right}};
   }
 
-  NodeIndex addNode(Encodings::UnaryOp node, TokenPointer token) {
+  NodeIndex addNode(Encodings::UnaryOp node, Token token) {
     return addNode(
       ASTNode{
         .left = static_cast<u32>(node.operation),
@@ -435,7 +437,7 @@ public:
 
   Encodings::Literal getLiteral(NodeIndex node) {
     auto encoded = getNode(node, NodeType::Literal);
-    return {.token = toPointer(encoded.token)};
+    return {.token = getToken(encoded.token)};
   }
 
   NodeIndex addNode(Encodings::FunctionLiteral node, TokenIndex token) {
@@ -497,11 +499,11 @@ public:
     return {
       .left = {encoded.left},
       .right = {encoded.right},
-      .operation = toPointer(encoded.token)
+      .operation = getToken(encoded.token)
     };
   }
 
-  NodeIndex addNode(Encodings::Definition node, TokenPointer token) {
+  NodeIndex addNode(Encodings::Definition node, Token token) {
     // Type is guaranteed to not have the same index as the definition
     return addNode(
       ASTNode{
@@ -515,10 +517,13 @@ public:
 
   Encodings::Definition getDefinition(NodeIndex node) {
     auto encoded = getNode(node, NodeType::Definition);
-    return {.name = toPointer({encoded.left}), .type = {encoded.right}};
+    return {
+      .name = getToken(TokenIndex{encoded.left}),
+      .type = {encoded.right}
+    };
   }
 
-  NodeIndex addNode(Encodings::If node, TokenPointer token) {
+  NodeIndex addNode(Encodings::If node, Token token) {
     std::vector<NodeIndex> children = {node.condition, node.ifClause};
     auto dataIndex = addData(ChildSpan(children));
 
@@ -541,7 +546,7 @@ public:
     };
   }
 
-  NodeIndex addNode(Encodings::Struct node, TokenPointer token) {
+  NodeIndex addNode(Encodings::Struct node, Token token) {
     auto dataIndex = addData(node.children);
     addData(node.implBlock);
     return addNode(
@@ -564,7 +569,7 @@ public:
     };
   }
 
-  NodeIndex addNode(Encodings::DotAccessor node, TokenPointer token) {
+  NodeIndex addNode(Encodings::DotAccessor node, Token token) {
     return addNode(
       ASTNode{
         .left = node.object.value,
@@ -577,10 +582,13 @@ public:
 
   Encodings::DotAccessor getDotAccess(NodeIndex node) {
     auto encoded = getNode(node, NodeType::DotAccess);
-    return {.object = {encoded.left}, .fieldName = toPointer({encoded.right})};
+    return {
+      .object = {encoded.left},
+      .fieldName = getToken(TokenIndex{encoded.right})
+    };
   }
 
-  NodeIndex addNode(Encodings::Enum node, TokenPointer token) {
+  NodeIndex addNode(Encodings::Enum node, Token token) {
     auto dataIndex = addData(node.rawType);
     addData(node.entries);
     return addNode(
@@ -643,10 +651,10 @@ public:
   }
 
   NodeIndex definition() {
-    TokenPointer name =
+    Token name =
       consume(TokenType::Identifier, "Expected an identifier for a definition");
     consume(TokenType::Colon, "Expected a ':' for type declaration");
-    TokenPointer token = previous();
+    Token token = previous();
     bool infer = check(TokenType::Colon) || check(TokenType::Assign);
     if (infer) {
       return addNode(
@@ -662,9 +670,9 @@ public:
   NodeIndex declaration() {
     NodeIndex name = definition();
     if (check(TokenType::Assign) || check(TokenType::Colon)) {
-      TokenPointer token = advance();
+      Token token = advance();
       NodeIndex value = expression();
-      log("Assigning {}", getDefinition(name).name->lexeme);
+      log("Assigning {}", tokenizer.lexeme(getDefinition(name).name));
       return addNode(
         Encodings::Declaration{.definition = name, .value = value},
         toIndex(token)
@@ -674,7 +682,7 @@ public:
     return name;
   }
 
-  NodeIndex addAssignment(NodeIndex left, NodeIndex right, TokenPointer token) {
+  NodeIndex addAssignment(NodeIndex left, NodeIndex right, Token token) {
     return addNode(
       ASTNode{
         .left = left.value,
@@ -840,7 +848,7 @@ public:
     };
     auto expr = addition();
     while (match(types)) {
-      TokenPointer op = previous();
+      Token op = previous();
       acceptN(TokenType::StatementBreak);
       auto node =
         Encodings::BinaryOp{.left = expr, .right = addition(), .operation = op};
@@ -911,7 +919,7 @@ public:
       expr = addNode(
         Encodings::BinaryOp{
           .left = expr,
-          .right = power(),
+          .right = unary(),
           .operation = op,
         }
       );
@@ -921,11 +929,11 @@ public:
 
   NodeIndex unary() {
     NodeIndex expr;
-    std::stack<pair<TokenPointer, UnaryOps>> stack;
+    std::stack<pair<Token, UnaryOps>> stack;
     // Prefix
     while (true) {
       UnaryOps op;
-      TokenPointer token;
+      Token token;
       if ((token = match(TokenType::Not))) {
         op = UnaryOps::Not;
       } else if ((token = match(TokenType::Pointer))) {
@@ -966,7 +974,7 @@ public:
         if (match(TokenType::RightSquareBracket)) {
           log("We making a slice");
           if (log.canLog())
-            tokenizer.locationOf(getToken(expr)->lexeme).underline(std::cout);
+            tokenizer.locationOf(getToken(expr)).underline(std::cout);
           return addNode(
             Encodings::UnaryOp{
               .operand = expr,
@@ -1040,7 +1048,7 @@ public:
         }
 
         crash(
-          toPointer(optionalInputs.back().token),
+          getToken(optionalInputs.back().token),
           "Maximum number of arguments exceeded"
         );
       }
@@ -1299,7 +1307,7 @@ public:
       for (int i = 0; i < numTokens; i++) {
         fmt::println(
           "String tokens: {}",
-          tokens[startToken.value + i * 2].lexeme
+          tokenizer.lexeme(tokens[startToken.value + i * 2])
         );
       }
       return addNode(
@@ -1422,7 +1430,7 @@ public:
         TokenType::String,
         "import must be followed by a file path string"
       );
-      log("Import file: {}", fileNode->lexeme);
+      log("Import file: {}", tokenizer.lexeme(fileNode));
       return addNode(
         Encodings::UnaryOp(
           {.operand = {toIndex(fileNode).value}, .operation = UnaryOps::Import}
@@ -1581,7 +1589,7 @@ public:
       );
     }
 
-    crash(&latestToken(), "Unable to parse; ending");
+    crash(latestToken(), "Unable to parse; ending");
   }
 
   NodeIndex function() {
@@ -1712,7 +1720,7 @@ public:
   }
 
   NodeIndex whileLoop() {
-    TokenPointer token =
+    Token token =
       consume(TokenType::While, "'while' loop requires 'while' keyword");
     NodeIndex condition = expression();
     NodeIndex loopBody = assignment();
@@ -1781,7 +1789,7 @@ public:
 
   Tokenizer::TokenLocation locationOf(NodeIndex node) const {
     auto token = getToken(node);
-    return tokenizer.locationOf(token->lexeme);
+    return tokenizer.locationOf(token);
   }
 
   template <typename... Args>
@@ -1797,8 +1805,8 @@ public:
     underline(getToken(node));
   }
 
-  [[clang::noinline]] void underline(TokenPointer token) const {
-    tokenizer.locationOf(token->lexeme).underline(std::cerr);
+  [[clang::noinline]] void underline(Token token) const {
+    tokenizer.locationOf(token).underline(std::cerr);
   }
 
   [[clang::noinline]] void underline(Tokenizer::TokenLocation loc) const {
@@ -1807,12 +1815,12 @@ public:
 
   template <typename... Args>
   [[noreturn]] void crash(
-    TokenPointer token,
+    Token token,
     fmt::format_string<Args...> fmt,
     Args&&... args
   ) const {
     auto& out = std::cerr;
-    auto location = tokenizer.locationOf(token->lexeme);
+    auto location = tokenizer.locationOf(token);
     fmt::println(
       out,
       "Parser error in file {} at line {}:{}",

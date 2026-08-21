@@ -52,7 +52,7 @@ fs::path findLibdevice(const fs::path& cudaApiDir) {
 
 void promoteStaticInlineDefinitions(
   const fs::path& irPath,
-  const std::vector<std::string>& functionNames
+  const std::vector<Identifier>& functionNames
 ) {
   std::ifstream input(irPath);
   if (!input.is_open()) {
@@ -277,9 +277,9 @@ int main(int argc, char** argv) {
     emitEmbeddedFile(outFile, fs::path(buildDir) / "out.ptx", true);
   }
 
-  outFile << "define void @.ctor() {\n"
-          << CompilerContext::inst().blub.globalInitialization.str()
-          << "ret void\n}";
+  outFile << "define void @.ctor() {\n";
+  CompilerContext::inst().blub.globalInitialization.drain(outFile);
+  outFile << "ret void\n}";
   outFile.close();
 
   auto& clangArgs = CompilerContext::inst().c.clangArgs;

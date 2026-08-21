@@ -1,23 +1,23 @@
+#include "typechecker.h"
 #include "common.h"
 #include "llvmcomp.h"
 #include "parser.h"
-#include "typechecker.h"
 #include "types.h"
 
 TypeIndex TypeChecker::materialize(
   NodeIndex nodeIndex,
-  string_view name,
-  string_view linkageScope
+  Identifier name,
+  LinkageName linkageScope
 ) {
   auto frame = compiler.stackItems;
   if (!name.empty()) frame.name = name;
-  if (!linkageScope.empty()) frame.linkageScope = linkageScope;
+  if (linkageScope) frame.linkageScope = linkageScope;
   auto guard = compiler.push(frame);
   auto type = compiler.compile(nodeIndex).unboxType();
   return type;
 }
 
-string_view TypeChecker::currentFunctionLinkageScope() {
+LinkageName TypeChecker::currentFunctionLinkageScope() {
   if (compiler.name.empty()) return compiler.linkageScope;
   return compiler.qualifyLinkageName(compiler.name);
 }

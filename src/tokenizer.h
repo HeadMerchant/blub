@@ -2,13 +2,11 @@
 #include "common.h"
 #include "fmt/base.h"
 #include "fmt/ostream.h"
+#include "tsl/ordered_set.h"
 #include <cctype>
-#include <iostream>
-#include <optional>
-#include <string_view>
-#include <unordered_map>
-#include <unordered_set>
-#include <vector>
+#include <cstring>
+#include <sys/mman.h>
+#include <unistd.h>
 
 enum class TokenType {
   // Symbols
@@ -27,19 +25,6 @@ enum class TokenType {
   Dot,
   Not,
 
-  // Control flow
-  If,
-  Else,
-  For,
-  While,
-  Return,
-
-  // Literals
-  True,
-  False,
-  Null,
-
-  // CONSTANT_DECLARATION,
   Assign,
   Subtype,
 
@@ -82,8 +67,17 @@ enum class TokenType {
   ThinArrow,
   FatArrow,
   ExclusiveRange,
+  InclusiveRange,
 
-  // Keywords
+  KEYWORD_START,
+  If = KEYWORD_START,
+  Else,
+  For,
+  While,
+  Return,
+  True,
+  False,
+  Null,
   Function,
   Kernel,
   Struct,
@@ -98,9 +92,11 @@ enum class TokenType {
   Self,
   Using,
   When,
+
   // TODO
   Test,
   Invariant,
+  KEYWORD_END = Invariant,
   Wildcard,
 
   // Literal
@@ -163,24 +159,75 @@ enum class TokenType {
   EndOfFile
 };
 
-struct Token {
-public:
-  const std::string_view lexeme;
-  const int line;
-  const TokenType type;
+constexpr u32 IdentifierBits = 24;
 
-  static bool isTokenSubType(
-    TokenType type,
-    TokenType lowerBound,
-    TokenType upperBound
-  ) {
-    return type <= upperBound && type >= lowerBound;
+struct IdentifierInternPool {
+  static usize pageSize() {
+    static usize size = static_cast<usize>(sysconf(_SC_PAGESIZE));
+    return size;
+  }
+  static usize alignUp(usize size, usize alignment) {
+    return (size + alignment - 1) & ~(alignment - 1);
   }
 
+  char* bytes = nullptr;
+  usize capacity = alignUp(usize(1) << 34, pageSize());
+  usize offset = 0;
+  tsl::ordered_set<string_view> pool;
+
+  IdentifierInternPool() {
+    void* memory = mmap(
+      nullptr,
+      capacity,
+      PROT_READ | PROT_WRITE,
+      MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+      -1,
+      0
+    );
+    if (memory == MAP_FAILED) throw std::bad_alloc();
+    bytes = static_cast<char*>(memory);
+    pool.insert(""); // Reserve index zero as the null identifier.
+  }
+
+  Identifier intern(string_view value) {
+    auto [iterator, inserted] = pool.insert(value);
+    auto index = static_cast<u32>(std::distance(pool.begin(), iterator));
+    if (index >= (1u << IdentifierBits)) {
+      throw std::invalid_argument("Too many identifiers");
+    }
+    if (inserted) {
+      if (offset + value.size() > capacity) {
+        throw std::invalid_argument("OOM in identifier pool");
+      }
+      char* destination = bytes + offset;
+      memcpy(destination, value.data(), value.size());
+      offset += value.size();
+      auto key = const_cast<string_view*>(&iterator.key());
+      *key = string_view(destination, value.size());
+    }
+    return static_cast<Identifier>(index);
+  }
+
+  string_view get(Identifier identifier) const {
+    return pool.values_container().at(identifier.index);
+  }
+};
+
+struct Token {
+  u32 location = 0;
+  Identifier identifier{};
+  TokenType type = TokenType::EndOfFile;
+
+  explicit operator bool() const {
+    return type != TokenType::EndOfFile;
+  }
+
+  static bool isTokenSubType(TokenType type, TokenType lower, TokenType upper) {
+    return type >= lower && type <= upper;
+  }
   static bool isArithmeticOperation(TokenType type) {
     return isTokenSubType(type, TokenType::BINOP_START, TokenType::BINOP_END);
   }
-
   static bool isComparison(TokenType type) {
     return isTokenSubType(
       type,
@@ -188,39 +235,33 @@ public:
       TokenType::COMPARE_END
     );
   }
-
   static bool isLogic(TokenType type) {
     return isTokenSubType(type, TokenType::LOGIC_START, TokenType::LOGIC_END);
   }
-
   static bool isShift(TokenType type) {
     return isTokenSubType(type, TokenType::SHIFT_START, TokenType::SHIFT_END);
   }
-
   static bool isOpenBinop(TokenType type) {
     return isTokenSubType(type, TokenType::BINOP_START, TokenType::BINOP_END);
   }
-
   static bool isBinaryOp(TokenType type) {
-    static unordered_set<TokenType> ops{
+    static unordered_set<TokenType> operators{
       TokenType::Dot,
       TokenType::LeftParen,
       TokenType::LeftSquareBracket,
       TokenType::ExclusiveRange,
+      TokenType::InclusiveRange,
       TokenType::Impl,
     };
-
     return isTokenSubType(
              type,
              TokenType::BINOP_START,
              TokenType::BINOP_ASSIGN_END
            ) ||
-           ops.contains(type);
+           operators.contains(type);
   }
-
   bool isClosingToken() const {
-    // TODO: update this as new closing tokens get added
-    static std::unordered_set<TokenType> closingTokens{
+    static unordered_set<TokenType> closing{
       TokenType::StatementBreak,
       TokenType::Comma,
       TokenType::RightCurlyBrace,
@@ -234,32 +275,23 @@ public:
       TokenType::Subtype,
       TokenType::LeftCurlyBrace,
     };
-    return closingTokens.contains(this->type);
+    return closing.contains(type);
   }
-
   bool canApply() const {
     return !(isClosingToken() || isBinaryOp(type));
   }
-
   bool isBuiltin() const {
-    static unordered_set<TokenType> builtinTokens = {
-      TokenType::BUILTIN_RegisterType,
-      TokenType::BUILTIN_NumCast,
-      TokenType::BUILTIN_BitCast,
-      TokenType::BUILTIN_CDefine,
-      TokenType::BUILTIN_CUndef,
-      TokenType::BUILTIN_CInclude,
-      TokenType::BUILTIN_CIncludeDir,
-      TokenType::BUILTIN_Link,
-      TokenType::BUILTIN_LinkDir,
-      TokenType::BUILTIN_CImport,
-    };
-
-    return builtinTokens.contains(this->type);
+    return isTokenSubType(
+             type,
+             TokenType::BUILTIN_NumCast,
+             TokenType::BUILTIN_Raw
+           ) &&
+           type != TokenType::BUILTIN_Crash &&
+           type != TokenType::BUILTIN_CudaPtx &&
+           type != TokenType::BUILTIN_Binclude;
   }
-
   bool isLiteral() const {
-    static unordered_set<TokenType> literals = {
+    static unordered_set<TokenType> literals{
       TokenType::String,         TokenType::Decimal,
       TokenType::Integer,        TokenType::NullTerminatedString,
       TokenType::True,           TokenType::False,
@@ -274,498 +306,381 @@ public:
       TokenType::HexInt,         TokenType::Undef,
       TokenType::Null,           TokenType::BUILTIN_Crash,
     };
-
-    return literals.contains(this->type);
+    return literals.contains(type);
   }
-
   static optional<TokenType> binopFromCompoundAssignment(TokenType type) {
-    auto rawBinop = TokenType(
-      (int)type - (int)TokenType::BINOP_ASSIGN_START +
-      (int)TokenType::BINOP_START
+    auto binop = TokenType(
+      static_cast<int>(type) - static_cast<int>(TokenType::BINOP_ASSIGN_START) +
+      static_cast<int>(TokenType::BINOP_START)
     );
-    if (isOpenBinop(rawBinop)) return rawBinop;
-    return std::nullopt;
+    return isOpenBinop(binop) ? optional<TokenType>(binop) : std::nullopt;
   }
-
   static optional<TokenType> compoundAssignmentFromBinop(TokenType type) {
-    if (isOpenBinop(type)) {
-      return TokenType(
-        (int)type + (int)TokenType::BINOP_ASSIGN_START -
-        (int)TokenType::BINOP_START
-      );
-    }
-    return std::nullopt;
+    if (!isOpenBinop(type)) return std::nullopt;
+    return TokenType(
+      static_cast<int>(type) + static_cast<int>(TokenType::BINOP_ASSIGN_START) -
+      static_cast<int>(TokenType::BINOP_START)
+    );
   }
 };
 
 struct Tokenizer {
-  static std::unordered_map<std::string_view, TokenType> builtinFunctions;
-  static std::unordered_map<std::string_view, TokenType> keywords;
-  Logger log;
-  bool isDone = false;
-  int start = 0;
-  int current = 0;
-  int line = 1;
-  const std::string_view sourceCode;
-  fs::path& inputFilePath;
+  struct ScanResult {
+    u32 end;
+    TokenType type;
+    Identifier identifier{};
+    bool emit = true;
+  };
 
-  bool isAtEnd() {
-    return current >= sourceCode.length();
-  }
-
-  bool isAlphaUnder(char c) {
-    return isalpha(c) || c == '_';
-  }
-
-  void scanToken() {
-    start = current;
-    char c = advance();
-    switch (c) {
-    case '^': {
-      addToken(TokenType::Pointer);
-      break;
-    }
-    case '.': {
-      if (peek() == '.') {
-        advance();
-        if (peek() == '<') {
-          advance();
-          addToken(TokenType::ExclusiveRange);
-        } else if (peek() == '=') {
-          advance();
-          addToken(TokenType::ExclusiveRange);
-        } else {
-          crash(
-            "Expected '<' or '=' for exclusive or inclusive range, but found",
-            peek()
-          );
-        }
-      } else if (isdigit(peek())) {
-        number(true);
-      } else {
-        addToken(TokenType::Dot);
-      }
-      break;
-    }
-    case '\'': {
-      start++;
-      if (peek() == '\\') {
-        advance();
-        if (peek() == '\\') {
-          advance();
-        } else {
-          TODO("Char escape codes");
-        }
-      } else {
-        advance();
-      }
-      if (peek() != '\'') {
-        crash(
-          "Expected terminating ' for character token, but found '{}'",
-          peek()
-        );
-      }
-      addToken(TokenType::Char);
-      advance();
-      break;
-    }
-    case '(': {
-      addToken(TokenType::LeftParen);
-      break;
-    }
-    case ')': {
-      addToken(TokenType::RightParen);
-      break;
-    }
-    case '{': {
-      addToken(TokenType::LeftCurlyBrace);
-      break;
-    }
-    case '}': {
-      addToken(TokenType::RightCurlyBrace);
-      break;
-    }
-    case ':': {
-      addToken(TokenType::Colon);
-      break;
-    }
-    case ' ':
-    case '\r':
-    case '\t': {
-      // Ignore whitespace.
-      break;
-    }
-    case '\n': {
-      line++;
-      firstCharacterOnLine.push_back(current);
-      addToken(TokenType::StatementBreak);
-      while (!isAtEnd() && peek() == '\n') {
-        advance();
-        line++;
-        firstCharacterOnLine.push_back(current);
-      }
-      break;
-    }
-    case '"': {
-      start++;
-      string();
-      break;
-    }
-    case '!': {
-      if (peek() == '=') {
-        advance();
-        addToken(TokenType::NotEqual);
-      } else {
-        addToken(TokenType::Not);
-      }
-      break;
-    }
-    case ',': {
-      addToken(TokenType::Comma);
-      break;
-    }
-    case '[': {
-      if (peek() == '^' && peek(1) && ']') {
-        advance();
-        advance();
-        addToken(TokenType::MultiPointer);
-      } else {
-        addToken(TokenType::LeftSquareBracket);
-      }
-      break;
-    }
-    case ']': {
-      addToken(TokenType::RightSquareBracket);
-      break;
-    }
-    case '*': {
-      if (peek() == '*') {
-        advance();
-        addToken(TokenType::Power);
-      } else {
-        addToken(TokenType::Mult);
-      }
-      break;
-    }
-    case '/': {
-      addToken(TokenType::Div);
-      break;
-    }
-    case '+': {
-      addToken(TokenType::Plus);
-      break;
-    }
-    case '-': {
-      if (peek() == '>') {
-        advance();
-        addToken(TokenType::ThinArrow);
-      } else if (peek() == '-' && peek(1) == '-') {
-        advance();
-        advance();
-        addToken(TokenType::Undef);
-      } else {
-        addToken(TokenType::Minus);
-      }
-      break;
-    }
-    case '%': {
-      addToken(TokenType::Remainder);
-      break;
-    }
-    // Comment
-    case '#': {
-      while (peek() != '\n')
-        advance();
-      break;
-    }
-    case '=': {
-      if (peek() == '=') {
-        advance();
-        addToken(TokenType::DoubleEqual);
-      } else if (peek() == '>') {
-        advance();
-        addToken(TokenType::FatArrow);
-      } else {
-        addToken(TokenType::Assign);
-      }
-      break;
-    }
-    case '|': {
-      addToken(TokenType::BitOr);
-      break;
-    }
-    case '&': {
-      addToken(TokenType::BitAnd);
-      break;
-    }
-    case '<': {
-      if (peek() == '=') {
-        advance();
-        addToken(TokenType::Leq);
-      } else if (peek() == '<') {
-        advance();
-        addToken(TokenType::ShiftLeft);
-      } else if (peek() == ':') {
-        advance();
-        addToken(TokenType::Subtype);
-      } else {
-        addToken(TokenType::Lt);
-      }
-      break;
-    }
-    case '>': {
-      if (peek() == '=') {
-        advance();
-        addToken(TokenType::Geq);
-      } else if (peek() == '>') {
-        advance();
-        addToken(TokenType::ShiftRight);
-      } else {
-        addToken(TokenType::Gt);
-      }
-      break;
-    }
-    case '~': {
-      addToken(TokenType::Xor);
-      break;
-    }
-    case '@': {
-      start++;
-      while (isAlphaUnder(peek())) {
-        advance();
-      }
-
-      if (builtinFunctions.contains(lexeme())) {
-        addToken(builtinFunctions[lexeme()]);
-      } else {
-        crash("Unknown builtin: {}", lexeme());
-      }
-
-      break;
-    }
-    case '\\': {
-      if (peek() == '"') {
-        advance();
-        start += 2;
-        while (peek() != '\n')
-          advance();
-        addToken(TokenType::MultiLineString);
-      } else {
-        addToken(TokenType::LeftDiv);
-      }
-      break;
-    }
-    default:
-      // c-style/null terminated string
-      if (c == 'c' && peek() == '"') {
-        advance();
-        // Remove starting " from the token
-        start += 2;
-        string(TokenType::NullTerminatedString);
-      } else if (isalpha(c) || c == '_') {
-        identifier();
-      } else if (c == '0' && peek() == 'x') {
-        advance();
-        start += 2;
-        hex();
-      } else if (isdigit(c)) {
-        number();
-      } else {
-        crash("Unexpected character '{}'", c);
-      }
-    }
-  }
-
-  char advance() {
-    return sourceCode[current++];
-  }
-
-  char peek(u32 ahead = 0) {
-    return sourceCode[current + ahead];
-  }
-
-  void string(TokenType tokenType = TokenType::String, char endChar = '"') {
-    bool isEscaping = false;
-    while ((isEscaping || peek() != endChar) && !isAtEnd()) {
-      if (peek() == '\n') {
-        line++;
-        firstCharacterOnLine.push_back(current);
-      }
-      if (!isEscaping) {
-        isEscaping = advance() == '\\';
-      } else {
-        isEscaping = false;
-        advance();
-      }
-    }
-
-    if (isAtEnd()) {
-      crash("Unterminated string");
-    }
-
-    addToken(tokenType);
-
-    // Grab closing double quote
-    advance();
-  }
-
-  void identifier() {
-    while (!isAtEnd()) {
-      char c = peek();
-      if (!(isalnum(c) || c == '_')) break;
-      advance();
-    }
-    if (keywords.contains(lexeme()) > 0) {
-      addToken(keywords[lexeme()]);
-      return;
-    }
-    addToken(TokenType::Identifier);
-  }
-
-  void number(bool hasDecimal = false) {
-    while (!isAtEnd()) {
-      char c = peek();
-      if (c == '.') {
-        // TODO: float ranges?
-        if (hasDecimal) {
-          crash("Encountered second decimal point when parsing number");
-        }
-        if (peek(1) == '.') {
-          addToken(TokenType::Integer);
-          return;
-        }
-        hasDecimal = true;
-      } else if (!isdigit(c)) {
-        break;
-      }
-      advance();
-    }
-
-    // E notation
-    if (peek() == 'e') {
-      hasDecimal = true;
-      advance();
-      if (peek() == '-') advance();
-      if (!isdigit(peek())) {
-        crash("Expected positive or negative integer after exponent");
-      }
-      while (isdigit(peek()))
-        advance();
-    }
-
-    TokenType tokenType = hasDecimal ? TokenType::Decimal : TokenType::Integer;
-    addToken(tokenType);
-  }
+  static IdentifierInternPool& identifierPool();
+  static std::unordered_map<string_view, TokenType> builtinFunctions;
+  static std::unordered_map<string_view, TokenType> keywords;
 
   static bool isHex(char c) {
-    return isdigit(c) || (c <= 'F' && c >= 'A') || (c <= 'f' && c >= 'a');
+    return std::isxdigit(static_cast<unsigned char>(c));
   }
 
-  void hex() {
-    while (!isAtEnd()) {
-      char c = peek();
-      if (!isHex(c)) break;
-      advance();
+  Logger log{LogLevel::Tokenize};
+  const string_view sourceCode;
+  fs::path& inputFilePath;
+  vector<Token> tokens;
+
+  Tokenizer(const string_view& source, fs::path& inputFile)
+      : sourceCode(source), inputFilePath(inputFile) {
+    bool emittedStatementBreak = false;
+    for (u32 start = 0; start < sourceCode.size();) {
+      auto result = scan(start);
+      if (result.end <= start) crash(start, "Tokenizer did not advance");
+      if (
+        result.emit &&
+        !(result.type == TokenType::StatementBreak && emittedStatementBreak)
+      ) {
+        tokens.push_back(
+          {.location = start,
+           .identifier = result.identifier,
+           .type = result.type}
+        );
+      }
+      if (result.emit) {
+        emittedStatementBreak = result.type == TokenType::StatementBreak;
+      }
+      start = result.end;
     }
-    addToken(TokenType::HexInt);
+    tokens.push_back(
+      {.location = static_cast<u32>(sourceCode.size()),
+       .type = TokenType::EndOfFile}
+    );
   }
 
-  std::string_view lexeme() const {
-    return sourceCode.substr(start, current - start);
-  }
-
-  void addToken(TokenType type) {
-    auto binopAssign = Token::compoundAssignmentFromBinop(type);
-    if (binopAssign && peek() == '=') {
-      advance();
-      Token token{
-        .lexeme = lexeme(),
-        .line = line,
-        .type = binopAssign.value()
-      };
-      tokens.push_back(token);
-      log("Adding binop=:{}; '{}'", (int)token.type, token.lexeme);
-    } else {
-      tokens.push_back({.lexeme = lexeme(), .line = line, .type = type});
+  string_view lexeme(const Token& token) const {
+    if (token.type == TokenType::Identifier)
+      return identifierPool().get(token.identifier);
+    if (token.type == TokenType::EndOfFile) return {};
+    auto end = scan(token.location).end;
+    u32 start = token.location;
+    if (token.type == TokenType::String || token.type == TokenType::Char) {
+      start++;
+      end--;
+    } else if (token.type == TokenType::NullTerminatedString) {
+      start += 2;
+      end--;
+    } else if (
+      token.isBuiltin() || token.type == TokenType::CudaImport ||
+      token.type == TokenType::BUILTIN_CudaPtx ||
+      token.type == TokenType::BUILTIN_Binclude
+    ) {
+      start++;
+    } else if (token.type == TokenType::MultiLineString) {
+      start += 2;
     }
+    return sourceCode.substr(start, end - start);
   }
 
-public:
-  Tokenizer(const std::string_view& sourceCode, fs::path& inputFile)
-      : sourceCode(sourceCode), tokens(), firstCharacterOnLine(),
-        inputFilePath(inputFile), log(LogLevel::Tokenize) {
-    firstCharacterOnLine.push_back(0);
-    while (!isAtEnd()) {
-      scanToken();
-    }
-    firstCharacterOnLine.push_back(current);
+  string_view lexeme(const Token* token) const {
+    return lexeme(*token);
   }
-
-  std::vector<Token> tokens;
-  std::vector<u32> firstCharacterOnLine;
 
   struct TokenLocation {
     u32 line;
     u32 column;
-    std::string_view lineContents;
-    std::string_view lexeme;
+    string_view lineContents;
+    string_view lexeme;
 
-    void underline(std::ostream& out) {
-      u32 tabCount = 0;
-      for (auto c : lineContents.substr(0, column)) {
-        if (c == '\t') tabCount++;
-      }
+    void underline(std::ostream& out) const {
       fmt::println(out, "{: >8}| {}", line, lineContents);
       fmt::print(out, "{: >8}| ", "");
-      fmt::print(out, "{:\t>{}}", "", tabCount);
-      fmt::println(
-        out,
-        "{: >{}}{:^>{}}",
-        "",
-        column - tabCount,
-        "",
-        lexeme.size()
-      );
+      fmt::println(out, "{: >{}}{:^>{}}", "", column, "", lexeme.size());
     }
   };
 
-  TokenLocation locationOf(std::string_view lexeme) const {
-    // TODO: line contents for crashing during tokenization
-    u32 charIndex = lexeme.begin() - sourceCode.begin();
-    auto line = std::lower_bound(
-      firstCharacterOnLine.begin(),
-      firstCharacterOnLine.end(),
-      charIndex
-    );
-    u32 lineNumber = line - firstCharacterOnLine.begin();
-    u32 lineStartIndex = (line - 1)[0];
-    auto lineContents =
-      sourceCode.substr(lineStartIndex, *line - lineStartIndex - 1);
-    // lineContents = lineContents.substr(lineContents.find('\n'));
+  TokenLocation locationOf(const Token& token) const {
+    u32 line = 1;
+    u32 lineStart = 0;
+    for (u32 index = 0; index < token.location; index++) {
+      if (sourceCode[index] == '\n') {
+        line++;
+        lineStart = index + 1;
+      }
+    }
+    u32 lineEnd = token.location;
+    while (lineEnd < sourceCode.size() && sourceCode[lineEnd] != '\n')
+      lineEnd++;
     return {
-      .line = lineNumber,
-      .column = charIndex - lineStartIndex,
-      .lineContents = lineContents,
-      .lexeme = lexeme
+      .line = line,
+      .column = token.location - lineStart,
+      .lineContents = sourceCode.substr(lineStart, lineEnd - lineStart),
+      .lexeme = lexeme(token)
     };
+  }
+
+  TokenLocation locationOf(const Token* token) const {
+    return locationOf(*token);
+  }
+
+  ScanResult scan(u32 start) const {
+    if (start >= sourceCode.size()) return {start, TokenType::EndOfFile};
+    const auto at = [this](u32 index) -> char {
+      return index < sourceCode.size() ? sourceCode[index] : '\0';
+    };
+    const auto simple = [start](TokenType type) {
+      return ScanResult{start + 1, type};
+    };
+    const auto compound = [&at, start](TokenType type) {
+      if (
+        auto assignment = Token::compoundAssignmentFromBinop(type);
+        assignment && at(start + 1) == '='
+      ) {
+        return ScanResult{start + 2, *assignment};
+      }
+      return ScanResult{start + 1, type};
+    };
+    const auto identifierChar = [](char c) {
+      return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+    };
+    const auto alphaUnder = [](char c) {
+      return std::isalpha(static_cast<unsigned char>(c)) || c == '_';
+    };
+
+    char c = at(start);
+    switch (c) {
+    case ' ':
+    case '\r':
+    case '\t':
+      return {start + 1, TokenType::EndOfFile, {}, false};
+    case '\n':
+      return simple(TokenType::StatementBreak);
+    case '#': {
+      u32 end = start + 1;
+      while (at(end) && at(end) != '\n')
+        end++;
+      return {end, TokenType::EndOfFile, {}, false};
+    }
+    case '(':
+      return simple(TokenType::LeftParen);
+    case ')':
+      return simple(TokenType::RightParen);
+    case '{':
+      return simple(TokenType::LeftCurlyBrace);
+    case '}':
+      return simple(TokenType::RightCurlyBrace);
+    case ',':
+      return simple(TokenType::Comma);
+    case ':':
+      return simple(TokenType::Colon);
+    case '^':
+      return simple(TokenType::Pointer);
+    case '!':
+      return at(start + 1) == '=' ? ScanResult{start + 2, TokenType::NotEqual}
+                                  : simple(TokenType::Not);
+    case '[':
+      return at(start + 1) == '^' && at(start + 2) == ']'
+               ? ScanResult{start + 3, TokenType::MultiPointer}
+               : simple(TokenType::LeftSquareBracket);
+    case ']':
+      return simple(TokenType::RightSquareBracket);
+    case '+':
+      return compound(TokenType::Plus);
+    case '*':
+      return at(start + 1) == '*'
+               ? (at(start + 2) == '='
+                    ? ScanResult{start + 3, *Token::compoundAssignmentFromBinop(TokenType::Power)}
+                    : ScanResult{start + 2, TokenType::Power})
+               : compound(TokenType::Mult);
+    case '/':
+      return compound(TokenType::Div);
+    case '%':
+      return compound(TokenType::Remainder);
+    case '&':
+      return compound(TokenType::BitAnd);
+    case '|':
+      return compound(TokenType::BitOr);
+    case '~':
+      return compound(TokenType::Xor);
+    case '\\': {
+      if (at(start + 1) == '"') {
+        u32 end = start + 2;
+        while (at(end) && at(end) != '\n')
+          end++;
+        return {end, TokenType::MultiLineString};
+      }
+      return compound(TokenType::LeftDiv);
+    }
+    case '-':
+      if (at(start + 1) == '>') return {start + 2, TokenType::ThinArrow};
+      if (at(start + 1) == '-' && at(start + 2) == '-')
+        return {start + 3, TokenType::Undef};
+      return compound(TokenType::Minus);
+    case '=':
+      if (at(start + 1) == '=') return {start + 2, TokenType::DoubleEqual};
+      if (at(start + 1) == '>') return {start + 2, TokenType::FatArrow};
+      return simple(TokenType::Assign);
+    case '<':
+      if (at(start + 1) == '=') return {start + 2, TokenType::Leq};
+      if (at(start + 1) == '<')
+        return at(start + 2) == '='
+                 ? ScanResult{start + 3, *Token::compoundAssignmentFromBinop(TokenType::ShiftLeft)}
+                 : ScanResult{start + 2, TokenType::ShiftLeft};
+      if (at(start + 1) == ':') return {start + 2, TokenType::Subtype};
+      return simple(TokenType::Lt);
+    case '>':
+      if (at(start + 1) == '=') return {start + 2, TokenType::Geq};
+      if (at(start + 1) == '>')
+        return at(start + 2) == '='
+                 ? ScanResult{start + 3, *Token::compoundAssignmentFromBinop(TokenType::ShiftRight)}
+                 : ScanResult{start + 2, TokenType::ShiftRight};
+      return simple(TokenType::Gt);
+    case '.':
+      if (at(start + 1) == '.') {
+        if (at(start + 2) == '<') return {start + 3, TokenType::ExclusiveRange};
+        if (at(start + 2) == '=') return {start + 3, TokenType::InclusiveRange};
+        crash(start, "Expected '<' or '=' after '..'");
+      }
+      if (std::isdigit(static_cast<unsigned char>(at(start + 1))))
+        return number(start, start + 1, true);
+      return simple(TokenType::Dot);
+    case '\'':
+      return character(start);
+    case '"':
+      return string(start, TokenType::String, start + 1);
+    case '@': {
+      u32 end = start + 1;
+      while (alphaUnder(at(end)))
+        end++;
+      auto found =
+        builtinFunctions.find(sourceCode.substr(start + 1, end - start - 1));
+      if (found == builtinFunctions.end())
+        crash(
+          start,
+          "Unknown builtin '{}"
+          "'",
+          sourceCode.substr(start + 1, end - start - 1)
+        );
+      return {end, found->second};
+    }
+    default:
+      break;
+    }
+
+    if (c == 'c' && at(start + 1) == '"')
+      return string(start, TokenType::NullTerminatedString, start + 2);
+    if (c == '0' && at(start + 1) == 'x') return hexadecimal(start);
+    if (std::isdigit(static_cast<unsigned char>(c)))
+      return number(start, start, false);
+    if (alphaUnder(c)) {
+      u32 end = start + 1;
+      while (identifierChar(at(end)))
+        end++;
+      auto value = sourceCode.substr(start, end - start);
+      if (auto keyword = keywords.find(value); keyword != keywords.end())
+        return {end, keyword->second};
+      return {end, TokenType::Identifier, identifierPool().intern(value)};
+    }
+    crash(start, "Unexpected character '{}'", c);
+  }
+
+  ScanResult string(u32 start, TokenType type, u32 current) const {
+    bool escaping = false;
+    while (current < sourceCode.size()) {
+      char c = sourceCode[current++];
+      if (!escaping && c == '"') return {current, type};
+      escaping = !escaping && c == '\\';
+    }
+    crash(start, "Unterminated string");
+  }
+
+  ScanResult character(u32 start) const {
+    u32 current = start + 1;
+    if (current >= sourceCode.size())
+      crash(start, "Unterminated character literal");
+    if (sourceCode[current++] == '\\') {
+      if (current >= sourceCode.size())
+        crash(start, "Unterminated character escape");
+      current++;
+    }
+    if (current >= sourceCode.size() || sourceCode[current] != '\'') {
+      crash(start, "Expected terminating quote for character literal");
+    }
+    return {current + 1, TokenType::Char};
+  }
+
+  ScanResult hexadecimal(u32 start) const {
+    u32 current = start + 2;
+    u32 digits = current;
+    while (isHex(current < sourceCode.size() ? sourceCode[current] : '\0'))
+      current++;
+    if (current == digits)
+      crash(start, "Expected hexadecimal digits after '0x'");
+    return {current, TokenType::HexInt};
+  }
+
+  ScanResult number(u32 start, u32 current, bool hasDecimal) const {
+    while (current < sourceCode.size() &&
+           std::isdigit(static_cast<unsigned char>(sourceCode[current])))
+      current++;
+    if (
+      !hasDecimal && current < sourceCode.size() &&
+      sourceCode[current] == '.' &&
+      !(current + 1 < sourceCode.size() && sourceCode[current + 1] == '.')
+    ) {
+      hasDecimal = true;
+      current++;
+      while (current < sourceCode.size() &&
+             std::isdigit(static_cast<unsigned char>(sourceCode[current])))
+        current++;
+    }
+    if (
+      current < sourceCode.size() &&
+      (sourceCode[current] == 'e' || sourceCode[current] == 'E')
+    ) {
+      hasDecimal = true;
+      current++;
+      if (
+        current < sourceCode.size() &&
+        (sourceCode[current] == '+' || sourceCode[current] == '-')
+      )
+        current++;
+      u32 exponent = current;
+      while (current < sourceCode.size() &&
+             std::isdigit(static_cast<unsigned char>(sourceCode[current])))
+        current++;
+      if (current == exponent) crash(start, "Expected digits after exponent");
+    }
+    return {current, hasDecimal ? TokenType::Decimal : TokenType::Integer};
   }
 
   template <typename... Args>
   [[noreturn]] void crash(
+    u32 location,
     fmt::format_string<Args...> fmt,
     Args&&... args
   ) const {
-    auto& out = std::cerr;
-    auto location = locationOf(lexeme());
     fmt::println(
-      out,
-      "Tokenizer error in file {} at line {}:{}",
+      std::cerr,
+      "Tokenizer error in file {} at byte {}",
       inputFilePath.string(),
-      location.line,
-      location.column
+      location
     );
-    location.underline(out);
-    fmt::println(out, fmt, std::forward<Args>(args)...);
+    fmt::println(std::cerr, fmt, std::forward<Args>(args)...);
     abort();
   }
 };
